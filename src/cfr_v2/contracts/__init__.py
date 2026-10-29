@@ -1,0 +1,126 @@
+"""P1 — shared contracts exchanged by all modules and components.
+
+No I/O and no business logic beyond structural validation.
+See lld/modules/p1-contracts/README.md.
+"""
+from __future__ import annotations
+
+from ._base import Contract
+from .artifacts import ArtifactMetadata, ArtifactRef, Classification, ref_from_sha256, sha256_from_ref
+from .execution import AuthorizationContext, ExecutionBudget, Lane, TaskEnvelope, TaskResult, TaskStatus
+from .hashing import canonical_hash, canonical_json, sha256_hex
+from .intake import (
+    AdmissionKey,
+    AdmissionRecord,
+    AdmissionStatus,
+    CanonicalTranscript,
+    CaseNote,
+    IngestionRequest,
+    InteractionKind,
+    RedactionMap,
+    RedactionSpan,
+    SpanRef,
+    TranscriptInteraction,
+)
+from .planning import (
+    MANDATORY_TASK_KINDS,
+    ExecutionPlan,
+    PlannerSource,
+    PlanRevision,
+    PlanRevisionTrigger,
+    PlanValidationReport,
+    TaskEdge,
+    TaskKind,
+    TaskNode,
+    ValidationIssue,
+)
+from .registry import (
+    CapabilityDescriptor,
+    CostClass,
+    EvidenceRequirement,
+    EvidenceRequirementClass,
+    ProgramRef,
+    ReleaseManifest,
+    SkillPin,
+    VerticalSkill,
+)
+from .routing import CandidateRoute, ClaimRouting, ClaimRoutingOutcome, RouteSource, RoutingResult
+from .selection import PrimarySelection, SelectionStatus
+from .understanding import (
+    Allegation,
+    BaselineProfile,
+    ClaimScope,
+    ClaimSetRevision,
+    EntityRef,
+    EvidenceNeed,
+    GroundedClaim,
+    GroundingStatus,
+    ObservedFact,
+    StatementKind,
+    TemporalQuality,
+)
+
+__all__ = [
+    "MANDATORY_TASK_KINDS",
+    "AdmissionKey",
+    "AdmissionRecord",
+    "AdmissionStatus",
+    "Allegation",
+    "ArtifactMetadata",
+    "ArtifactRef",
+    "AuthorizationContext",
+    "BaselineProfile",
+    "CandidateRoute",
+    "CanonicalTranscript",
+    "CapabilityDescriptor",
+    "CaseNote",
+    "Classification",
+    "ClaimRouting",
+    "ClaimRoutingOutcome",
+    "ClaimScope",
+    "ClaimSetRevision",
+    "Contract",
+    "CostClass",
+    "EntityRef",
+    "EvidenceNeed",
+    "EvidenceRequirement",
+    "EvidenceRequirementClass",
+    "ExecutionBudget",
+    "ExecutionPlan",
+    "GroundedClaim",
+    "GroundingStatus",
+    "IngestionRequest",
+    "InteractionKind",
+    "Lane",
+    "ObservedFact",
+    "PlanRevision",
+    "PlanRevisionTrigger",
+    "PlanValidationReport",
+    "PlannerSource",
+    "PrimarySelection",
+    "ProgramRef",
+    "RedactionMap",
+    "RedactionSpan",
+    "ReleaseManifest",
+    "RouteSource",
+    "RoutingResult",
+    "SelectionStatus",
+    "SkillPin",
+    "SpanRef",
+    "StatementKind",
+    "TaskEdge",
+    "TaskEnvelope",
+    "TaskKind",
+    "TaskNode",
+    "TaskResult",
+    "TaskStatus",
+    "TemporalQuality",
+    "TranscriptInteraction",
+    "ValidationIssue",
+    "VerticalSkill",
+    "canonical_hash",
+    "canonical_json",
+    "ref_from_sha256",
+    "sha256_from_ref",
+    "sha256_hex",
+]
