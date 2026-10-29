@@ -1,12 +1,12 @@
-"""Worker process for the DBOS spike tests (crash/resume, multi-process throughput).
+"""Worker process for the runtime tests (crash/resume, multi-process throughput).
 
 Usage (env-driven, see test_crash_resume.py and test_throughput.py):
     CFR_SPIKE_MODE=submit|serve  [CFR_SPIKE_CASE=<id>]
     [CFR_SPIKE_BLOCK_TASK=<task> CFR_SPIKE_MARKER=<path>]
     [CFR_SPIKE_EXECUTOR_ID=<id>] [CFR_SPIKE_BATCH_CONCURRENCY=<n>] [CFR_SPIKE_READY_MARKER=<path>]
 
-``submit`` admits one case and enqueues it; ``serve`` only runs the runtime,
-which recovers this executor's pending workflows on launch. If a block task is
+``submit`` admits one case and runs it; ``serve`` only runs the lane workers,
+which also pick up jobs whose leases expired (e.g. a killed worker's). If a block task is
 set, its handler touches the marker file and hangs until the process is killed.
 """
 from __future__ import annotations
@@ -29,9 +29,10 @@ def main() -> int:
     env = os.environ
     settings = RuntimeSettings(
         state_database_url=env["CFR_STATE_DATABASE_URL"],
-        dbos_system_database_url=env["CFR_DBOS_SYSTEM_DATABASE_URL"],
         queue_polling_interval_sec=0.1,
-        executor_id=env.get("CFR_SPIKE_EXECUTOR_ID", "local"),
+        executor_id=env.get("CFR_SPIKE_EXECUTOR_ID", f"worker-{os.getpid()}"),
+        lease_sec=float(env.get("CFR_LEASE_SEC", "30")),
+        heartbeat_sec=float(env.get("CFR_HEARTBEAT_SEC", "10")),
         batch_queue_concurrency=int(env.get("CFR_SPIKE_BATCH_CONCURRENCY", "50")),
     )
     s3 = json.loads(env["CFR_SPIKE_S3"])

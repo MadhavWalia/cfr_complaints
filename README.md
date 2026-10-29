@@ -14,11 +14,11 @@ Current milestone: **Phase 2 (roadmap Phase B) — C01 intake**, complete. Stage
 ```
 src/cfr_v2/
   contracts/    P1  typed contracts + canonical hashing
-  state/        P2  case-state schema, Alembic migrations, repository
+  state/        P2  SQL migrations, psycopg/psycopg2 access layer, repository
   artifacts/    P3  content-addressed artifact store (S3 bytes, Postgres metadata)
   llm/          P5  model-client interface, budgets, deterministic fake
   telemetry/    P6  OpenTelemetry / ee-logging facade (ported from V1)
-  runtime/      P6  DBOS runtime: case_intake_workflow, lanes, submit
+  runtime/      P6  durable runner on a Postgres job queue: lanes, leases, submit
   registry/     P4  release manifests: load, pin, resolve
   intake/       C01 BigQuery case source, normalization, redaction, admission
 registry/       release manifests (registry/releases/<id>.yaml)
@@ -49,7 +49,7 @@ from the internal Artifactory; everything runs without them.
 
 ```bash
 set -a; source .env; set +a
-.venv/bin/alembic upgrade head
+.venv/bin/python -m cfr_v2.state.migrate
 ```
 
 ## Running intake
@@ -69,7 +69,8 @@ Intake is submit-only: it admits and enqueues. Workflows run in worker processes
 .venv/bin/pytest                         # everything; db tests skip if Postgres/RustFS are down
 .venv/bin/pytest tests/unit tests/telemetry   # offline only
 .venv/bin/pytest tests/db -m "not slow"  # Postgres-backed, excluding crash/throughput spike
-.venv/bin/pytest tests/db/spike -s       # DBOS validation spike (LDR-0002), prints throughput
+.venv/bin/pytest tests/db/spike -s       # runtime validation (LDR-0002 criteria), prints throughput
+CFR_DB_DRIVER=psycopg2 .venv/bin/pytest tests/db   # same suite on psycopg2
 ```
 
 Unit tests block outbound network; `db` tests may reach `localhost` only;

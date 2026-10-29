@@ -4,7 +4,7 @@
 services:
   postgres:
     image: postgres:16.6
-    # Room for DBOS system-DB and case-state pools sized per workflow slot (P6).
+    # Room for per-process pools sized per workflow slot, times several worker processes (P6).
     command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: cfr
