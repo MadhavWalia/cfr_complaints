@@ -1,0 +1,51 @@
+# Local, dev-only services for CFR V2. Not for production use.
+#   docker compose up -d          start Postgres and RustFS
+#   docker compose down -v        stop and delete their data
+services:
+  postgres:
+    image: postgres:16.6
+    # Room for DBOS system-DB and case-state pools sized per workflow slot (P6).
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_USER: cfr
+      POSTGRES_PASSWORD: cfr
+      POSTGRES_DB: postgres
+    ports:
+      - "${CFR_PG_PORT:-5432}:5432"
+    volumes:
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cfr -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible store standing in for the enterprise S3 endpoint (LDR-0009).
+  # Single /data volume: RustFS skips its multi-disk checks, and the image already
+  # owns /data as its non-root user (uid 10001), so no permission helper is needed.
+  rustfs:
+    image: rustfs/rustfs:1.0.4
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: cfr-dev
+      RUSTFS_SECRET_KEY: cfr-dev-secret
+    ports:
+      - "${CFR_S3_PORT:-9000}:9000"   # S3 API
+      - "${CFR_S3_CONSOLE_PORT:-9001}:9001"   # web console
+    volumes:
+      - rustfs-data:/data
+    security_opt:
+      - "no-new-privileges:true"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pg-data:
+  rustfs-data:
