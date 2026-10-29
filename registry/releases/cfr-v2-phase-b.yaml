@@ -1,0 +1,19 @@
+# Release manifest pinned on every case run admitted under it (P4, ADR-14).
+# Stages are still placeholders; later phases replace each program entry.
+# The checksum is computed from the content; add `checksum:` only to assert it.
+release_id: cfr-v2-phase-b
+programs:
+  - program_id: c02.understanding
+    version: placeholder-0
+    module: cfr_v2.runtime.stages:placeholder_handler
+  - program_id: c03.primary_selection
+    version: placeholder-0
+    module: cfr_v2.runtime.stages:placeholder_handler
+  - program_id: c04.routing
+    version: placeholder-0
+    module: cfr_v2.runtime.stages:placeholder_handler
+  - program_id: c05.planning
+    version: placeholder-0
+    module: cfr_v2.runtime.stages:placeholder_handler
+skills: []
+capabilities: []

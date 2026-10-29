@@ -1,4 +1,4 @@
-"""P2 logical schema (Phase A tables). All tables are insert-only.
+"""P2 logical schema. All tables are insert-only.
 
 Later phases add claim-set, selection, routing and plan tables in new migrations.
 See lld/modules/p2-case-state/README.md.
@@ -148,3 +148,14 @@ task_attempt = sa.Table(
     sa.CheckConstraint("outcome IN ('COMMITTED', 'DUPLICATE', 'CONFLICT')", name="outcome"),
 )
 
+
+release_manifest = sa.Table(
+    "release_manifest",
+    metadata,
+    sa.Column("manifest_ref", sa.Text, primary_key=True),  # "<release_id>@<checksum[:12]>"
+    sa.Column("release_id", sa.Text, nullable=False),
+    sa.Column("checksum", sa.Text, nullable=False),
+    sa.Column("artifact_ref", sa.Text, nullable=False),  # frozen manifest snapshot in P3
+    _created_at(),
+    sa.CheckConstraint("checksum ~ '^[0-9a-f]{64}$'", name="checksum_hex"),
+)

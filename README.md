@@ -7,7 +7,7 @@ Design material is kept alongside the checkout but outside version control
 decision records `LDR-NNNN`, roadmap) and `cfr-v1/` (V1 source, reference only).
 Code comments cite those documents by path or LDR number.
 
-Current milestone: **Phase 1 (roadmap Phase A) — walking skeleton**, complete.
+Current milestone: **Phase 2 (roadmap Phase B) — C01 intake**, complete. Stages C02–C05 are still placeholders.
 
 ## Layout
 
@@ -19,6 +19,9 @@ src/cfr_v2/
   llm/          P5  model-client interface, budgets, deterministic fake
   telemetry/    P6  OpenTelemetry / ee-logging facade (ported from V1)
   runtime/      P6  DBOS runtime: case_intake_workflow, lanes, submit
+  registry/     P4  release manifests: load, pin, resolve
+  intake/       C01 BigQuery case source, normalization, redaction, admission
+registry/       release manifests (registry/releases/<id>.yaml)
 tests/
   unit/         offline, no network
   telemetry/    ported V1 telemetry suite
@@ -48,6 +51,17 @@ from the internal Artifactory; everything runs without them.
 set -a; source .env; set +a
 .venv/bin/alembic upgrade head
 ```
+
+## Running intake
+
+```bash
+set -a; source .env; set +a
+.venv/bin/python -m cfr_v2.intake --synthetic 20                          # offline, synthetic rows
+.venv/bin/python -m cfr_v2.intake --start-date 2026-09-01 --end-date 2026-09-07   # BigQuery (enterprise extra)
+```
+
+Intake is submit-only: it admits and enqueues. Workflows run in worker processes
+(`start_runtime(...)` with the default `listen_lanes`).
 
 ## Tests
 

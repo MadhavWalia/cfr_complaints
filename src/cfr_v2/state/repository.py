@@ -21,6 +21,7 @@ from cfr_v2.contracts import (
     ArtifactMetadata,
     Classification,
     IngestionRequest,
+    ReleaseManifest,
     TaskResult,
     canonical_hash,
     sha256_from_ref,
@@ -57,6 +58,10 @@ class ArtifactConflictError(RuntimeError):
     """The same content was registered with different metadata."""
 
 
+class ManifestConflictError(RuntimeError):
+    """Two manifests with different content share a ref (checksum-prefix collision)."""
+
+
 class CaseStateRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -69,12 +74,17 @@ class CaseStateRepository:
         *,
         request_ref: str,
         release_manifest_ref: str,
+        admitted_detail: dict | None = None,
     ) -> AdmissionRecord:
-        """Admit a request, or record it as a duplicate of the existing run."""
+        """Admit a request, or record it as a duplicate of the existing run.
+
+        Duplicates compare ``content_hash`` (arrival time and lane excluded), so a
+        re-fetch of the same case is flagged only when its content changed.
+        """
         key = request.key
         case_id = self._ensure_case(key)
         run_id = case_run_id_for(key)
-        request_hash = canonical_hash(request)
+        request_hash = request.content_hash()
 
         created = self.session.execute(
             insert(t.case_run)
@@ -92,7 +102,7 @@ class CaseStateRepository:
 
         if created is not None:
             status, reason = AdmissionStatus.ACCEPTED, None
-            self.record_state(run_id, "ADMITTED")
+            self.record_state(run_id, "ADMITTED", admitted_detail)
         else:
             original_hash = self.session.execute(
                 sa.select(t.admission.c.request_hash).where(
@@ -134,7 +144,9 @@ class CaseStateRepository:
         self.session.execute(
             insert(t.case)
             .values(case_id=case_id, source_system=key.source_system, source_case_id=key.source_case_id)
-            .on_conflict_do_nothing(index_elements=["case_id"])
+            # No conflict target: case_id derives from (source_system, source_case_id), so a
+            # concurrent insert may surface on either unique index; both mean "already exists".
+            .on_conflict_do_nothing()
         )
         return case_id
 
@@ -231,6 +243,33 @@ class CaseStateRepository:
             )
         ).one_or_none()
         return None if row is None else (row.bucket, row.key, Classification(row.classification))
+
+    # -- release manifests (P4 pinning) ---------------------------------------------
+
+    def register_manifest(self, manifest: ReleaseManifest, *, artifact_ref: str) -> None:
+        """Record a manifest snapshot; idempotent for identical content."""
+        inserted = self.session.execute(
+            insert(t.release_manifest)
+            .values(
+                manifest_ref=manifest.ref,
+                release_id=manifest.release_id,
+                checksum=manifest.checksum,
+                artifact_ref=artifact_ref,
+            )
+            .on_conflict_do_nothing(index_elements=["manifest_ref"])
+            .returning(t.release_manifest.c.manifest_ref)
+        ).scalar_one_or_none()
+        if inserted is None:
+            existing = self.session.execute(
+                sa.select(t.release_manifest.c.checksum).where(t.release_manifest.c.manifest_ref == manifest.ref)
+            ).scalar_one()
+            if existing != manifest.checksum:
+                raise ManifestConflictError(f"manifest ref {manifest.ref} already registered with other content")
+
+    def manifest_artifact_ref(self, manifest_ref: str) -> str | None:
+        return self.session.execute(
+            sa.select(t.release_manifest.c.artifact_ref).where(t.release_manifest.c.manifest_ref == manifest_ref)
+        ).scalar_one_or_none()
 
     # -- logical task commits (ADR-12 first-valid-commit-wins) ---------------------
 

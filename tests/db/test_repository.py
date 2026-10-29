@@ -13,10 +13,17 @@ from cfr_v2.contracts import (
     ArtifactMetadata,
     Classification,
     IngestionRequest,
+    ReleaseManifest,
     TaskResult,
     TaskStatus,
 )
-from cfr_v2.state import ArtifactConflictError, CaseStateRepository, CommitOutcome, case_run_id_for
+from cfr_v2.state import (
+    ArtifactConflictError,
+    CaseStateRepository,
+    CommitOutcome,
+    ManifestConflictError,
+    case_run_id_for,
+)
 
 pytestmark = pytest.mark.db
 
@@ -28,7 +35,7 @@ REF_B = "sha256:" + "b" * 64
 def _request(case="C1", rev=0, **kw):
     return IngestionRequest(
         key=AdmissionKey(source_system="icare", source_case_id=case, ingestion_revision=rev),
-        raw_transcript_ref=REF,
+        transcript_ref=REF,
         received_at=NOW,
         **kw,
     )
@@ -177,3 +184,39 @@ def test_artifact_registration_idempotent_and_conflict_checked(session_factory):
     with pytest.raises(ArtifactConflictError):
         with session_factory.begin() as s:
             CaseStateRepository(s).register_artifact(other, bucket="b-restricted", key="k")
+
+
+# -- Phase B: content hash and release manifests ----------------------------------
+
+
+def test_refetch_with_new_arrival_time_is_a_clean_duplicate(session_factory):
+    _admit(session_factory, _request())
+    later = IngestionRequest(**{**_request().model_dump(), "received_at": datetime(2026, 11, 2, tzinfo=timezone.utc)})
+    dup = _admit(session_factory, later)
+    assert dup.status is AdmissionStatus.DUPLICATE
+    assert dup.reason is None
+
+
+def test_admitted_detail_recorded(session_factory):
+    with session_factory.begin() as s:
+        rec = CaseStateRepository(s).admit(
+            _request(), request_ref=REF, release_manifest_ref="rel@x", admitted_detail={"transcript": "absent"}
+        )
+    with session_factory() as s:
+        detail = s.execute(
+            sa.text("SELECT detail FROM case_run_event WHERE case_run_id = :r AND state = 'ADMITTED'"),
+            {"r": rec.case_run_id},
+        ).scalar_one()
+    assert detail == {"transcript": "absent"}
+
+
+def test_manifest_registration_is_idempotent_and_detects_ref_collisions(session_factory):
+    manifest = ReleaseManifest.build(release_id="r1")
+    with session_factory.begin() as s:
+        CaseStateRepository(s).register_manifest(manifest, artifact_ref=REF)
+    with session_factory.begin() as s:
+        CaseStateRepository(s).register_manifest(manifest, artifact_ref=REF)
+        assert CaseStateRepository(s).manifest_artifact_ref(manifest.ref) == REF
+    forged = ReleaseManifest.model_construct(release_id="r1", checksum=manifest.checksum[:12] + "f" * 52)
+    with pytest.raises(ManifestConflictError), session_factory.begin() as s:
+        CaseStateRepository(s).register_manifest(forged, artifact_ref=REF_B)

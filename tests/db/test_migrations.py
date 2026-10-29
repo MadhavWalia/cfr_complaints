@@ -20,4 +20,4 @@ def test_schema_py_matches_migrated_database(state_engine):
 
 def test_head_revision_applied(state_engine):
     with state_engine.connect() as conn:
-        assert conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0001"
+        assert conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0002"
