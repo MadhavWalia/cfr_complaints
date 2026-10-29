@@ -1,18 +1,15 @@
 """P2 repository: every write is an insert, every insert is idempotent.
 
-A repository wraps one SQLAlchemy ``Session``; the caller owns the transaction.
-Inside workflows that session comes from a DBOS transaction step, so a write
-commits together with its step checkpoint (LDR-0002).
+A repository wraps one open transaction (``Tx``); the caller owns commit or
+rollback. Inside the runner, a stage's result, its next state and (for the last
+stage) the job's completion commit in one transaction (LDR-0011).
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
-
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
 
 from cfr_v2.contracts import (
     AdmissionKey,
@@ -27,10 +24,21 @@ from cfr_v2.contracts import (
     sha256_from_ref,
 )
 
-from . import schema as t
+from .db import Tx
 
 # Fixed namespace so case and run ids are reproducible from the admission key.
 _ID_NAMESPACE = uuid.UUID("6f1c2a52-6a8e-4c5e-9d0e-2b7f3f6b9c11")
+
+CASE_RUN_STATES = (
+    "ADMITTED",
+    "UNDERSTANDING",
+    "SELECTING",
+    "ROUTING",
+    "PLANNING",
+    "PLAN_READY",
+    "FAILED",
+    "CANCELLED",
+)
 
 
 def case_id_for(source_system: str, source_case_id: str) -> str:
@@ -54,6 +62,16 @@ class TaskCommit:
     committed_output_hash: str
 
 
+@dataclass(frozen=True)
+class CommittedTask:
+    logical_task_id: str
+    input_hash: str
+    program_version: str
+    plan_revision: int
+    status: str
+    output_artifact_refs: tuple[str, ...]
+
+
 class ArtifactConflictError(RuntimeError):
     """The same content was registered with different metadata."""
 
@@ -62,9 +80,13 @@ class ManifestConflictError(RuntimeError):
     """Two manifests with different content share a ref (checksum-prefix collision)."""
 
 
+def _json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 class CaseStateRepository:
-    def __init__(self, session: Session) -> None:
-        self.session = session
+    def __init__(self, tx: Tx) -> None:
+        self.tx = tx
 
     # -- admission (C01) -------------------------------------------------------------
 
@@ -86,29 +108,27 @@ class CaseStateRepository:
         run_id = case_run_id_for(key)
         request_hash = request.content_hash()
 
-        created = self.session.execute(
-            insert(t.case_run)
-            .values(
-                case_run_id=run_id,
-                case_id=case_id,
-                ingestion_revision=key.ingestion_revision,
-                release_manifest_ref=release_manifest_ref,
-                lane=request.lane.value,
-                request_ref=request_ref,
-            )
-            .on_conflict_do_nothing(index_elements=["case_id", "ingestion_revision"])
-            .returning(t.case_run.c.case_run_id)
-        ).scalar_one_or_none()
-
+        created = self.tx.scalar(
+            "INSERT INTO case_run (case_run_id, case_id, ingestion_revision, release_manifest_ref, lane, request_ref)"
+            " VALUES (%(run)s, %(case)s, %(rev)s, %(manifest)s, %(lane)s, %(request)s)"
+            " ON CONFLICT (case_id, ingestion_revision) DO NOTHING RETURNING case_run_id",
+            {
+                "run": run_id,
+                "case": case_id,
+                "rev": key.ingestion_revision,
+                "manifest": release_manifest_ref,
+                "lane": request.lane.value,
+                "request": request_ref,
+            },
+        )
         if created is not None:
             status, reason = AdmissionStatus.ACCEPTED, None
             self.record_state(run_id, "ADMITTED", admitted_detail)
         else:
-            original_hash = self.session.execute(
-                sa.select(t.admission.c.request_hash).where(
-                    t.admission.c.case_run_id == run_id, t.admission.c.status == AdmissionStatus.ACCEPTED.value
-                )
-            ).scalar_one()
+            original_hash = self.tx.scalar(
+                "SELECT request_hash FROM admission WHERE case_run_id = %(run)s AND status = 'ACCEPTED'",
+                {"run": run_id},
+            )
             status = AdmissionStatus.DUPLICATE
             reason = None if original_hash == request_hash else "content differs from accepted admission"
 
@@ -119,14 +139,11 @@ class CaseStateRepository:
         return self._insert_admission(key, case_id, AdmissionStatus.REJECTED, None, request_hash, reason)
 
     def admissions_for(self, key: AdmissionKey) -> list[AdmissionRecord]:
-        rows = self.session.execute(
-            sa.select(t.admission)
-            .where(
-                t.admission.c.case_id == case_id_for(key.source_system, key.source_case_id),
-                t.admission.c.ingestion_revision == key.ingestion_revision,
-            )
-            .order_by(t.admission.c.created_at, t.admission.c.admission_id)
-        ).mappings()
+        rows = self.tx.rows(
+            "SELECT admission_id, status, case_id, case_run_id, reason FROM admission"
+            " WHERE case_id = %(case)s AND ingestion_revision = %(rev)s ORDER BY created_at, admission_id",
+            {"case": case_id_for(key.source_system, key.source_case_id), "rev": key.ingestion_revision},
+        )
         return [
             AdmissionRecord(
                 admission_id=r["admission_id"],
@@ -141,12 +158,12 @@ class CaseStateRepository:
 
     def _ensure_case(self, key: AdmissionKey) -> str:
         case_id = case_id_for(key.source_system, key.source_case_id)
-        self.session.execute(
-            insert(t.case)
-            .values(case_id=case_id, source_system=key.source_system, source_case_id=key.source_case_id)
-            # No conflict target: case_id derives from (source_system, source_case_id), so a
-            # concurrent insert may surface on either unique index; both mean "already exists".
-            .on_conflict_do_nothing()
+        # No conflict target: case_id derives from (source_system, source_case_id), so a
+        # concurrent insert may surface on either unique index; both mean "already exists".
+        self.tx.execute(
+            'INSERT INTO "case" (case_id, source_system, source_case_id) VALUES (%(case)s, %(sys)s, %(src)s)'
+            " ON CONFLICT DO NOTHING",
+            {"case": case_id, "sys": key.source_system, "src": key.source_case_id},
         )
         return case_id
 
@@ -167,109 +184,108 @@ class CaseStateRepository:
             case_run_id=run_id,
             reason=reason,
         )
-        self.session.execute(
-            insert(t.admission).values(
-                admission_id=record.admission_id,
-                case_id=case_id,
-                ingestion_revision=key.ingestion_revision,
-                status=status.value,
-                case_run_id=run_id,
-                request_hash=request_hash,
-                reason=reason,
-            )
+        self.tx.execute(
+            "INSERT INTO admission (admission_id, case_id, ingestion_revision, status, case_run_id, request_hash, reason)"
+            " VALUES (%(id)s, %(case)s, %(rev)s, %(status)s, %(run)s, %(hash)s, %(reason)s)",
+            {
+                "id": record.admission_id,
+                "case": case_id,
+                "rev": key.ingestion_revision,
+                "status": status.value,
+                "run": run_id,
+                "hash": request_hash,
+                "reason": reason,
+            },
         )
         return record
+
+    def case_run(self, case_run_id: str) -> dict | None:
+        rows = self.tx.rows(
+            "SELECT case_run_id, case_id, ingestion_revision, release_manifest_ref, lane, request_ref"
+            " FROM case_run WHERE case_run_id = %(run)s",
+            {"run": case_run_id},
+        )
+        return rows[0] if rows else None
 
     # -- case run state (HD-04) ------------------------------------------------------
 
     def record_state(self, case_run_id: str, state: str, detail: dict | None = None) -> bool:
         """Append a coarse state; returns False if the run already passed through it."""
-        inserted = self.session.execute(
-            insert(t.case_run_event)
-            .values(case_run_id=case_run_id, state=state, detail=detail or {})
-            .on_conflict_do_nothing(index_elements=["case_run_id", "state"])
-            .returning(t.case_run_event.c.event_id)
-        ).scalar_one_or_none()
+        inserted = self.tx.scalar(
+            "INSERT INTO case_run_event (case_run_id, state, detail) VALUES (%(run)s, %(state)s, %(detail)s::jsonb)"
+            " ON CONFLICT (case_run_id, state) DO NOTHING RETURNING event_id",
+            {"run": case_run_id, "state": state, "detail": _json(detail or {})},
+        )
         return inserted is not None
 
     def current_state(self, case_run_id: str) -> str | None:
-        return self.session.execute(
-            sa.select(t.case_run_event.c.state)
-            .where(t.case_run_event.c.case_run_id == case_run_id)
-            .order_by(t.case_run_event.c.event_id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        return self.tx.scalar(
+            "SELECT state FROM case_run_event WHERE case_run_id = %(run)s ORDER BY event_id DESC LIMIT 1",
+            {"run": case_run_id},
+        )
 
     def state_history(self, case_run_id: str) -> list[str]:
-        return list(
-            self.session.execute(
-                sa.select(t.case_run_event.c.state)
-                .where(t.case_run_event.c.case_run_id == case_run_id)
-                .order_by(t.case_run_event.c.event_id)
-            ).scalars()
+        return self.tx.column(
+            "SELECT state FROM case_run_event WHERE case_run_id = %(run)s ORDER BY event_id", {"run": case_run_id}
         )
 
     # -- artifacts (P3 metadata) -----------------------------------------------------
 
     def register_artifact(self, meta: ArtifactMetadata, *, bucket: str, key: str) -> None:
         digest = sha256_from_ref(meta.ref)
-        inserted = self.session.execute(
-            insert(t.artifact)
-            .values(
-                sha256=digest,
-                bucket=bucket,
-                key=key,
-                media_type=meta.media_type,
-                classification=meta.classification.value,
-                size_bytes=meta.size_bytes,
-            )
-            .on_conflict_do_nothing(index_elements=["sha256"])
-            .returning(t.artifact.c.sha256)
-        ).scalar_one_or_none()
+        inserted = self.tx.scalar(
+            "INSERT INTO artifact (sha256, bucket, key, media_type, classification, size_bytes)"
+            " VALUES (%(sha)s, %(bucket)s, %(key)s, %(media)s, %(cls)s, %(size)s)"
+            " ON CONFLICT (sha256) DO NOTHING RETURNING sha256",
+            {
+                "sha": digest,
+                "bucket": bucket,
+                "key": key,
+                "media": meta.media_type,
+                "cls": meta.classification.value,
+                "size": meta.size_bytes,
+            },
+        )
         if inserted is not None:
             return
-        existing = self.session.execute(sa.select(t.artifact).where(t.artifact.c.sha256 == digest)).mappings().one()
-        if (existing["classification"], existing["bucket"], existing["size_bytes"]) != (
-            meta.classification.value,
-            bucket,
-            meta.size_bytes,
-        ):
+        existing = self.tx.one(
+            "SELECT classification, bucket, size_bytes FROM artifact WHERE sha256 = %(sha)s", {"sha": digest}
+        )
+        if existing != (meta.classification.value, bucket, meta.size_bytes):
             raise ArtifactConflictError(f"artifact {meta.ref} already registered with different metadata")
 
     def artifact_location(self, ref: str) -> tuple[str, str, Classification] | None:
-        row = self.session.execute(
-            sa.select(t.artifact.c.bucket, t.artifact.c.key, t.artifact.c.classification).where(
-                t.artifact.c.sha256 == sha256_from_ref(ref)
-            )
-        ).one_or_none()
-        return None if row is None else (row.bucket, row.key, Classification(row.classification))
+        row = self.tx.one(
+            "SELECT bucket, key, classification FROM artifact WHERE sha256 = %(sha)s", {"sha": sha256_from_ref(ref)}
+        )
+        return None if row is None else (row[0], row[1], Classification(row[2]))
 
     # -- release manifests (P4 pinning) ---------------------------------------------
 
     def register_manifest(self, manifest: ReleaseManifest, *, artifact_ref: str) -> None:
         """Record a manifest snapshot; idempotent for identical content."""
-        inserted = self.session.execute(
-            insert(t.release_manifest)
-            .values(
-                manifest_ref=manifest.ref,
-                release_id=manifest.release_id,
-                checksum=manifest.checksum,
-                artifact_ref=artifact_ref,
-            )
-            .on_conflict_do_nothing(index_elements=["manifest_ref"])
-            .returning(t.release_manifest.c.manifest_ref)
-        ).scalar_one_or_none()
+        inserted = self.tx.scalar(
+            "INSERT INTO release_manifest (manifest_ref, release_id, checksum, artifact_ref)"
+            " VALUES (%(ref)s, %(release)s, %(checksum)s, %(artifact)s)"
+            " ON CONFLICT (manifest_ref) DO NOTHING RETURNING manifest_ref",
+            {
+                "ref": manifest.ref,
+                "release": manifest.release_id,
+                "checksum": manifest.checksum,
+                "artifact": artifact_ref,
+            },
+        )
         if inserted is None:
-            existing = self.session.execute(
-                sa.select(t.release_manifest.c.checksum).where(t.release_manifest.c.manifest_ref == manifest.ref)
-            ).scalar_one()
+            existing = self.tx.scalar(
+                "SELECT checksum FROM release_manifest WHERE manifest_ref = %(ref)s", {"ref": manifest.ref}
+            )
             if existing != manifest.checksum:
                 raise ManifestConflictError(f"manifest ref {manifest.ref} already registered with other content")
 
     def manifest_artifact_ref(self, manifest_ref: str) -> str | None:
-        return self.session.execute(
-            sa.select(t.release_manifest.c.artifact_ref).where(t.release_manifest.c.manifest_ref == manifest_ref)
-        ).scalar_one_or_none()
+        return self.tx.scalar(
+            "SELECT artifact_ref FROM release_manifest WHERE manifest_ref = %(ref)s", {"ref": manifest_ref}
+        )
 
     # -- logical task commits (ADR-12 first-valid-commit-wins) ---------------------
 
@@ -287,66 +303,71 @@ class CaseStateRepository:
         output_hash = canonical_hash(
             {"status": result.status.value, "output_artifact_refs": refs, "error_code": result.error_code}
         )
-        identity = dict(
-            case_run_id=case_run_id,
-            logical_task_id=logical_task_id,
-            plan_revision=plan_revision,
-            program_version=program_version,
-            input_hash=input_hash,
-        )
-        new_id = str(uuid.uuid4())
-        inserted = self.session.execute(
-            insert(t.task_execution)
-            .values(
-                task_execution_id=new_id,
-                status=result.status.value,
-                output_hash=output_hash,
-                output_artifact_refs=refs,
-                error_code=result.error_code,
+        identity = {
+            "run": case_run_id,
+            "task": logical_task_id,
+            "rev": plan_revision,
+            "version": program_version,
+            "input": input_hash,
+        }
+        inserted = self.tx.scalar(
+            "INSERT INTO task_execution (task_execution_id, case_run_id, logical_task_id, plan_revision,"
+            " program_version, input_hash, status, output_hash, output_artifact_refs, error_code)"
+            " VALUES (%(id)s, %(run)s, %(task)s, %(rev)s, %(version)s, %(input)s, %(status)s, %(out)s,"
+            " %(refs)s::jsonb, %(error)s)"
+            " ON CONFLICT (case_run_id, logical_task_id, input_hash, program_version, plan_revision) DO NOTHING"
+            " RETURNING task_execution_id",
+            {
                 **identity,
-            )
-            .on_conflict_do_nothing(
-                index_elements=["case_run_id", "logical_task_id", "input_hash", "program_version", "plan_revision"]
-            )
-            .returning(t.task_execution.c.task_execution_id)
-        ).scalar_one_or_none()
-
+                "id": str(uuid.uuid4()),
+                "status": result.status.value,
+                "out": output_hash,
+                "refs": _json(refs),
+                "error": result.error_code,
+            },
+        )
         if inserted is not None:
             commit = TaskCommit(CommitOutcome.COMMITTED, inserted, output_hash)
         else:
-            row = self.session.execute(
-                sa.select(t.task_execution.c.task_execution_id, t.task_execution.c.output_hash).where(
-                    *(t.task_execution.c[k] == v for k, v in identity.items())
-                )
-            ).one()
-            outcome = CommitOutcome.DUPLICATE if row.output_hash == output_hash else CommitOutcome.CONFLICT
-            commit = TaskCommit(outcome, row.task_execution_id, row.output_hash)
-
-        self.session.execute(
-            insert(t.task_attempt).values(
-                output_hash=output_hash,
-                output_artifact_refs=refs,
-                outcome=commit.outcome.value,
-                task_execution_id=commit.task_execution_id,
-                **identity,
+            row = self.tx.one(
+                "SELECT task_execution_id, output_hash FROM task_execution"
+                " WHERE case_run_id = %(run)s AND logical_task_id = %(task)s AND plan_revision = %(rev)s"
+                " AND program_version = %(version)s AND input_hash = %(input)s",
+                identity,
             )
+            assert row is not None
+            outcome = CommitOutcome.DUPLICATE if row[1] == output_hash else CommitOutcome.CONFLICT
+            commit = TaskCommit(outcome, row[0], row[1])
+
+        self.tx.execute(
+            "INSERT INTO task_attempt (case_run_id, logical_task_id, plan_revision, program_version, input_hash,"
+            " output_hash, output_artifact_refs, outcome, task_execution_id)"
+            " VALUES (%(run)s, %(task)s, %(rev)s, %(version)s, %(input)s, %(out)s, %(refs)s::jsonb,"
+            " %(outcome)s, %(exec)s)",
+            {
+                **identity,
+                "out": output_hash,
+                "refs": _json(refs),
+                "outcome": commit.outcome.value,
+                "exec": commit.task_execution_id,
+            },
         )
         return commit
 
+    def committed_results(self, case_run_id: str) -> list[CommittedTask]:
+        rows = self.tx.all(
+            "SELECT logical_task_id, input_hash, program_version, plan_revision, status, output_artifact_refs"
+            " FROM task_execution WHERE case_run_id = %(run)s ORDER BY created_at, logical_task_id",
+            {"run": case_run_id},
+        )
+        return [CommittedTask(r[0], r[1], r[2], r[3], r[4], tuple(r[5])) for r in rows]
+
     def task_attempts(self, case_run_id: str, logical_task_id: str) -> list[str]:
-        return list(
-            self.session.execute(
-                sa.select(t.task_attempt.c.outcome)
-                .where(t.task_attempt.c.case_run_id == case_run_id, t.task_attempt.c.logical_task_id == logical_task_id)
-                .order_by(t.task_attempt.c.attempt_id)
-            ).scalars()
+        return self.tx.column(
+            "SELECT outcome FROM task_attempt WHERE case_run_id = %(run)s AND logical_task_id = %(task)s"
+            " ORDER BY attempt_id",
+            {"run": case_run_id, "task": logical_task_id},
         )
 
     def committed_tasks(self, case_run_id: str) -> list[str]:
-        return list(
-            self.session.execute(
-                sa.select(t.task_execution.c.logical_task_id)
-                .where(t.task_execution.c.case_run_id == case_run_id)
-                .order_by(t.task_execution.c.created_at, t.task_execution.c.logical_task_id)
-            ).scalars()
-        )
+        return [c.logical_task_id for c in self.committed_results(case_run_id)]

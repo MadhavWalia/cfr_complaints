@@ -1,25 +1,5 @@
-"""Phase A core tables: case, admission, case_run, events, artifacts, task commits.
-
-DDL is frozen here (not derived from schema.py) so later schema changes need
-their own revision. ``tests/db/test_migrations.py`` checks schema.py and the
-migrated database do not drift.
-
-Revision ID: 0001
-Revises:
-Create Date: 2026-10-29
-"""
-from __future__ import annotations
-
-from alembic import op
-
-revision = "0001"
-down_revision = None
-branch_labels = None
-depends_on = None
-
-TABLES = ("artifact", "case", "case_run", "admission", "case_run_event", "task_execution", "task_attempt")
-
-DDL = r"""
+-- 0001 Phase A core tables: case, admission, case_run, events, artifacts, task commits.
+-- Applied migrations are frozen: change the schema with a new numbered file.
 CREATE TABLE artifact (
     sha256 TEXT NOT NULL,
     bucket TEXT NOT NULL,
@@ -129,23 +109,32 @@ BEGIN
         USING ERRCODE = 'restrict_violation';
 END;
 $$;
-"""
 
-
-def upgrade() -> None:
-    op.execute(DDL)
-    for name in TABLES:
-        op.execute(
-            f'CREATE TRIGGER "{name}_append_only" BEFORE UPDATE OR DELETE ON "{name}" '
-            "FOR EACH ROW EXECUTE FUNCTION cfr_reject_mutation()"
-        )
-        op.execute(
-            f'CREATE TRIGGER "{name}_no_truncate" BEFORE TRUNCATE ON "{name}" '
-            "FOR EACH STATEMENT EXECUTE FUNCTION cfr_reject_mutation()"
-        )
-
-
-def downgrade() -> None:
-    for name in reversed(TABLES):
-        op.execute(f'DROP TABLE "{name}"')
-    op.execute("DROP FUNCTION cfr_reject_mutation()")
+CREATE TRIGGER "artifact_append_only" BEFORE UPDATE OR DELETE ON "artifact"
+    FOR EACH ROW EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "artifact_no_truncate" BEFORE TRUNCATE ON "artifact"
+    FOR EACH STATEMENT EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "case_append_only" BEFORE UPDATE OR DELETE ON "case"
+    FOR EACH ROW EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "case_no_truncate" BEFORE TRUNCATE ON "case"
+    FOR EACH STATEMENT EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "case_run_append_only" BEFORE UPDATE OR DELETE ON "case_run"
+    FOR EACH ROW EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "case_run_no_truncate" BEFORE TRUNCATE ON "case_run"
+    FOR EACH STATEMENT EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "admission_append_only" BEFORE UPDATE OR DELETE ON "admission"
+    FOR EACH ROW EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "admission_no_truncate" BEFORE TRUNCATE ON "admission"
+    FOR EACH STATEMENT EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "case_run_event_append_only" BEFORE UPDATE OR DELETE ON "case_run_event"
+    FOR EACH ROW EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "case_run_event_no_truncate" BEFORE TRUNCATE ON "case_run_event"
+    FOR EACH STATEMENT EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "task_execution_append_only" BEFORE UPDATE OR DELETE ON "task_execution"
+    FOR EACH ROW EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "task_execution_no_truncate" BEFORE TRUNCATE ON "task_execution"
+    FOR EACH STATEMENT EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "task_attempt_append_only" BEFORE UPDATE OR DELETE ON "task_attempt"
+    FOR EACH ROW EXECUTE FUNCTION cfr_reject_mutation();
+CREATE TRIGGER "task_attempt_no_truncate" BEFORE TRUNCATE ON "task_attempt"
+    FOR EACH STATEMENT EXECUTE FUNCTION cfr_reject_mutation();
