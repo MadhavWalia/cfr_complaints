@@ -1,42 +1,31 @@
-"""Process-wide runtime dependencies used by workflow steps.
+"""Process-wide runtime dependencies.
 
-DBOS workflows are module-level functions recovered by name after a crash, so
-their dependencies cannot be closed over; they are looked up here instead.
+Jobs can be claimed by any process sharing the database, so the code that runs
+them looks its dependencies up here rather than closing over them.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
-from typing import Any, TypeVar
-
-from dbos import Queue, SQLAlchemyDatasource
-from sqlalchemy.orm import Session, sessionmaker
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from cfr_v2.artifacts import ArtifactStore
-from cfr_v2.contracts import Lane
+from cfr_v2.state import Database
 
 from .settings import RuntimeSettings
 from .stages import StageHandler
 
-R = TypeVar("R")
-
-# Our transaction steps are idempotent inserts; READ COMMITTED avoids needless
-# serialization retries under batch concurrency.
-TX_ISOLATION = "READ COMMITTED"
+if TYPE_CHECKING:
+    from .runner import Runner
 
 
 @dataclass
 class Runtime:
     settings: RuntimeSettings
-    ds: SQLAlchemyDatasource
+    db: Database
     store: ArtifactStore
     handlers: Mapping[str, StageHandler]
-    sessions: sessionmaker[Session]  # for writes outside workflows (admission)
-    queues: dict[Lane, Queue] = field(default_factory=dict)  # filled after launch
-
-    def tx(self, name: str, fn: Callable[..., R], *args: Any) -> R:
-        """Run ``fn`` as a DBOS transaction step: its writes and checkpoint commit together."""
-        return self.ds.run_tx_step({"name": name, "isolation_level": TX_ISOLATION}, fn, *args)
+    runner: Runner | None = None  # set by start_runtime; None until the lanes start
 
 
 _current: Runtime | None = None

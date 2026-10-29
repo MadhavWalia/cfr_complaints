@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from sqlalchemy.orm import Session, sessionmaker
 
 from cfr_v2.artifacts import ArtifactStore, register
 from cfr_v2.contracts import (
@@ -18,7 +17,7 @@ from cfr_v2.contracts import (
     ReleaseManifest,
     canonical_json,
 )
-from cfr_v2.state import CaseStateRepository
+from cfr_v2.state import CaseStateRepository, Database
 
 DEFAULT_REGISTRY_DIR = Path("registry")
 
@@ -65,11 +64,11 @@ class ReleaseRegistry:
         return manifest
 
 
-def pin_manifest(manifest: ReleaseManifest, *, store: ArtifactStore, sessions: sessionmaker[Session]) -> str:
+def pin_manifest(manifest: ReleaseManifest, *, store: ArtifactStore, db: Database) -> str:
     """Freeze the manifest and return the ref recorded on each ``case_run``. Idempotent."""
     stored = store.put(canonical_json(manifest), media_type="application/json", classification=Classification.INTERNAL)
-    with sessions.begin() as session:
-        repo = CaseStateRepository(session)
+    with db.transaction() as tx:
+        repo = CaseStateRepository(tx)
         register(repo, stored)
         repo.register_manifest(manifest, artifact_ref=stored.metadata.ref)
     return manifest.ref
@@ -79,11 +78,11 @@ def load_pinned(
     manifest_ref: str,
     *,
     store: ArtifactStore,
-    sessions: sessionmaker[Session],
+    db: Database,
     authorization: AuthorizationContext,
 ) -> ReleaseManifest:
-    with sessions() as session:
-        artifact_ref = CaseStateRepository(session).manifest_artifact_ref(manifest_ref)
+    with db.transaction() as tx:
+        artifact_ref = CaseStateRepository(tx).manifest_artifact_ref(manifest_ref)
     if artifact_ref is None:
         raise ManifestError(f"manifest {manifest_ref!r} was never pinned")
     data = store.get(artifact_ref, classification=Classification.INTERNAL, authorization=authorization)

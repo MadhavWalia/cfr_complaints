@@ -9,7 +9,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-import sqlalchemy as sa
 
 from cfr_v2.contracts import (
     AuthorizationContext,
@@ -51,8 +50,8 @@ def coordinator(running, store, manifest):
 
 
 def _scalar(running, sql: str, **params):
-    with running.sessions() as s:
-        return s.execute(sa.text(sql), params).scalar_one()
+    with running.db.transaction() as tx:
+        return tx.scalar(sql, params)
 
 
 def test_batch_admits_valid_rows_and_reports_the_rest(running, coordinator, manifest):
@@ -86,7 +85,7 @@ def test_batch_admits_valid_rows_and_reports_the_rest(running, coordinator, mani
     assert (
         _scalar(
             running,
-            "SELECT detail->>'transcript' FROM case_run_event WHERE case_run_id = :r AND state = 'ADMITTED'",
+            "SELECT detail->>'transcript' FROM case_run_event WHERE case_run_id = %(r)s AND state = 'ADMITTED'",
             r=no_transcript.case_run_id,
         )
         == "absent"
@@ -103,7 +102,7 @@ def test_rerun_of_same_cases_is_all_duplicates(running, coordinator):
     assert all(r.reason is None for r in second.results)
     assert [r.case_run_id for r in second.results] == [r.case_run_id for r in first.results]
     assert _scalar(running, "SELECT count(*) FROM case_run") == 5
-    with running.sessions() as s:
+    with running.db.transaction() as s:
         assert CaseStateRepository(s).task_attempts(first.results[0].case_run_id, "c02.understanding") == ["COMMITTED"]
 
 
@@ -112,7 +111,7 @@ def test_models_only_ever_get_redacted_text_and_v1_fields(running, coordinator, 
     result = coordinator.admit_case(row)
     wait_for_state(running.settings.state_database_url, [result.case_run_id], FINAL_STATE, timeout=30)
 
-    request_ref = _scalar(running, "SELECT request_ref FROM case_run WHERE case_run_id = :r", r=result.case_run_id)
+    request_ref = _scalar(running, "SELECT request_ref FROM case_run WHERE case_run_id = %(r)s", r=result.case_run_id)
     request = IngestionRequest.model_validate_json(store.get(request_ref, classification=Classification.RESTRICTED, authorization=READ_ALL))
     assert set(request.case_metadata) == {"prim_ctgy", "prim_subctgy"}
     assert set(request.evaluation_labels) == {"latest_rslv_optn"}
@@ -134,7 +133,7 @@ def test_models_only_ever_get_redacted_text_and_v1_fields(running, coordinator, 
         (transcript.interactions[0].redacted_text_ref, "INTERNAL"),
         (transcript.interactions[0].redaction_map_ref, "RESTRICTED"),
     ]:
-        assert _scalar(running, "SELECT classification FROM artifact WHERE sha256 = :h", h=ref.removeprefix("sha256:")) == expected
+        assert _scalar(running, "SELECT classification FROM artifact WHERE sha256 = %(h)s", h=ref.removeprefix("sha256:")) == expected
 
 
 def test_pinned_manifest_survives_registry_edits(running, store, tmp_path):
@@ -148,5 +147,5 @@ def test_pinned_manifest_survives_registry_edits(running, store, tmp_path):
     edited = ReleaseRegistry(registry_dir).load("cfr-v2-phase-b")
     assert edited.ref != original.ref
 
-    pinned = load_pinned(coordinator.manifest_ref, store=store, sessions=running.sessions, authorization=READ_ALL)
+    pinned = load_pinned(coordinator.manifest_ref, store=store, db=running.db, authorization=READ_ALL)
     assert pinned == original

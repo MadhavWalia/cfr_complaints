@@ -79,7 +79,7 @@ class IntakeCoordinator:
     @classmethod
     def pinned(cls, manifest: ReleaseManifest, *, store: ArtifactStore, **kwargs: Any) -> "IntakeCoordinator":
         """Pin ``manifest`` (idempotent) and build a coordinator that admits under it."""
-        ref = pin_manifest(manifest, store=store, sessions=runtime.current().sessions)
+        ref = pin_manifest(manifest, store=store, db=runtime.current().db)
         logger.info("intake: pinned release manifest %s", ref)
         return cls(store=store, manifest_ref=ref, **kwargs)
 

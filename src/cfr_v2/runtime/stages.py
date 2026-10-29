@@ -2,7 +2,7 @@
 
 Phase A ships placeholder handlers; each later phase swaps in the real
 component (C02 Understanding, C03 Selector, ...). A handler is a plain function,
-never aware of DBOS, so it is unit-testable on its own.
+never aware of the runner, so it is unit-testable on its own.
 """
 from __future__ import annotations
 
