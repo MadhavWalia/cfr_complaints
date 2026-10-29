@@ -4,11 +4,13 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, ValidationInfo, model_validator
 
 from ._base import SHA256_PATTERN, Contract
 from .artifacts import ArtifactRef
 from .hashing import canonical_hash
+
+_UNCHECKED = "cfr_unchecked_checksum"  # validation context flag used only by ReleaseManifest.build
 
 
 class EvidenceRequirementClass(StrEnum):
@@ -75,13 +77,14 @@ class ReleaseManifest(Contract):
 
     @classmethod
     def build(cls, **body: Any) -> "ReleaseManifest":
-        """Construct a manifest, computing its checksum from the content."""
-        unchecked = cls.model_construct(**body, checksum="0" * 64)
-        checksum = canonical_hash(unchecked.model_dump(mode="json", exclude={"checksum"}))
-        return cls(**body, checksum=checksum)
+        """Construct a manifest, computing its checksum from the validated content."""
+        draft = cls.model_validate({**body, "checksum": "0" * 64}, context={_UNCHECKED: True})
+        return cls(**body, checksum=canonical_hash(draft.model_dump(mode="json", exclude={"checksum"})))
 
     @model_validator(mode="after")
-    def _checksum_matches(self) -> "ReleaseManifest":
+    def _checksum_matches(self, info: ValidationInfo) -> "ReleaseManifest":
+        if info.context and info.context.get(_UNCHECKED):
+            return self
         if self.checksum != canonical_hash(self.model_dump(mode="json", exclude={"checksum"})):
             raise ValueError("manifest checksum does not match content")
         return self
