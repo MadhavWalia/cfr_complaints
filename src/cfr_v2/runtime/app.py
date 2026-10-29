@@ -3,10 +3,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from dbos import DBOS, DBOSConfig, Queue, SetWorkflowID, SQLAlchemyDatasource, WorkflowHandle
+from dbos import (
+    DBOS,
+    DBOSConfig,
+    Queue,
+    SetWorkflowID,
+    SQLAlchemyDatasource,
+    WorkflowHandle,
+)
 
-from cfr_v2.artifacts import ArtifactStore, register
-from cfr_v2.contracts import AdmissionRecord, AdmissionStatus, Classification, IngestionRequest, Lane
+from cfr_v2.artifacts import ArtifactStore, StoredArtifact, register
+from cfr_v2.contracts import (
+    AdmissionKey,
+    AdmissionRecord,
+    AdmissionStatus,
+    Classification,
+    IngestionRequest,
+    Lane,
+)
 from cfr_v2.state import CaseStateRepository, make_engine, make_sessionmaker
 from cfr_v2.telemetry import get_logger
 
@@ -97,8 +111,18 @@ def queue_for(lane: Lane) -> Queue:
     return queue
 
 
-def submit(request: IngestionRequest, *, release_manifest_ref: str) -> tuple[AdmissionRecord, WorkflowHandle[str] | None]:
+def submit(
+    request: IngestionRequest,
+    *,
+    release_manifest_ref: str,
+    artifacts: Sequence[StoredArtifact] = (),
+    admitted_detail: dict | None = None,
+) -> tuple[AdmissionRecord, WorkflowHandle[str] | None]:
     """Admit a request and enqueue its workflow on the request's lane.
+
+    ``artifacts`` (already uploaded, e.g. by C01) are registered in the same
+    transaction as the admission, so a committed admission never references
+    unregistered content.
 
     Safe to repeat: a duplicate admission re-enqueues with the same workflow id,
     which DBOS resolves to the existing workflow. This also heals a crash between
@@ -110,10 +134,22 @@ def submit(request: IngestionRequest, *, release_manifest_ref: str) -> tuple[Adm
     )
     with rt.sessions.begin() as session:
         repo = CaseStateRepository(session)
-        register(repo, stored)
-        record = repo.admit(request, request_ref=stored.metadata.ref, release_manifest_ref=release_manifest_ref)
+        for artifact in (*artifacts, stored):
+            register(repo, artifact)
+        record = repo.admit(
+            request,
+            request_ref=stored.metadata.ref,
+            release_manifest_ref=release_manifest_ref,
+            admitted_detail=admitted_detail,
+        )
     if record.status is AdmissionStatus.REJECTED or record.case_run_id is None:
         return record, None
     with SetWorkflowID(record.case_run_id):
         handle = queue_for(request.lane).enqueue(case_intake_workflow, record.case_run_id)
     return record, handle
+
+
+def reject(key: AdmissionKey, *, reason: str, request_hash: str) -> AdmissionRecord:
+    """Record a rejected admission; no run is created and nothing is enqueued."""
+    with context.current().sessions.begin() as session:
+        return CaseStateRepository(session).reject(key, reason=reason, request_hash=request_hash)
