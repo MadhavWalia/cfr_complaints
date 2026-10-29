@@ -7,6 +7,7 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 from ._base import SHA256_PATTERN, Contract
 from .artifacts import ArtifactRef
 from .execution import Lane
+from .hashing import canonical_hash
 
 
 class AdmissionKey(Contract):
@@ -18,20 +19,25 @@ class AdmissionKey(Contract):
 class IngestionRequest(Contract):
     """What a batch coordinator or API hands to C01.
 
-    ``case_metadata`` may be shown to models after redaction; ``evaluation_labels``
-    (e.g. ``potl_defect_flag``, ``err_type``) are stored for evaluation only and must
-    never reach model input (C01 design, OQ-13).
+    Field use follows V1 (OQ-21): ``case_metadata`` holds the only model-visible
+    case fields (``prim_ctgy``, ``prim_subctgy``); ``evaluation_labels`` holds
+    ``latest_rslv_optn`` and must never reach model input. Every other source
+    column stays in the RESTRICTED ``source_record_ref`` artifact and is unused.
     """
 
     key: AdmissionKey
-    raw_transcript_ref: ArtifactRef | None
+    source_record_ref: ArtifactRef | None = None
+    # CanonicalTranscript artifact; None when the case has no usable transcript.
+    transcript_ref: ArtifactRef | None
     case_note_refs: dict[str, ArtifactRef] = Field(default_factory=dict)
     case_metadata: dict[str, JsonValue] = Field(default_factory=dict)
     evaluation_labels: dict[str, JsonValue] = Field(default_factory=dict)
-    source_interaction_ids: tuple[str, ...] = ()
-    linkage_quality: str | None = None
     lane: Lane = Lane.BATCH
     received_at: AwareDatetime
+
+    def content_hash(self) -> str:
+        """Hash of what was ingested, ignoring when and on which lane it arrived."""
+        return canonical_hash(self.model_dump(mode="json", exclude={"received_at", "lane"}))
 
     @model_validator(mode="after")
     def _labels_disjoint_from_metadata(self) -> "IngestionRequest":
@@ -73,21 +79,31 @@ class InteractionKind(StrEnum):
 
 
 class TranscriptInteraction(Contract):
+    """One interaction; text bodies live in artifacts.
+
+    Model-produced spans refer to the redacted text; ``redaction_map_ref``
+    translates them back to the original (LDR-0004, LDR-0010).
+    """
+
     interaction_id: str = Field(min_length=1)
     kind: InteractionKind
     occurred_at: AwareDatetime | None = None
     linkage_quality: str | None = None
     source_interaction_ids: tuple[str, ...] = ()
-    text_sha256: str = Field(pattern=SHA256_PATTERN)
-    length: int = Field(ge=0)
+    original_text_ref: ArtifactRef  # RESTRICTED
+    redacted_text_ref: ArtifactRef  # INTERNAL; the only text models see
+    redaction_map_ref: ArtifactRef  # RESTRICTED
+    original_length: int = Field(ge=0)
+    redacted_length: int = Field(ge=0)
 
 
 class CanonicalTranscript(Contract):
-    """Ordered interactions of one case; text bodies live in artifacts."""
+    """Ordered interactions of one case."""
 
     case_id: str
     interactions: tuple[TranscriptInteraction, ...] = Field(min_length=1)
     normalization_version: str = Field(min_length=1)
+    redaction_version: str = Field(min_length=1)
 
     @model_validator(mode="after")
     def _unique_interaction_ids(self) -> "CanonicalTranscript":

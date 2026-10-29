@@ -128,7 +128,7 @@ def test_labels_cannot_double_as_metadata():
     with pytest.raises(ValidationError, match="both metadata and labels"):
         IngestionRequest(
             key=AdmissionKey(source_system="icare", source_case_id="1", ingestion_revision=0),
-            raw_transcript_ref=None,
+            transcript_ref=None,
             case_metadata={"potl_defect_flag": "Yes"},
             evaluation_labels={"potl_defect_flag": "Yes"},
             received_at=NOW,

@@ -67,7 +67,7 @@ def main() -> int:
     if env["CFR_SPIKE_MODE"] == "submit":
         request = IngestionRequest(
             key=AdmissionKey(source_system="icare", source_case_id=env["CFR_SPIKE_CASE"], ingestion_revision=0),
-            raw_transcript_ref=None,
+            transcript_ref=None,
             received_at=datetime(2026, 10, 29, tzinfo=timezone.utc),
         )
         submit(request, release_manifest_ref="spike@0")
