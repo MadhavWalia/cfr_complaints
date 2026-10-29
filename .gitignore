@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local runtime output
+logs/
+.dbos/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Design and reference material kept locally, not in the repo
+hld/
+lld/
+cfr-v1/
