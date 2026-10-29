@@ -10,6 +10,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "dbos>=3.3,<4",
     "boto3>=1.35",
+    "pyyaml>=6.0",
     # Pinned to the line ee-logging is compatible with (see cfr-v1/requirements.txt).
     "opentelemetry-api==1.39.1",
     "opentelemetry-sdk==1.39.1",
@@ -23,6 +24,8 @@ enterprise = [
     "ee-config>=2.0.0",
     "ee-utils[auth,redaction]>=2.0.0",
     "ee-logging>=2.0.0",
+    # C01 BigQuery source (port of cfr-v1/src/sql/fetch_client_prod.py); brings google-auth.
+    "google-cloud-bigquery>=3.25",
 ]
 
 [dependency-groups]
