@@ -10,6 +10,8 @@ telemetry: Any = None
 enabled: bool = False
 initialised: bool = False
 httpx_instrumented: bool = False
+# Dev-only OTLP providers in use (ee-logging absent, CFR_OTLP_ENDPOINT set).
+dev_exporter: bool = False
 
 # File logger registrations made before init_telemetry(). They are rewired to
 # the OTel logger provider once telemetry is initialised.
