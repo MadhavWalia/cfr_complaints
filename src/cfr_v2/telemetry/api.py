@@ -3,13 +3,20 @@ from __future__ import annotations
 import functools
 import logging
 import time
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
+from opentelemetry import context as otel_context
 from opentelemetry import metrics, trace
-from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace import Link, Status, StatusCode
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from . import _state
+from .attributes import PREFIX, SPAN_ATTRIBUTES
+
+_W3C = TraceContextTextMapPropagator()
+_dropped_logged: set[str] = set()
 
 
 def _current_span_context() -> tuple[str, str] | None:
@@ -65,18 +72,111 @@ def elf_headers(existing: Optional[dict[str, str]] = None) -> dict[str, str]:
         return dict(existing or {})
 
 
+def _allowed(attributes: dict[str, Any]) -> dict[str, Any]:
+    """Keep allowlisted, non-None attributes as ``cfr.<name>``; drop the rest (LDR-0012)."""
+    out: dict[str, Any] = {}
+    for key, value in attributes.items():
+        if key not in SPAN_ATTRIBUTES:
+            if key not in _dropped_logged:  # the key name only, never its value
+                _dropped_logged.add(key)
+                logging.getLogger("cfr_v2.telemetry").warning("span attribute %r is not allowlisted; dropped", key)
+            continue
+        if value is not None:
+            out[PREFIX + key] = value
+    return out
+
+
+def set_attributes(current_span: Any, **attributes: Any) -> None:
+    """Set allowlisted attributes on an open span (e.g. an outcome known at the end)."""
+    current_span.set_attributes(_allowed(attributes))
+
+
+def add_event(current_span: Any, name: str, **attributes: Any) -> None:
+    current_span.add_event(name, _allowed(attributes))
+
+
+def mark_error(current_span: Any, exc: BaseException) -> None:
+    """Record a failure by exception type only.
+
+    The message and traceback are left out: a message can quote its input (a
+    validation error on a transcript, say), and spans must never carry case content.
+    """
+    error_type = type(exc).__name__
+    current_span.add_event("exception", {"exception.type": f"{type(exc).__module__}.{error_type}"})
+    current_span.set_status(Status(StatusCode.ERROR, error_type))
+
+
 @contextmanager
-def span(name: str, **attributes: Any):
+def span(
+    name: str,
+    *,
+    context: Any = None,
+    links: Iterable[Link] = (),
+    new_trace: bool = False,
+    **attributes: Any,
+) -> Iterator[Any]:
+    """Open a span with allowlisted ``attributes``.
+
+    ``context`` sets an explicit parent (e.g. restored from a job row);
+    ``new_trace`` starts a fresh trace, typically with ``links`` back to the caller.
+    """
     tracer = get_tracer("cfr.pipeline")
-    with tracer.start_as_current_span(name) as current_span:
-        for key, value in attributes.items():
-            current_span.set_attribute(key, value)
+    parent = otel_context.Context() if new_trace else context
+    with tracer.start_as_current_span(
+        name,
+        context=parent,
+        links=list(links),
+        attributes=_allowed(attributes),
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as current_span:
         try:
             yield current_span
         except Exception as exc:
-            current_span.record_exception(exc)
-            current_span.set_status(Status(StatusCode.ERROR, str(exc)[:500]))
+            mark_error(current_span, exc)
             raise
+
+
+# --- trace context across processes ---------------------------------------------
+
+
+def current_traceparent() -> str | None:
+    """The active span as a W3C ``traceparent`` (stored on a job row), or None."""
+    carrier: dict[str, str] = {}
+    _W3C.inject(carrier)
+    return carrier.get("traceparent")
+
+
+def context_from_traceparent(traceparent: str | None) -> Any:
+    """A parent context restored from ``traceparent``; None if absent or invalid."""
+    if not traceparent:
+        return None
+    restored = _W3C.extract({"traceparent": traceparent})
+    return restored if trace.get_current_span(restored).get_span_context().is_valid else None
+
+
+def current_trace_id() -> str | None:
+    found = _current_span_context()
+    return None if found is None else found[0]
+
+
+def link_to_current() -> list[Link]:
+    """A link to the active span, if any (a case-run trace back to its batch)."""
+    ctx = trace.get_current_span().get_span_context()
+    return [Link(ctx)] if ctx.is_valid else []
+
+
+def attach(ctx: Any) -> Any:
+    """Make ``ctx`` current in this thread (worker pools don't inherit it); returns a token."""
+    return otel_context.attach(ctx)
+
+
+def detach(token: Any) -> None:
+    otel_context.detach(token)
+
+
+def current_context() -> Any:
+    return otel_context.get_current()
 
 
 def aobserve(func: Callable[..., Any]) -> Callable[..., Any]:

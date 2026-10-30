@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from cfr_v2.telemetry import get_logger
+from cfr_v2.telemetry import get_logger, span
 
 from .source import case_query_sql
 
@@ -81,5 +81,7 @@ class BigQueryCaseSource:
         logger.info("bigquery_fetch start_date=%s end_date=%s", start_date, end_date)
         # Row iteration uses the REST API, like V1's create_bqstorage_client=False: the
         # gRPC storage API ignores the corporate trust store.
-        for row in self.client.query(self.sql, job_config=job_config).result():
+        with span("intake.fetch", window_start=start_date.isoformat(), window_end=end_date.isoformat()):
+            result = self.client.query(self.sql, job_config=job_config).result()
+        for row in result:
             yield dict(row.items())

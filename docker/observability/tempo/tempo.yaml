@@ -1,0 +1,35 @@
+# Minimal, dev-only Tempo config: OTLP in, local disk out.
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  # Cut blocks quickly so traces show up in Grafana without a long wait.
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    # Dev retention — keep traces around for an hour, then reclaim disk.
+    block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+overrides:
+  # To apply globally, configure under global overrides or per-tenant
+  max_bytes_per_trace: 50000000

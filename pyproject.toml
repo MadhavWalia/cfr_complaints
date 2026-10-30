@@ -27,6 +27,8 @@ enterprise = [
     "ee-logging>=2.0.0",
     # C01 BigQuery source (port of cfr-v1/src/sql/fetch_client_prod.py); brings google-auth.
     "google-cloud-bigquery>=3.25",
+    "google-auth>=2.56.1",
+    "db-dtypes>=1.7.0",
 ]
 
 [dependency-groups]
@@ -38,6 +40,9 @@ dev = [
     # Dev/CI test both drivers; psycopg-binary supplies libpq for psycopg 3.
     "psycopg[binary]>=3.2",
     "psycopg2-binary>=2.9",
+    # Dev-only OTLP export to the local collector when ee-logging is absent (LDR-0012, OQ-25);
+    # pinned to the OTel line ee-logging requires.
+    "opentelemetry-exporter-otlp-proto-http==1.39.1",
 ]
 
 [build-system]

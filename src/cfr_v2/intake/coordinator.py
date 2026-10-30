@@ -18,13 +18,25 @@ from cfr_v2 import runtime
 from cfr_v2.artifacts import ArtifactStore
 from cfr_v2.contracts import Lane, ReleaseManifest, canonical_hash, sha256_hex
 from cfr_v2.registry import pin_manifest
-from cfr_v2.telemetry import get_logger
+from cfr_v2.telemetry import (
+    attach,
+    current_context,
+    detach,
+    get_logger,
+    get_meter,
+    mark_error,
+    set_attributes,
+    span,
+)
 
 from .prepare import admission_key, prepare_case
 from .redaction import Masker, ProfanityFilter
 from .source import InvalidSourceRowError, source_record_bytes
 
 logger = get_logger(__name__)
+admissions = get_meter("cfr.intake").create_counter(
+    "cfr.intake.admissions", description="Intake rows by outcome (accepted, duplicate, rejected, unidentified, failed)"
+)
 
 
 class IntakeOutcome(StrEnum):
@@ -84,15 +96,43 @@ class IntakeCoordinator:
         return cls(store=store, manifest_ref=ref, **kwargs)
 
     def admit_rows(self, rows: Iterable[Mapping[str, Any]], *, lane: Lane = Lane.BATCH) -> BatchReport:
-        """Admit a batch. Each row succeeds or fails on its own; the report lists every outcome."""
-        with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="cfr-intake") as pool:
-            results = tuple(pool.map(lambda row: self.admit_case(row, lane=lane), rows))
-        report = BatchReport(self.manifest_ref, results)
+        """Admit a batch. Each row succeeds or fails on its own; the report lists every outcome.
+
+        The batch is one ``intake.batch`` trace; each admitted run starts its own
+        trace linked back to its ``intake.case`` span (LDR-0012).
+        """
+        with span("intake.batch", manifest_ref=self.manifest_ref, lane=lane.value) as batch_span:
+            parent = current_context()  # pool threads don't inherit it
+
+            def admit(row: Mapping[str, Any]) -> RowResult:
+                token = attach(parent)
+                try:
+                    return self.admit_case(row, lane=lane)
+                finally:
+                    detach(token)
+
+            with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="cfr-intake") as pool:
+                results = tuple(pool.map(admit, rows))
+            report = BatchReport(self.manifest_ref, results)
+            set_attributes(batch_span, rows=len(results))
         logger.info("intake: batch done %s", report.summary())
         return report
 
     def admit_case(self, row: Mapping[str, Any], *, lane: Lane = Lane.REALTIME) -> RowResult:
         """Admit one case (also the API ingress entry point)."""
+        with span("intake.case", lane=lane.value) as case_span:
+            result = self._admit_case(row, lane, case_span)
+            set_attributes(
+                case_span,
+                case_no=result.source_case_id,
+                case_run_id=result.case_run_id,
+                outcome=result.outcome.value,
+                has_transcript=result.has_transcript,
+            )
+        admissions.add(1, {"outcome": result.outcome.value.lower()})
+        return result
+
+    def _admit_case(self, row: Mapping[str, Any], lane: Lane, case_span: Any) -> RowResult:
         try:
             key = admission_key(row)
         except InvalidSourceRowError as exc:
@@ -103,6 +143,7 @@ class IntakeCoordinator:
             prepared = prepare_case(
                 row, store=self.store, masker=self.masker, profanity=self.profanity, lane=lane, received_at=self.clock()
             )
+            set_attributes(case_span, redaction_spans=prepared.redaction_spans)
             record, _ = runtime.submit(
                 prepared.request,
                 release_manifest_ref=self.manifest_ref,
@@ -115,6 +156,8 @@ class IntakeCoordinator:
             return RowResult(case_no, IntakeOutcome.REJECTED, reason=exc.reason)
         except Exception as exc:  # reported per row; never log row content
             logger.exception("intake: case %s failed (%s)", case_no, type(exc).__name__)
+            mark_error(case_span, exc)
+            set_attributes(case_span, error_type=type(exc).__name__)
             return RowResult(case_no, IntakeOutcome.FAILED, reason=type(exc).__name__)
         return RowResult(
             case_no,

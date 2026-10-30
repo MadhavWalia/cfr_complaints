@@ -47,6 +47,7 @@ TEXT = "text/plain; charset=utf-8"
 class PreparedCase:
     request: IngestionRequest
     artifacts: tuple[StoredArtifact, ...]  # registered in the admission transaction
+    redaction_spans: int = 0  # count only, for telemetry; the spans stay in the RESTRICTED map
 
     @property
     def has_transcript(self) -> bool:
@@ -108,4 +109,8 @@ def prepare_case(
         lane=lane,
         received_at=received_at,
     )
-    return PreparedCase(request=request, artifacts=tuple(artifacts))
+    return PreparedCase(
+        request=request,
+        artifacts=tuple(artifacts),
+        redaction_spans=0 if redaction is None else len(redaction.map.spans),
+    )

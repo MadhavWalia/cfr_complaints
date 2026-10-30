@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from cfr_v2.artifacts import ArtifactStore, StoredArtifact, register
 from cfr_v2.contracts import AdmissionKey, AdmissionRecord, AdmissionStatus, Classification, IngestionRequest, Lane
 from cfr_v2.state import CaseStateRepository, Database
-from cfr_v2.telemetry import get_logger
+from cfr_v2.telemetry import current_traceparent, get_logger, link_to_current, set_attributes, span
 
-from . import context, jobs
+from . import context, jobs, metrics
 from .runner import Runner
 from .settings import RuntimeSettings
 from .stages import FINAL_STATE, StageHandler, default_handlers
@@ -82,6 +82,8 @@ def start_runtime(
     context.install(runtime)
     runtime.runner = Runner(runtime, lanes)
     runtime.runner.start()
+    if lanes:
+        metrics.register_queue_depth()
     logger.info(
         "runtime started executor=%s lanes=%s driver=%s",
         settings.executor_id,
@@ -115,24 +117,44 @@ def submit(
     ``artifacts`` (already uploaded, e.g. by C01) are registered in the same
     transaction, so a committed admission never references unregistered content.
     Safe to repeat: a duplicate admission finds the existing job and queues nothing.
+
+    Each case run gets its own trace (LDR-0012): a ``case_run.admit`` root span,
+    linked to the caller's span (e.g. the intake batch), whose context is stored on
+    the job so every process that runs the job continues the same trace.
     """
     rt = context.current()
-    stored = rt.store.put(
-        request.model_dump_json().encode(), media_type="application/json", classification=Classification.RESTRICTED
-    )
-    with rt.db.transaction() as tx:
-        repo = CaseStateRepository(tx)
-        for artifact in (*artifacts, stored):
-            register(repo, artifact)
-        record = repo.admit(
-            request,
-            request_ref=stored.metadata.ref,
-            release_manifest_ref=release_manifest_ref,
-            admitted_detail=admitted_detail,
+    with span(
+        "case_run.admit",
+        new_trace=True,
+        links=link_to_current(),
+        case_no=request.key.source_case_id,
+        source_system=request.key.source_system,
+        lane=request.lane.value,
+        manifest_ref=release_manifest_ref,
+    ) as admit_span:
+        stored = rt.store.put(
+            request.model_dump_json().encode(), media_type="application/json", classification=Classification.RESTRICTED
         )
-        if record.status is AdmissionStatus.REJECTED or record.case_run_id is None:
-            return record, None
-        jobs.enqueue(tx, record.case_run_id, request.lane, max_attempts=rt.settings.max_job_attempts)
+        with rt.db.transaction() as tx:
+            repo = CaseStateRepository(tx)
+            for artifact in (*artifacts, stored):
+                register(repo, artifact)
+            record = repo.admit(
+                request,
+                request_ref=stored.metadata.ref,
+                release_manifest_ref=release_manifest_ref,
+                admitted_detail=admitted_detail,
+            )
+            set_attributes(admit_span, case_run_id=record.case_run_id, admission_status=record.status.value)
+            if record.status is AdmissionStatus.REJECTED or record.case_run_id is None:
+                return record, None
+            jobs.enqueue(
+                tx,
+                record.case_run_id,
+                request.lane,
+                max_attempts=rt.settings.max_job_attempts,
+                trace_context=current_traceparent(),
+            )
     if rt.runner is not None:
         rt.runner.wake(request.lane)
     return record, RunHandle(record.case_run_id, rt.db)

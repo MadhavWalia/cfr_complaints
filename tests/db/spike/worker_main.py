@@ -4,6 +4,7 @@ Usage (env-driven, see test_crash_resume.py and test_throughput.py):
     CFR_SPIKE_MODE=submit|serve  [CFR_SPIKE_CASE=<id>]
     [CFR_SPIKE_BLOCK_TASK=<task> CFR_SPIKE_MARKER=<path>]
     [CFR_SPIKE_EXECUTOR_ID=<id>] [CFR_SPIKE_BATCH_CONCURRENCY=<n>] [CFR_SPIKE_READY_MARKER=<path>]
+    [CFR_SPIKE_SPAN_FILE=<path>]   # finished spans as JSON lines, for cross-process trace checks
 
 ``submit`` admits one case and runs it; ``serve`` only runs the lane workers,
 which also pick up jobs whose leases expired (e.g. a killed worker's). If a block task is
@@ -25,8 +26,31 @@ from cfr_v2.runtime import RuntimeSettings, StageInput, StageOutput, default_han
 from cfr_v2.runtime.stages import placeholder_handler
 
 
+def _export_spans_to(path: str) -> None:
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+
+    def line(s) -> str:
+        return json.dumps(
+            {
+                "name": s.name,
+                "trace_id": f"{s.context.trace_id:032x}",
+                "span_id": f"{s.context.span_id:016x}",
+                "parent_id": f"{s.parent.span_id:016x}" if s.parent else None,
+                "attributes": dict(s.attributes),
+            }
+        ) + "\n"
+
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter(out=open(path, "a"), formatter=line)))
+    trace.set_tracer_provider(provider)
+
+
 def main() -> int:
     env = os.environ
+    if env.get("CFR_SPIKE_SPAN_FILE"):
+        _export_spans_to(env["CFR_SPIKE_SPAN_FILE"])
     settings = RuntimeSettings(
         state_database_url=env["CFR_STATE_DATABASE_URL"],
         queue_polling_interval_sec=0.1,

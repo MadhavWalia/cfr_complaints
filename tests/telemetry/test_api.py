@@ -8,13 +8,19 @@ from opentelemetry.trace import StatusCode
 
 from cfr_v2.telemetry import (
     _state,
+    add_event,
+    context_from_traceparent,
+    current_trace_id,
+    current_traceparent,
     elf_headers,
     get_logger,
     get_meter,
     get_tracer,
     instruments,
     is_enabled,
+    link_to_current,
     record_llm_call,
+    set_attributes,
     span,
     telemetry,
 )
@@ -82,23 +88,75 @@ def test_instruments_returns_from_telemetry():
 # --- span() ------------------------------------------------------------------
 
 
-def test_span_records_attributes(spans):
-    with span("op", num=1, flag=True):
+def test_span_records_allowlisted_attributes_with_prefix(spans):
+    with span("op", rows=1, has_transcript=True):
         pass
     (recorded,) = spans.get_finished_spans()
     assert recorded.name == "op"
-    assert recorded.attributes["num"] == 1
-    assert recorded.attributes["flag"] is True
+    assert recorded.attributes["cfr.rows"] == 1
+    assert recorded.attributes["cfr.has_transcript"] is True
     assert recorded.status.status_code is StatusCode.UNSET
 
 
-def test_span_sets_error_status_and_reraises(spans):
+def test_span_drops_attributes_outside_the_allowlist(spans, caplog):
+    with span("op", transcript="customer said something private", stage="c02.x", outcome=None):
+        pass
+    (recorded,) = spans.get_finished_spans()
+    assert dict(recorded.attributes) == {"cfr.stage": "c02.x"}  # None values skipped too
+    assert "customer said" not in caplog.text  # the warning names the key, never the value
+
+
+def test_span_sets_error_status_and_reraises_without_the_message(spans):
     with pytest.raises(ValueError, match="boom"):
-        with span("op", k="v"):
-            raise ValueError("boom")
+        with span("op", stage="s"):
+            raise ValueError("boom: transcript text")
     (recorded,) = spans.get_finished_spans()
     assert recorded.status.status_code is StatusCode.ERROR
-    assert any(event.name == "exception" for event in recorded.events)
+    assert recorded.status.description == "ValueError"
+    (event,) = [e for e in recorded.events if e.name == "exception"]
+    assert dict(event.attributes) == {"exception.type": "builtins.ValueError"}
+
+
+def test_set_attributes_and_add_event_apply_the_allowlist(spans):
+    with span("op") as s:
+        set_attributes(s, outcome="ok", secret="x")
+        add_event(s, "retry", attempt=2, message="x")
+    (recorded,) = spans.get_finished_spans()
+    assert dict(recorded.attributes) == {"cfr.outcome": "ok"}
+    assert dict(recorded.events[0].attributes) == {"cfr.attempt": 2}
+
+
+def test_traceparent_round_trip_parents_a_span_in_another_context(spans):
+    with span("root", new_trace=True):
+        traceparent = current_traceparent()
+        trace_id = current_trace_id()
+    assert traceparent is not None and trace_id in traceparent
+
+    with span("child", context=context_from_traceparent(traceparent)):
+        assert current_trace_id() == trace_id
+    root, child = spans.get_finished_spans()
+    assert child.parent.span_id == root.context.span_id
+
+
+def test_context_from_traceparent_ignores_missing_or_invalid():
+    assert context_from_traceparent(None) is None
+    assert context_from_traceparent("not-a-traceparent") is None
+
+
+def test_new_trace_links_back_to_the_caller(spans):
+    with span("batch"):
+        links = link_to_current()
+        with span("case", new_trace=True, links=links):
+            pass
+    case, batch = spans.get_finished_spans()
+    assert case.context.trace_id != batch.context.trace_id
+    assert case.parent is None
+    assert case.links[0].context.span_id == batch.context.span_id
+
+
+def test_no_link_or_traceparent_without_an_active_span():
+    assert link_to_current() == []
+    assert current_traceparent() is None
 
 
 # --- elf_headers -------------------------------------------------------------

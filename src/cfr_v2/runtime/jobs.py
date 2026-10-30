@@ -20,15 +20,21 @@ class ClaimedJob:
     lane: Lane
     attempt: int
     max_attempts: int
+    trace_context: str | None = None  # W3C traceparent of the run's root span (LDR-0012)
+    reclaimed: bool = False  # taken over from a worker whose lease expired
+    queue_wait_sec: float = 0.0  # due (run_after, or lease expiry if reclaimed) to claim
 
 
-def enqueue(tx: Tx, case_run_id: str, lane: Lane, *, max_attempts: int) -> bool:
+def enqueue(
+    tx: Tx, case_run_id: str, lane: Lane, *, max_attempts: int, trace_context: str | None = None
+) -> bool:
     """Create the job for a run; a second call for the same run is a no-op."""
     return (
         tx.scalar(
-            "INSERT INTO workflow_job (case_run_id, lane, max_attempts) VALUES (%(run)s, %(lane)s, %(max)s)"
+            "INSERT INTO workflow_job (case_run_id, lane, max_attempts, trace_context)"
+            " VALUES (%(run)s, %(lane)s, %(max)s, %(trace)s)"
             " ON CONFLICT (case_run_id) DO NOTHING RETURNING case_run_id",
-            {"run": case_run_id, "lane": lane.value, "max": max_attempts},
+            {"run": case_run_id, "lane": lane.value, "max": max_attempts, "trace": trace_context},
         )
         is not None
     )
@@ -37,17 +43,20 @@ def enqueue(tx: Tx, case_run_id: str, lane: Lane, *, max_attempts: int) -> bool:
 def claim(tx: Tx, lane: Lane, *, owner: str, limit: int, lease_sec: float) -> list[ClaimedJob]:
     rows = tx.all(
         "WITH picked AS ("
-        "  SELECT case_run_id FROM workflow_job"
+        "  SELECT case_run_id, status = 'RUNNING' AS reclaimed,"
+        "   CASE WHEN status = 'RUNNING' THEN lease_expires_at ELSE run_after END AS due_at"
+        "  FROM workflow_job"
         "  WHERE lane = %(lane)s AND ("
         "    (status = 'QUEUED' AND run_after <= now()) OR (status = 'RUNNING' AND lease_expires_at < now()))"
         "  ORDER BY run_after, case_run_id LIMIT %(limit)s FOR UPDATE SKIP LOCKED)"
         " UPDATE workflow_job j SET status = 'RUNNING', attempts = j.attempts + 1, lease_owner = %(owner)s,"
         "  lease_expires_at = now() + make_interval(secs => %(lease)s), updated_at = now()"
         " FROM picked WHERE j.case_run_id = picked.case_run_id"
-        " RETURNING j.case_run_id, j.attempts, j.max_attempts",
+        " RETURNING j.case_run_id, j.attempts, j.max_attempts, j.trace_context, picked.reclaimed,"
+        "  GREATEST(EXTRACT(EPOCH FROM now() - picked.due_at), 0)::float8",
         {"lane": lane.value, "limit": limit, "owner": owner, "lease": lease_sec},
     )
-    return [ClaimedJob(r[0], lane, r[1], r[2]) for r in rows]
+    return [ClaimedJob(r[0], lane, r[1], r[2], r[3], r[4], r[5]) for r in rows]
 
 
 def renew(tx: Tx, case_run_ids: list[str], *, owner: str, lease_sec: float) -> int:
@@ -99,6 +108,16 @@ def release(tx: Tx, case_run_ids: list[str], *, owner: str) -> int:
 def job_status(tx: Tx, case_run_id: str) -> tuple[str, str | None] | None:
     row = tx.one("SELECT status, last_error FROM workflow_job WHERE case_run_id = %(run)s", {"run": case_run_id})
     return None if row is None else (row[0], row[1])
+
+
+def queue_depth(tx: Tx) -> list[tuple[str, str, int]]:
+    """``(lane, status, count)`` for jobs not yet finished (the queue-depth gauge)."""
+    return [
+        (r[0], r[1], r[2])
+        for r in tx.all(
+            "SELECT lane, status, count(*) FROM workflow_job WHERE status IN ('QUEUED', 'RUNNING') GROUP BY lane, status"
+        )
+    ]
 
 
 def checkpoints(tx: Tx, case_run_id: str) -> dict[str, Any]:
