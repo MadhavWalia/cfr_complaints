@@ -33,6 +33,7 @@ class StageInput:
     stage: Stage
     request_ref: str
     upstream_refs: tuple[str, ...]
+    trace_id: str | None = None  # for TaskEnvelope.trace_id and gateway calls (LDR-0012)
 
 
 @dataclass(frozen=True)

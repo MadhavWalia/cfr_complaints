@@ -10,6 +10,9 @@ Durability comes from what is already committed, not from replaying history:
   completion commit in one transaction.
 
 Stage handlers stay plain functions with no knowledge of the runner.
+
+Each attempt is a ``case_run.attempt`` span parented on the trace context stored
+with the job at admission, so retries and reclaims share one trace (LDR-0012).
 """
 from __future__ import annotations
 
@@ -19,9 +22,17 @@ from typing import Any
 from cfr_v2.artifacts import StoredArtifact, register
 from cfr_v2.contracts import ArtifactMetadata, Classification, TaskResult, TaskStatus, canonical_hash
 from cfr_v2.state import CaseStateRepository
-from cfr_v2.telemetry import get_logger
+from cfr_v2.telemetry import (
+    add_event,
+    context_from_traceparent,
+    current_trace_id,
+    get_logger,
+    mark_error,
+    set_attributes,
+    span,
+)
 
-from . import jobs
+from . import jobs, metrics
 from .context import Runtime
 from .stages import FINAL_STATE, STAGES, Stage, StageInput
 
@@ -41,9 +52,35 @@ def stage_input_hash(request_ref: str, logical_task_id: str, upstream: tuple[str
 
 def run_job(rt: Runtime, job: jobs.ClaimedJob) -> str:
     """Execute a claimed job and settle it: SUCCEEDED, FAILED, or requeued (RETRY)."""
+    lane = job.lane.value
+    metrics.claims.add(1, {"lane": lane, "outcome": "reclaimed" if job.reclaimed else "claimed"})
+    metrics.claim_wait.record(job.queue_wait_sec, {"lane": lane})
+    with span(
+        "case_run.attempt",
+        context=context_from_traceparent(job.trace_context),
+        workflow=WORKFLOW_NAME,
+        case_run_id=job.case_run_id,
+        lane=lane,
+        attempt=job.attempt,
+        max_attempts=job.max_attempts,
+        executor=rt.settings.executor_id,
+        reclaimed=job.reclaimed,
+        queue_wait_sec=round(job.queue_wait_sec, 3),
+    ) as attempt_span:
+        outcome = _settle(rt, job, attempt_span)
+        set_attributes(attempt_span, outcome=outcome)
+    if outcome == "RETRY":
+        metrics.job_retries.add(1, {"lane": lane})
+    else:
+        metrics.job_finished.add(1, {"lane": lane, "outcome": outcome.lower()})
+    return outcome
+
+
+def _settle(rt: Runtime, job: jobs.ClaimedJob, attempt_span: object) -> str:
     run_id = job.case_run_id
     if job.attempt > job.max_attempts:
         _fail(rt, run_id, "MAX_ATTEMPTS_EXCEEDED")
+        set_attributes(attempt_span, error_type="MAX_ATTEMPTS_EXCEEDED")
         return "FAILED"
     try:
         _execute(rt, run_id)
@@ -51,10 +88,14 @@ def run_job(rt: Runtime, job: jobs.ClaimedJob) -> str:
     except StageFailedError as exc:
         cause = type(exc.__cause__).__name__ if exc.__cause__ else "StageFailedError"
         logger.warning("workflow: %s failed permanently in %s (%s)", run_id, exc, cause)
+        mark_error(attempt_span, exc.__cause__ or exc)
+        set_attributes(attempt_span, error_type=cause)
         _fail(rt, run_id, cause)
         return "FAILED"
     except Exception as exc:  # infrastructure (DB, S3); the whole run is retried
         error = type(exc).__name__
+        mark_error(attempt_span, exc)
+        set_attributes(attempt_span, error_type=error)
         if job.attempt >= job.max_attempts:
             logger.exception("workflow: %s failed after %d attempts", run_id, job.attempt)
             _fail(rt, run_id, error)
@@ -88,21 +129,38 @@ def _execute(rt: Runtime, run_id: str) -> None:
         done = committed.get((stage.logical_task_id, input_hash, stage.program_version, PLAN_REVISION))
         if done is not None:
             upstream.append(done.output_artifact_refs[0])
+            metrics.stage_outcomes.add(1, {"stage": stage.logical_task_id, "outcome": "skipped"})
             continue
 
-        step = f"{stage.logical_task_id}.produce"
-        stored = saved.get(step)
-        if stored is None:
-            stored = _produce(rt, run_id, stage, request_ref, tuple(upstream))
-            with rt.db.transaction() as tx:
-                stored = jobs.save_checkpoint(tx, run_id, step, stored)
+        started = time.perf_counter()
+        with span(
+            f"stage.{stage.logical_task_id}",
+            stage=stage.logical_task_id,
+            program_version=stage.program_version,
+            case_run_id=run_id,
+        ) as stage_span:
+            try:
+                step = f"{stage.logical_task_id}.produce"
+                stored = saved.get(step)
+                set_attributes(stage_span, checkpoint_reused=stored is not None)
+                if stored is None:
+                    stored = _produce(rt, run_id, stage, request_ref, tuple(upstream))
+                    with rt.db.transaction() as tx:
+                        stored = jobs.save_checkpoint(tx, run_id, step, stored)
 
-        next_state = FINAL_STATE if last else STAGES[i + 1].state
-        with rt.db.transaction() as tx:
-            _commit(CaseStateRepository(tx), run_id, stage, input_hash, stored, next_state)
-            if last:
-                jobs.finish(tx, run_id, status="SUCCEEDED")
-                finished = True
+                next_state = FINAL_STATE if last else STAGES[i + 1].state
+                with span("commit", stage=stage.logical_task_id), rt.db.transaction() as tx:
+                    outcome = _commit(CaseStateRepository(tx), run_id, stage, input_hash, stored, next_state)
+                    if last:
+                        jobs.finish(tx, run_id, status="SUCCEEDED")
+            except Exception:
+                metrics.stage_outcomes.add(1, {"stage": stage.logical_task_id, "outcome": "failed"})
+                raise
+            outcome = outcome.lower()
+            set_attributes(stage_span, outcome=outcome)
+        metrics.stage_outcomes.add(1, {"stage": stage.logical_task_id, "outcome": outcome})
+        metrics.stage_duration.record(time.perf_counter() - started, {"stage": stage.logical_task_id, "outcome": outcome})
+        finished = finished or last
         upstream.append(stored["ref"])
 
     if not finished:  # every stage was already committed (resumed after the final commit)
@@ -113,24 +171,31 @@ def _execute(rt: Runtime, run_id: str) -> None:
 
 def _produce(rt: Runtime, run_id: str, stage: Stage, request_ref: str, upstream: tuple[str, ...]) -> dict[str, Any]:
     settings = rt.settings
-    for attempt in range(1, settings.step_max_attempts + 1):
-        try:
-            output = rt.handlers[stage.logical_task_id](StageInput(run_id, stage, request_ref, upstream))
-            stored = rt.store.put(output.content, media_type=output.media_type, classification=Classification.INTERNAL)
-        except Exception as exc:  # handler or upload; retried, then the run fails
-            if attempt == settings.step_max_attempts:
-                raise StageFailedError(stage.logical_task_id) from exc
-            logger.warning("workflow: %s %s attempt %d failed (%s)", run_id, stage.logical_task_id, attempt, type(exc).__name__)
-            time.sleep(settings.step_backoff_sec * 2 ** (attempt - 1))
-            continue
-        return {
-            "ref": stored.metadata.ref,
-            "bucket": stored.bucket,
-            "key": stored.key,
-            "media_type": stored.metadata.media_type,
-            "classification": stored.metadata.classification.value,
-            "size_bytes": stored.metadata.size_bytes,
-        }
+    with span("produce", stage=stage.logical_task_id) as produce_span:
+        for attempt in range(1, settings.step_max_attempts + 1):
+            try:
+                output = rt.handlers[stage.logical_task_id](
+                    StageInput(run_id, stage, request_ref, upstream, trace_id=current_trace_id())
+                )
+                stored = rt.store.put(output.content, media_type=output.media_type, classification=Classification.INTERNAL)
+            except Exception as exc:  # handler or upload; retried, then the run fails
+                error = type(exc).__name__
+                add_event(produce_span, "retry" if attempt < settings.step_max_attempts else "gave_up", attempt=attempt, error_type=error)
+                if attempt == settings.step_max_attempts:
+                    raise StageFailedError(stage.logical_task_id) from exc
+                metrics.produce_retries.add(1, {"stage": stage.logical_task_id})
+                logger.warning("workflow: %s %s attempt %d failed (%s)", run_id, stage.logical_task_id, attempt, error)
+                time.sleep(settings.step_backoff_sec * 2 ** (attempt - 1))
+                continue
+            set_attributes(produce_span, attempt=attempt)
+            return {
+                "ref": stored.metadata.ref,
+                "bucket": stored.bucket,
+                "key": stored.key,
+                "media_type": stored.metadata.media_type,
+                "classification": stored.metadata.classification.value,
+                "size_bytes": stored.metadata.size_bytes,
+            }
     raise AssertionError("unreachable")
 
 

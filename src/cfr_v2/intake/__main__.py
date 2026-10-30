@@ -3,8 +3,9 @@
     python -m cfr_v2.intake --start-date 2026-09-01 --end-date 2026-09-07
     python -m cfr_v2.intake --synthetic 20     # offline: synthetic rows, regex masker
 
-Runs as a submit-only process: it admits and enqueues; worker processes run the
-workflows. Configuration comes from the environment (see ``.env.example``).
+Runs as a submit-only process: it admits and enqueues; worker processes
+(``python -m cfr_v2.runtime``) run the workflows. Configuration comes from the
+environment (see ``.env.example``).
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from datetime import date
 from cfr_v2.artifacts import S3ArtifactStore, S3Settings
 from cfr_v2.registry import ReleaseRegistry
 from cfr_v2.runtime import RuntimeSettings, start_runtime, stop_runtime
+from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
 
 from .bigquery import BigQueryCaseSource, BigQuerySettings
 from .coordinator import IntakeCoordinator
@@ -32,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.synthetic is None and (args.start_date is None or args.end_date is None):
         parser.error("--start-date and --end-date are required unless --synthetic is given")
 
+    init_telemetry(service_name="cfr-v2-intake")  # ee_config resolves its file, as for redaction
     settings = IntakeSettings.from_env()
     masker: Masker
     source: CaseSource
@@ -57,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         report = coordinator.admit_rows(source.fetch(start_date=args.start_date or today, end_date=args.end_date or today))
     finally:
         stop_runtime()
+        shutdown_telemetry()
     print(json.dumps({"manifest_ref": report.manifest_ref, **report.summary()}, indent=2))
     return 0
 
