@@ -1,5 +1,5 @@
 # Local, dev-only services for CFR V2. Not for production use.
-#   docker compose up -d                            start Postgres and RustFS
+#   docker compose up -d                            start Postgres and RustFS (and create the dev buckets)
 #   docker compose --profile observability up -d    also start the telemetry stack (LDR-0012)
 #   docker compose down -v                          stop and delete their data
 services:
@@ -46,6 +46,30 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # One-shot: create the artifact buckets the app expects (S3Settings.from_env names;
+  # compose reads CFR_ENV / CFR_*_BUCKET from .env). Production buckets come from platform (OQ-18).
+  rustfs-buckets:
+    image: amazon/aws-cli:2.22.0
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: cfr-dev
+      AWS_SECRET_ACCESS_KEY: cfr-dev-secret
+      AWS_DEFAULT_REGION: us-east-1
+      BUCKETS: >-
+        ${CFR_ARTIFACT_BUCKET:-cfr-v2-${CFR_ENV:-dev}-artifacts}
+        ${CFR_RESTRICTED_ARTIFACT_BUCKET:-cfr-v2-${CFR_ENV:-dev}-artifacts-restricted}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for b in $$BUCKETS; do
+          aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket "$$b" 2>/dev/null \
+            || aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket "$$b" >/dev/null \
+            || exit 1
+          echo "bucket ready: $$b"
+        done
 
   # -- Telemetry (profile "observability"), ported from V1 ------------------------
   # app -> OTel Collector -> Tempo (traces) + Loki (logs) + Prometheus (metrics) -> Grafana.
