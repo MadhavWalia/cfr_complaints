@@ -1,6 +1,7 @@
 # Local, dev-only services for CFR V2. Not for production use.
-#   docker compose up -d          start Postgres and RustFS
-#   docker compose down -v        stop and delete their data
+#   docker compose up -d                            start Postgres and RustFS
+#   docker compose --profile observability up -d    also start the telemetry stack (LDR-0012)
+#   docker compose down -v                          stop and delete their data
 services:
   postgres:
     image: postgres:16.6
@@ -46,6 +47,76 @@ services:
       timeout: 3s
       retries: 10
 
+  # -- Telemetry (profile "observability"), ported from V1 ------------------------
+  # app -> OTel Collector -> Tempo (traces) + Loki (logs) + Prometheus (metrics) -> Grafana.
+  # Apps export here when ee-logging is absent and CFR_OTLP_ENDPOINT=http://localhost:4318.
+  tempo:
+    image: grafana/tempo:2.6.1
+    profiles: ["observability"]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      - "3200:3200"   # Tempo HTTP API (Grafana queries this)
+    volumes:
+      - ./docker/observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  loki:
+    image: grafana/loki:3.2.1
+    profiles: ["observability"]
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    ports:
+      - "3100:3100"   # Loki HTTP API (Grafana queries this)
+    volumes:
+      - ./docker/observability/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
+    ports:
+      - "9090:9090"   # Prometheus HTTP API (Grafana queries this)
+    volumes:
+      - ./docker/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    profiles: ["observability"]
+    command: ["--config=/etc/otelcol/collector.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver (CFR_OTLP_ENDPOINT)
+    volumes:
+      - ./docker/observability/otel/collector.yaml:/etc/otelcol/collector.yaml:ro
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: ["observability"]
+    ports:
+      - "3000:3000"
+    environment:
+      # Dev-only: no login, everyone is an admin.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+
 volumes:
   pg-data:
   rustfs-data:
+  tempo-data:
+  loki-data:
+  prometheus-data:

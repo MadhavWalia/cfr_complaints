@@ -1,0 +1,4 @@
+# Dev-only Prometheus: no scrape jobs; metrics arrive via remote-write from otelcol.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s

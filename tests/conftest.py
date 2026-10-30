@@ -6,6 +6,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from opentelemetry import metrics, trace
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 # Stand-ins for private enterprise packages (ee-logging, ...) so tests that patch
 # them can run without the internal Artifactory. Real packages take precedence.
@@ -62,3 +68,55 @@ def tmp_logs(tmp_path):
     d = tmp_path / "logs"
     d.mkdir()
     return d
+
+
+# -- telemetry capture -----------------------------------------------------------
+# OTel allows its global providers to be set once per process, so one in-memory
+# provider of each kind serves the whole session; tests clear them for isolation.
+
+
+@pytest.fixture(scope="session")
+def _span_exporter():
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    return exporter
+
+
+@pytest.fixture
+def spans(_span_exporter):
+    """Finished spans captured during the test; cleared for isolation."""
+    _span_exporter.clear()
+    yield _span_exporter
+    _span_exporter.clear()
+
+
+@pytest.fixture(scope="session")
+def _metric_reader():
+    reader = InMemoryMetricReader()
+    metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+    return reader
+
+
+@pytest.fixture
+def metric_points(_metric_reader):
+    """Call to collect ``{metric name: [(attributes, value), ...]}`` recorded so far.
+
+    Cumulative over the session, so compare deltas or filter on test-specific labels.
+    """
+
+    def collect() -> dict[str, list[tuple[dict, object]]]:
+        out: dict[str, list[tuple[dict, object]]] = {}
+        data = _metric_reader.get_metrics_data()
+        for rm in data.resource_metrics if data else ():
+            for sm in rm.scope_metrics:
+                for metric in sm.metrics:
+                    for point in metric.data.data_points:
+                        value = getattr(point, "value", None)
+                        if value is None:
+                            value = getattr(point, "count", None)
+                        out.setdefault(metric.name, []).append((dict(point.attributes), value))
+        return out
+
+    return collect
