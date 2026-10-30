@@ -11,6 +11,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+# ee-config file: environment-specific hosts and IDs; template is config/config_gpt.example.yml
+config/config_gpt.yml
 
 # Local runtime output
 logs/

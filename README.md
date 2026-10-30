@@ -22,6 +22,7 @@ src/cfr_v2/
   registry/     P4  release manifests: load, pin, resolve
   intake/       C01 BigQuery case source, normalization, redaction, admission
 registry/       release manifests (registry/releases/<id>.yaml)
+config/         ee-config template (config_gpt.example.yml); your config_gpt.yml is gitignored
 tests/
   unit/         offline, no network
   telemetry/    ported V1 telemetry suite
@@ -38,12 +39,21 @@ WSL integration enabled for this distro (Settings → Resources → WSL Integrat
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e . --group dev
 cp .env.example .env
+cp config/config_gpt.example.yml config/config_gpt.yml   # fill in <...>; enterprise only
 
 docker compose up -d          # Postgres 16 (5432) + RustFS S3-compatible store (9000, console 9001)
 ```
 
 Enterprise-only packages (`safechain`, `ee-*`) install with `-e '.[enterprise]'`
 from the internal Artifactory; everything runs without them.
+
+`CONFIG_PATH` (default `config/config_gpt.yml`) names the ee-config file. The
+code never passes this path itself: `ee_config.load_config()` reads the variable directly. The
+`redaction:`, `idaas:`/`models:` and `elf:` sections are read by ee_utils
+redaction, the safechain gateway and ee-logging. The file holds hosts and IDs
+per environment, and only the *names* of secret env vars. A relative path
+resolves against the working directory, so deployments should set an absolute one.
+In dev the ee-* packages are absent and the file is not read.
 
 ## Database migrations
 
