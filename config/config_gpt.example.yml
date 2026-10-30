@@ -1,0 +1,50 @@
+# ee-config file read by ee_config.load_config(), which finds it through the
+# CONFIG_PATH environment variable. Copy to config/config_gpt.yml (gitignored)
+# and fill in the <...> values for your environment.
+#
+# Readers: ee_utils redaction (`redaction:`), the safechain model gateway
+# (`idaas:`, `models:`) and ee-logging telemetry (`elf:`).
+# Secrets are never written here: `id_key` / `secret_key` name the environment
+# variables that hold them.
+
+idaas:
+    url: https://<idaas-host>/security/digital/v1/application/token
+    scope: [
+        "<model-scope>::post"
+    ]
+    originator_source: <originator-source>
+    id_key: CIBIS_CONSUMER_INTEGRATION_ID
+    secret_key: CIBIS_CONSUMER_SECRET
+    expiry_buffer: 10
+models:
+    # chat model used by C02 (Phase C)
+    "3":
+        idaas:
+            scope: ["<model-scope>::post"]
+        provider: azure
+        type: chat
+        deployment_name: <deployment-name>
+        model_name: <model-name>
+        api_version: "<api-version>"
+        api_base: https://<gateway-host>/<model-path>
+        redaction:
+            mode: disabled
+
+redaction:
+    mode: masking
+    masking:
+        replacement_text: "***"
+
+# ELF observability (ee-logging). Every process exports under this service_name;
+# the per-process names (cfr-v2-intake, cfr-v2-worker) apply only to the dev
+# OTLP fallback (CFR_OTLP_ENDPOINT). `debug: true` prints spans, logs and
+# metrics to the console instead of exporting.
+elf:
+    service_name: cfr-v2
+    car_id: "<car-id>"
+    namespace: cfr-v2
+    deploy_env: <deploy-env>
+    debug: false
+    collector: http://localhost:4318/v1  # OTLP HTTP base; ee-logging appends /traces etc.
+    protocol: http
+    log_level: INFO
