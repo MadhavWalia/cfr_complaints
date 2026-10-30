@@ -41,7 +41,7 @@ uv pip install --python .venv/bin/python -e . --group dev
 cp .env.example .env
 cp config/config_gpt.example.yml config/config_gpt.yml   # fill in <...>; enterprise only
 
-docker compose up -d          # Postgres 16 (5432) + RustFS S3-compatible store (9000, console 9001)
+docker compose up -d          # Postgres 16 (5432) + RustFS S3-compatible store (9000, console 9001) + dev buckets
 ```
 
 Enterprise-only packages (`safechain`, `ee-*`) install with `-e '.[enterprise]'`
