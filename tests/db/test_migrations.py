@@ -4,7 +4,15 @@ import uuid
 
 import pytest
 
-from cfr_v2.state import Database, applied_versions, available_migrations, load_driver, run_migrations
+from cfr_v2.state import (
+    Database,
+    SchemaOutOfDateError,
+    applied_versions,
+    available_migrations,
+    load_driver,
+    require_current_schema,
+    run_migrations,
+)
 
 from .conftest import _url_for, admin_execute
 
@@ -78,7 +86,37 @@ def test_database_migrated_by_alembic_is_adopted(admin_available):
         admin_execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
 
+def test_runtime_refuses_to_start_on_an_old_schema(admin_available, runtime_settings, store):
+    """A process with newer code than its database fails at startup, not on every case."""
+    from dataclasses import replace
+
+    from cfr_v2.runtime import context, start_runtime
+
+    name = f"cfr_test_mig_{uuid.uuid4().hex[:8]}"
+    admin_execute(f'CREATE DATABASE "{name}"')
+    database = Database(_url_for(name))
+    try:
+        with database.transaction() as tx:  # applied up to 0003, as on a host that missed 0004
+            tx.execute("CREATE TABLE schema_migration (version TEXT PRIMARY KEY, name TEXT NOT NULL)")
+            for m in available_migrations()[:3]:
+                tx.execute(m.sql)
+                tx.execute("INSERT INTO schema_migration VALUES (%(v)s, %(n)s)", {"v": m.version, "n": m.name})
+        with pytest.raises(
+            SchemaOutOfDateError, match=r"pending migrations: 0004; run `python -m cfr_v2.state.migrate`"
+        ):
+            start_runtime(replace(runtime_settings, state_database_url=_url_for(name)), store, listen_lanes=())
+        with pytest.raises(RuntimeError):
+            context.current()  # nothing installed
+        run_migrations(database)
+        require_current_schema(database)
+    finally:
+        database.close()
+        admin_execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
 def test_suite_runs_on_the_selected_driver(db):
     import os
 
-    assert db.driver.name == {"auto": "psycopg"}.get(os.environ.get("CFR_DB_DRIVER", "auto"), os.environ.get("CFR_DB_DRIVER"))
+    assert db.driver.name == {"auto": "psycopg"}.get(
+        os.environ.get("CFR_DB_DRIVER", "auto"), os.environ.get("CFR_DB_DRIVER")
+    )

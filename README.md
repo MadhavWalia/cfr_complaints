@@ -66,8 +66,9 @@ docker compose up -d          # Postgres 16 (5432) + RustFS S3-compatible store 
 Enterprise-only packages (`safechain`, `ee-*`) install with `-e '.[enterprise]'`
 from the internal Artifactory; everything runs without them.
 
-Behind the corporate TLS-inspecting proxy, set `CFR_TRUSTSTORE=1` (in `.env`) so
-BigQuery, S3 and the gateway verify against the OS trust store. Don't call
+Behind the corporate TLS-inspecting proxy, export `CFR_TRUSTSTORE=1` so BigQuery,
+S3 and the gateway verify against the OS trust store. Nothing loads `.env` by itself:
+put it there and `set -a; source .env; set +a`, or prefix the command with it. Don't call
 `truststore.inject_into_ssl()` in code: injected after boto3 is imported, it
 makes boto's TLS setup recurse until it hits `RecursionError`.
 
@@ -85,6 +86,9 @@ In dev the ee-* packages are absent and the file is not read.
 set -a; source .env; set +a
 .venv/bin/python -m cfr_v2.state.migrate
 ```
+
+Run this after every pull that adds a migration. Intake and workers check the schema
+at startup and refuse to run with `pending migrations: ...` until it is current.
 
 ## Running intake
 

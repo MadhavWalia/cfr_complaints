@@ -1,4 +1,5 @@
 """Runtime lifecycle and case submission (P6, LDR-0011)."""
+
 from __future__ import annotations
 
 import time
@@ -7,7 +8,7 @@ from dataclasses import dataclass
 
 from cfr_v2.artifacts import ArtifactStore, StoredArtifact, register
 from cfr_v2.contracts import AdmissionKey, AdmissionRecord, AdmissionStatus, Classification, IngestionRequest, Lane
-from cfr_v2.state import CaseStateRepository, Database
+from cfr_v2.state import CaseStateRepository, Database, require_current_schema
 from cfr_v2.telemetry import current_traceparent, get_logger, link_to_current, set_attributes, span
 
 from . import context, jobs, metrics
@@ -64,6 +65,7 @@ def start_runtime(
     ``listen_lanes`` limits which lanes this process executes; ``()`` makes a
     submit-only process (e.g. an intake service). ``None`` serves every lane.
     Jobs left by dead processes are picked up automatically once their leases expire.
+    Raises ``SchemaOutOfDateError`` if the database is missing migrations.
     """
     lanes = list(Lane) if listen_lanes is None else list(listen_lanes)
     slots = sum(
@@ -72,12 +74,19 @@ def start_runtime(
     )
     s3_pool = getattr(getattr(store, "settings", None), "max_pool_connections", None)
     if s3_pool is not None and s3_pool < slots:
-        logger.warning("S3 connection pool (%d) is smaller than workflow slots (%d); workflows will queue on S3", s3_pool, slots)
+        logger.warning(
+            "S3 connection pool (%d) is smaller than workflow slots (%d); workflows will queue on S3", s3_pool, slots
+        )
     db = Database(
         settings.state_database_url,
         max_connections=slots + settings.db_pool_headroom,
         recycle_sec=settings.db_pool_recycle_sec,
     )
+    try:
+        require_current_schema(db)  # fail at startup, not on every case
+    except Exception:
+        db.close()
+        raise
     runtime = context.Runtime(settings=settings, db=db, store=store, handlers=handlers or default_handlers())
     context.install(runtime)
     runtime.runner = Runner(runtime, lanes)
