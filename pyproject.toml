@@ -10,6 +10,8 @@ dependencies = [
     "psycopg>=3.2",
     "boto3>=1.35",
     "pyyaml>=6.0",
+    # OS trust store for TLS behind the corporate proxy; opt-in with CFR_TRUSTSTORE=1.
+    "truststore>=0.10",
     # Pinned to the line ee-logging is compatible with (see cfr-v1/requirements.txt).
     "opentelemetry-api==1.39.1",
     "opentelemetry-sdk==1.39.1",

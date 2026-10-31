@@ -47,6 +47,11 @@ docker compose up -d          # Postgres 16 (5432) + RustFS S3-compatible store 
 Enterprise-only packages (`safechain`, `ee-*`) install with `-e '.[enterprise]'`
 from the internal Artifactory; everything runs without them.
 
+Behind the corporate TLS-inspecting proxy, set `CFR_TRUSTSTORE=1` (in `.env`) so
+BigQuery, S3 and the gateway verify against the OS trust store. Don't call
+`truststore.inject_into_ssl()` in code: injected after boto3 is imported, it
+makes boto's TLS setup recurse until it hits `RecursionError`.
+
 `CONFIG_PATH` (default `config/config_gpt.yml`) names the ee-config file. The
 code never passes this path itself: `ee_config.load_config()` reads the variable directly. The
 `redaction:`, `idaas:`/`models:` and `elf:` sections are read by ee_utils
