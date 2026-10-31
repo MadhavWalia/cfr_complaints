@@ -1,8 +1,15 @@
 """P2 — case state store (C14 subset). See lld/modules/p2-case-state/README.md."""
+
 from __future__ import annotations
 
 from .db import Database, Driver, PoolTimeoutError, Tx, autocommit_connection, libpq_dsn, load_driver
-from .migrate import applied_versions, available_migrations, run_migrations
+from .migrate import (
+    SchemaOutOfDateError,
+    applied_versions,
+    available_migrations,
+    require_current_schema,
+    run_migrations,
+)
 from .repository import (
     CASE_RUN_STATES,
     ArtifactConflictError,
@@ -25,6 +32,7 @@ __all__ = [
     "Driver",
     "ManifestConflictError",
     "PoolTimeoutError",
+    "SchemaOutOfDateError",
     "TaskCommit",
     "Tx",
     "applied_versions",
@@ -34,5 +42,6 @@ __all__ = [
     "case_run_id_for",
     "libpq_dsn",
     "load_driver",
+    "require_current_schema",
     "run_migrations",
 ]

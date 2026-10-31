@@ -6,6 +6,7 @@ earlier by Alembic is adopted from its ``alembic_version`` row.
 
     python -m cfr_v2.state.migrate            # uses CFR_STATE_DATABASE_URL
 """
+
 from __future__ import annotations
 
 import os
@@ -39,6 +40,25 @@ def applied_versions(db: Database) -> list[str]:
         if tx.scalar("SELECT to_regclass('schema_migration')") is None:
             return []
         return tx.column("SELECT version FROM schema_migration ORDER BY version")
+
+
+class SchemaOutOfDateError(RuntimeError):
+    """The database is missing migrations this code needs."""
+
+    def __init__(self, pending: list[str]) -> None:
+        super().__init__(
+            f"pending migrations: {', '.join(pending)}; run `python -m cfr_v2.state.migrate` "
+            "against CFR_STATE_DATABASE_URL"
+        )
+        self.pending = pending
+
+
+def require_current_schema(db: Database) -> None:
+    """Raise :class:`SchemaOutOfDateError` unless every packaged migration is applied."""
+    applied = set(applied_versions(db))
+    pending = [m.version for m in available_migrations() if m.version not in applied]
+    if pending:
+        raise SchemaOutOfDateError(pending)
 
 
 def run_migrations(target: str | Database) -> list[str]:

@@ -3,6 +3,7 @@
 Needs Postgres and RustFS from docker-compose. ``ee_utils`` and BigQuery are
 replaced by the regex masker and in-memory rows (not installable here).
 """
+
 from __future__ import annotations
 
 import shutil
@@ -112,7 +113,9 @@ def test_models_only_ever_get_redacted_text_and_v1_fields(running, coordinator, 
     wait_for_state(running.settings.state_database_url, [result.case_run_id], FINAL_STATE, timeout=30)
 
     request_ref = _scalar(running, "SELECT request_ref FROM case_run WHERE case_run_id = %(r)s", r=result.case_run_id)
-    request = IngestionRequest.model_validate_json(store.get(request_ref, classification=Classification.RESTRICTED, authorization=READ_ALL))
+    request = IngestionRequest.model_validate_json(
+        store.get(request_ref, classification=Classification.RESTRICTED, authorization=READ_ALL)
+    )
     assert set(request.case_metadata) == {"prim_ctgy", "prim_subctgy"}
     assert set(request.evaluation_labels) == {"latest_rslv_optn"}
 
@@ -133,7 +136,10 @@ def test_models_only_ever_get_redacted_text_and_v1_fields(running, coordinator, 
         (transcript.interactions[0].redacted_text_ref, "INTERNAL"),
         (transcript.interactions[0].redaction_map_ref, "RESTRICTED"),
     ]:
-        assert _scalar(running, "SELECT classification FROM artifact WHERE sha256 = %(h)s", h=ref.removeprefix("sha256:")) == expected
+        assert (
+            _scalar(running, "SELECT classification FROM artifact WHERE sha256 = %(h)s", h=ref.removeprefix("sha256:"))
+            == expected
+        )
 
 
 def test_pinned_manifest_survives_registry_edits(running, store, tmp_path):
@@ -149,3 +155,24 @@ def test_pinned_manifest_survives_registry_edits(running, store, tmp_path):
 
     pinned = load_pinned(coordinator.manifest_ref, store=store, db=running.db, authorization=READ_ALL)
     assert pinned == original
+
+
+def test_transcript_with_nothing_to_redact_is_admitted(running, coordinator, store):
+    """Redacted text identical to the original: same bytes, stored under both classifications."""
+    row = synthetic_row(200, seed=3, msg_tx2="Customer asked about a late fee. Agent waived it.")
+    (result,) = coordinator.admit_rows([row]).results
+    assert result.outcome is IntakeOutcome.ACCEPTED, result.reason
+
+    request_ref = _scalar(running, "SELECT request_ref FROM case_run WHERE case_run_id = %(r)s", r=result.case_run_id)
+    request = IngestionRequest.model_validate_json(
+        store.get(request_ref, classification=Classification.RESTRICTED, authorization=READ_ALL)
+    )
+    transcript = CanonicalTranscript.model_validate_json(
+        store.get(request.transcript_ref, classification=Classification.INTERNAL, authorization=READ_ALL)
+    )
+    (interaction,) = transcript.interactions
+    assert interaction.original_text_ref == interaction.redacted_text_ref
+    for classification in Classification:
+        assert store.get(interaction.redacted_text_ref, classification=classification, authorization=READ_ALL)
+    sha = interaction.redacted_text_ref.removeprefix("sha256:")
+    assert _scalar(running, "SELECT count(*) FROM artifact WHERE sha256 = %(h)s", h=sha) == 2
