@@ -32,12 +32,31 @@ tests/
 
 ## Setup (WSL2 Ubuntu)
 
-Requires Python 3.12, [uv](https://docs.astral.sh/uv/), and Docker Desktop with
-WSL integration enabled for this distro (Settings → Resources → WSL Integration).
+Requires Python 3.12, either [uv](https://docs.astral.sh/uv/) or conda, and Docker
+Desktop with WSL integration enabled for this distro (Settings → Resources → WSL Integration).
+
+**With uv:**
 
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e . --group dev
+```
+
+**With conda:**
+
+```bash
+conda create -n cfr-v2 python=3.12 -y
+conda activate cfr-v2
+python -m pip install -U "pip>=25.1"   # --group needs pip 25.1+
+python -m pip install -e . --group dev
+```
+
+With conda, run the commands below with `python` / `pytest` in the activated
+environment instead of `.venv/bin/python` / `.venv/bin/pytest`.
+
+**Then, either way:**
+
+```bash
 cp .env.example .env
 cp config/config_gpt.example.yml config/config_gpt.yml   # fill in <...>; enterprise only
 
