@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 
 import pytest
 
@@ -66,4 +67,18 @@ def test_source_record_is_canonical():
 def test_unserializable_row_rejected_without_values():
     with pytest.raises(InvalidSourceRowError) as exc:
         source_record_bytes({"case_no": "1", "blob": object()})
-    assert exc.value.reason.startswith("UNSERIALIZABLE_ROW")
+    assert exc.value.reason == "UNSERIALIZABLE_ROW:blob:TypeError"  # column name, never its value
+
+
+def test_nan_rejected_naming_the_column():
+    with pytest.raises(InvalidSourceRowError) as exc:
+        source_record_bytes({"case_no": "1", "cm11": float("nan")})
+    assert exc.value.reason == "UNSERIALIZABLE_ROW:cm11:ValueError"
+
+
+def test_bigquery_datetime_kept_as_wall_clock():
+    """DATETIME columns come back naive; stored as written, no zone assumed."""
+    naive = {"case_no": "1", "orig_rslv_ts": datetime(2026, 9, 1, 10, 30)}
+    aware = {"case_no": "1", "orig_rslv_ts": datetime(2026, 9, 1, 10, 30, tzinfo=UTC)}
+    assert b'"orig_rslv_ts":"2026-09-01T10:30:00"' in source_record_bytes(naive)
+    assert b'"orig_rslv_ts":"2026-09-01T10:30:00+00:00"' in source_record_bytes(aware)

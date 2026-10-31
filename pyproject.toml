@@ -43,6 +43,7 @@ dev = [
     # Dev-only OTLP export to the local collector when ee-logging is absent (LDR-0012, OQ-25);
     # pinned to the OTel line ee-logging requires.
     "opentelemetry-exporter-otlp-proto-http==1.39.1",
+    "ruff==0.17.3",  # pinned: rule defaults change between releases
 ]
 
 [build-system]
@@ -75,3 +76,6 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
 ]
+
+[tool.ruff]
+line-length = 120
