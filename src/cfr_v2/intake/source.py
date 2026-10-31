@@ -5,10 +5,12 @@ Field use matches V1 exactly: models see ``case_no``, the redacted ``msg_tx2``,
 ``prim_ctgy`` and ``prim_subctgy``; ``latest_rslv_optn`` is the only evaluation
 label; every other column is stored (RESTRICTED) and unused.
 """
+
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Iterator, Mapping
-from datetime import date
+from datetime import date, datetime
 from importlib import resources
 from typing import Any, Protocol
 
@@ -88,7 +90,7 @@ def case_query_sql() -> str:
 
 def source_case_id(row: Mapping[str, Any]) -> str:
     value = row.get(CASE_ID_COLUMN)
-    if value is None or (isinstance(value, float) and value != value):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
         raise InvalidSourceRowError("MISSING_CASE_NO")
     text = str(value).strip()
     if not text:
@@ -100,7 +102,7 @@ def _scalar(value: Any) -> JsonValue:
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
-        return None if value != value else value
+        return None if math.isnan(value) else value
     return str(value)
 
 
@@ -112,12 +114,29 @@ def evaluation_labels(row: Mapping[str, Any]) -> dict[str, JsonValue]:
     return {name: _scalar(row.get(name)) for name in EVALUATION_LABELS}
 
 
+def _source_value(value: Any) -> Any:
+    # BigQuery DATETIME arrives as a naive datetime: a wall-clock value with no zone.
+    # Keep it as written rather than assume one (the canonical hasher rejects naive datetimes).
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.isoformat()
+    return value
+
+
 def source_record_bytes(row: Mapping[str, Any]) -> bytes:
     """Canonical JSON of the whole row, so a re-fetched identical row has the same ref."""
     try:
-        return canonical_json(dict(row))
+        return canonical_json({name: _source_value(value) for name, value in row.items()})
     except (TypeError, ValueError) as exc:
-        raise InvalidSourceRowError(f"UNSERIALIZABLE_ROW:{type(exc).__name__}") from None
+        column = next((name for name, value in row.items() if not _serializable(value)), "?")
+        raise InvalidSourceRowError(f"UNSERIALIZABLE_ROW:{column}:{type(exc).__name__}") from None
+
+
+def _serializable(value: Any) -> bool:
+    try:
+        canonical_json(_source_value(value))
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def source_interaction_ids(row: Mapping[str, Any]) -> tuple[str, ...]:
