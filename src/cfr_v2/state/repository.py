@@ -4,6 +4,7 @@ A repository wraps one open transaction (``Tx``); the caller owns commit or
 rollback. Inside the runner, a stage's result, its next state and (for the last
 stage) the job's completion commit in one transaction (LDR-0011).
 """
+
 from __future__ import annotations
 
 import json
@@ -236,7 +237,7 @@ class CaseStateRepository:
         inserted = self.tx.scalar(
             "INSERT INTO artifact (sha256, bucket, key, media_type, classification, size_bytes)"
             " VALUES (%(sha)s, %(bucket)s, %(key)s, %(media)s, %(cls)s, %(size)s)"
-            " ON CONFLICT (sha256) DO NOTHING RETURNING sha256",
+            " ON CONFLICT (sha256, classification) DO NOTHING RETURNING sha256",
             {
                 "sha": digest,
                 "bucket": bucket,
@@ -249,16 +250,20 @@ class CaseStateRepository:
         if inserted is not None:
             return
         existing = self.tx.one(
-            "SELECT classification, bucket, size_bytes FROM artifact WHERE sha256 = %(sha)s", {"sha": digest}
+            "SELECT bucket, size_bytes FROM artifact WHERE sha256 = %(sha)s AND classification = %(cls)s",
+            {"sha": digest, "cls": meta.classification.value},
         )
-        if existing != (meta.classification.value, bucket, meta.size_bytes):
-            raise ArtifactConflictError(f"artifact {meta.ref} already registered with different metadata")
+        if existing != (bucket, meta.size_bytes):
+            raise ArtifactConflictError(
+                f"artifact {meta.ref} ({meta.classification.value}) already registered in another bucket"
+            )
 
-    def artifact_location(self, ref: str) -> tuple[str, str, Classification] | None:
+    def artifact_location(self, ref: str, classification: Classification) -> tuple[str, str] | None:
         row = self.tx.one(
-            "SELECT bucket, key, classification FROM artifact WHERE sha256 = %(sha)s", {"sha": sha256_from_ref(ref)}
+            "SELECT bucket, key FROM artifact WHERE sha256 = %(sha)s AND classification = %(cls)s",
+            {"sha": sha256_from_ref(ref), "cls": classification.value},
         )
-        return None if row is None else (row[0], row[1], Classification(row[2]))
+        return None if row is None else (row[0], row[1])
 
     # -- release manifests (P4 pinning) ---------------------------------------------
 

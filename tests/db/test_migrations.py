@@ -35,7 +35,9 @@ MUTABLE = {"workflow_job", "schema_migration"}  # scheduling and bookkeeping onl
 
 
 def test_all_migrations_applied(db):
-    assert applied_versions(db) == [m.version for m in available_migrations()] == ["0001", "0002", "0003", "0004"]
+    assert (
+        applied_versions(db) == [m.version for m in available_migrations()] == ["0001", "0002", "0003", "0004", "0005"]
+    )
 
 
 def test_expected_tables_and_append_only_triggers(db):
@@ -62,7 +64,7 @@ def test_fresh_database_on_each_driver(admin_available, driver):
     admin_execute(f'CREATE DATABASE "{name}"')
     database = Database(_url_for(name), driver=load_driver(driver))
     try:
-        assert run_migrations(database) == ["0001", "0002", "0003", "0004"]
+        assert run_migrations(database) == ["0001", "0002", "0003", "0004", "0005"]
     finally:
         database.close()
         admin_execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
@@ -79,8 +81,8 @@ def test_database_migrated_by_alembic_is_adopted(admin_available):
             tx.execute(migrations["0002"].sql)
             tx.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)")
             tx.execute("INSERT INTO alembic_version VALUES ('0002')")
-        assert run_migrations(database) == ["0003", "0004"]
-        assert applied_versions(database) == ["0001", "0002", "0003", "0004"]
+        assert run_migrations(database) == ["0003", "0004", "0005"]
+        assert applied_versions(database) == ["0001", "0002", "0003", "0004", "0005"]
     finally:
         database.close()
         admin_execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
@@ -102,7 +104,7 @@ def test_runtime_refuses_to_start_on_an_old_schema(admin_available, runtime_sett
                 tx.execute(m.sql)
                 tx.execute("INSERT INTO schema_migration VALUES (%(v)s, %(n)s)", {"v": m.version, "n": m.name})
         with pytest.raises(
-            SchemaOutOfDateError, match=r"pending migrations: 0004; run `python -m cfr_v2.state.migrate`"
+            SchemaOutOfDateError, match=r"pending migrations: 0004, 0005; run `python -m cfr_v2.state.migrate`"
         ):
             start_runtime(replace(runtime_settings, state_database_url=_url_for(name)), store, listen_lanes=())
         with pytest.raises(RuntimeError):

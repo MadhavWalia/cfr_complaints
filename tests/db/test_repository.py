@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -25,7 +25,7 @@ from cfr_v2.state import (
 
 pytestmark = pytest.mark.db
 
-NOW = datetime(2026, 10, 29, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 29, tzinfo=UTC)
 REF = "sha256:" + "a" * 64
 REF_B = "sha256:" + "b" * 64
 
@@ -175,11 +175,14 @@ def test_artifact_registration_idempotent_and_conflict_checked(db):
         repo = CaseStateRepository(s)
         repo.register_artifact(meta, bucket="b", key="k")
         repo.register_artifact(meta, bucket="b", key="k")
-        assert repo.artifact_location(REF) == ("b", "k", Classification.INTERNAL)
-    other = meta.model_copy(update={"classification": Classification.RESTRICTED})
-    with pytest.raises(ArtifactConflictError):
-        with db.transaction() as s:
-            CaseStateRepository(s).register_artifact(other, bucket="b-restricted", key="k")
+        assert repo.artifact_location(REF, Classification.INTERNAL) == ("b", "k")
+        assert repo.artifact_location(REF, Classification.RESTRICTED) is None
+        # Same bytes under the other classification: a separate object, in its own bucket.
+        restricted = meta.model_copy(update={"classification": Classification.RESTRICTED})
+        repo.register_artifact(restricted, bucket="b-restricted", key="k")
+        assert repo.artifact_location(REF, Classification.RESTRICTED) == ("b-restricted", "k")
+    with pytest.raises(ArtifactConflictError), db.transaction() as s:
+        CaseStateRepository(s).register_artifact(meta, bucket="elsewhere", key="k")
 
 
 # -- Phase B: content hash and release manifests ----------------------------------
@@ -187,7 +190,7 @@ def test_artifact_registration_idempotent_and_conflict_checked(db):
 
 def test_refetch_with_new_arrival_time_is_a_clean_duplicate(db):
     _admit(db, _request())
-    later = IngestionRequest(**{**_request().model_dump(), "received_at": datetime(2026, 11, 2, tzinfo=timezone.utc)})
+    later = IngestionRequest(**{**_request().model_dump(), "received_at": datetime(2026, 11, 2, tzinfo=UTC)})
     dup = _admit(db, later)
     assert dup.status is AdmissionStatus.DUPLICATE
     assert dup.reason is None
