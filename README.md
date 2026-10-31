@@ -32,12 +32,31 @@ tests/
 
 ## Setup (WSL2 Ubuntu)
 
-Requires Python 3.12, [uv](https://docs.astral.sh/uv/), and Docker Desktop with
-WSL integration enabled for this distro (Settings → Resources → WSL Integration).
+Requires Python 3.12, either [uv](https://docs.astral.sh/uv/) or conda, and Docker
+Desktop with WSL integration enabled for this distro (Settings → Resources → WSL Integration).
+
+**With uv:**
 
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e . --group dev
+```
+
+**With conda:**
+
+```bash
+conda create -n cfr-v2 python=3.12 -y
+conda activate cfr-v2
+python -m pip install -U "pip>=25.1"   # --group needs pip 25.1+
+python -m pip install -e . --group dev
+```
+
+With conda, run the commands below with `python` / `pytest` in the activated
+environment instead of `.venv/bin/python` / `.venv/bin/pytest`.
+
+**Then, either way:**
+
+```bash
 cp .env.example .env
 cp config/config_gpt.example.yml config/config_gpt.yml   # fill in <...>; enterprise only
 
@@ -46,6 +65,11 @@ docker compose up -d          # Postgres 16 (5432) + RustFS S3-compatible store 
 
 Enterprise-only packages (`safechain`, `ee-*`) install with `-e '.[enterprise]'`
 from the internal Artifactory; everything runs without them.
+
+Behind the corporate TLS-inspecting proxy, set `CFR_TRUSTSTORE=1` (in `.env`) so
+BigQuery, S3 and the gateway verify against the OS trust store. Don't call
+`truststore.inject_into_ssl()` in code: injected after boto3 is imported, it
+makes boto's TLS setup recurse until it hits `RecursionError`.
 
 `CONFIG_PATH` (default `config/config_gpt.yml`) names the ee-config file. The
 code never passes this path itself: `ee_config.load_config()` reads the variable directly. The
