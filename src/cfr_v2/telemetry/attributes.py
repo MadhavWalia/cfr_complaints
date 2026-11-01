@@ -41,6 +41,12 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
         "redaction_spans",
         "window_start",
         "window_end",
+        # model calls (LDR-0013): names, codes and counts only, never prompt or response content
+        "program",
+        "model",
+        "http_status",
+        "input_tokens",
+        "output_tokens",
     }
 )
 

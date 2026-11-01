@@ -63,6 +63,42 @@ def test_stage_failure_records_failed_state(running):
     assert _job(running, record.case_run_id)[0] == "FAILED"
 
 
+def test_rate_limited_model_retries_the_run_after_the_cooldown(running):
+    from cfr_v2.llm import ModelRateLimitedError
+
+    calls = []
+
+    def rate_limited_once(inp: StageInput) -> StageOutput:
+        calls.append(time.monotonic())
+        if len(calls) == 1:
+            raise ModelRateLimitedError("c02.pass1: rate_limited", retry_after_sec=0.5)
+        return placeholder_handler(inp)
+
+    running.handlers = {**running.handlers, "c02.understanding": rate_limited_once}
+    record, handle = submit(make_request("ratelimit-1"), release_manifest_ref="spike@0")
+    assert handle.get_result() == FINAL_STATE
+    assert len(calls) == 2  # no step retries: the gateway client already retried
+    assert calls[1] - calls[0] >= 0.5  # waited out the hint, not just retry_backoff_sec
+    assert _job(running, record.case_run_id) == ("SUCCEEDED", 2, "ModelRateLimitedError")
+
+
+def test_blocked_model_call_fails_the_run_without_retrying(running):
+    from cfr_v2.llm import ModelBlockedError
+
+    calls = []
+
+    def blocked(inp: StageInput) -> StageOutput:
+        calls.append(inp.case_run_id)
+        raise ModelBlockedError("c02.pass1: blocked (HTTP 403)")
+
+    running.handlers = {**running.handlers, "c02.understanding": blocked}
+    record, handle = submit(make_request("blocked-1"), release_manifest_ref="spike@0")
+    with pytest.raises(WorkflowFailedError, match="ModelBlockedError"):
+        handle.get_result()
+    assert len(calls) == 1
+    assert _job(running, record.case_run_id)[:2] == ("FAILED", 1)
+
+
 def test_commit_failure_retries_the_run_and_reuses_the_produce_checkpoint(running, monkeypatch):
     from cfr_v2.runtime import workflow
 

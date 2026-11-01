@@ -21,6 +21,7 @@ from typing import Any
 
 from cfr_v2.artifacts import StoredArtifact, register
 from cfr_v2.contracts import ArtifactMetadata, Classification, TaskResult, TaskStatus, canonical_hash
+from cfr_v2.llm import ModelError
 from cfr_v2.state import CaseStateRepository
 from cfr_v2.telemetry import (
     add_event,
@@ -101,6 +102,7 @@ def _settle(rt: Runtime, job: jobs.ClaimedJob, attempt_span: object) -> str:
             _fail(rt, run_id, error)
             return "FAILED"
         delay = rt.settings.retry_backoff_sec * 2 ** (job.attempt - 1)
+        delay = max(delay, getattr(exc, "retry_after_sec", None) or 0.0)  # e.g. a gateway cooldown
         logger.warning("workflow: %s attempt %d failed (%s); retrying in %.1fs", run_id, job.attempt, error, delay)
         with rt.db.transaction() as tx:
             jobs.retry_later(tx, run_id, owner=rt.settings.executor_id, delay_sec=delay, error=error)
@@ -178,6 +180,13 @@ def _produce(rt: Runtime, run_id: str, stage: Stage, request_ref: str, upstream:
                     StageInput(run_id, stage, request_ref, upstream, trace_id=current_trace_id())
                 )
                 stored = rt.store.put(output.content, media_type=output.media_type, classification=Classification.INTERNAL)
+            except ModelError as exc:
+                # The gateway client already retried. A permanent error fails the run now; a
+                # retryable one (rate limit, timeout) retries the whole run later, after a delay.
+                add_event(produce_span, "gave_up", attempt=attempt, error_type=type(exc).__name__)
+                if exc.task_status is TaskStatus.FAILED_PERMANENT:
+                    raise StageFailedError(stage.logical_task_id) from exc
+                raise
             except Exception as exc:  # handler or upload; retried, then the run fails
                 error = type(exc).__name__
                 add_event(produce_span, "retry" if attempt < settings.step_max_attempts else "gave_up", attempt=attempt, error_type=error)

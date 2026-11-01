@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from cfr_v2.artifacts import ArtifactStore, StoredArtifact, register
 from cfr_v2.contracts import AdmissionKey, AdmissionRecord, AdmissionStatus, Classification, IngestionRequest, Lane
+from cfr_v2.llm import close_model_loop
 from cfr_v2.state import CaseStateRepository, Database, require_current_schema
 from cfr_v2.telemetry import current_traceparent, get_logger, link_to_current, set_attributes, span
 
@@ -110,6 +111,7 @@ def stop_runtime(*, workflow_completion_timeout_sec: float = 0) -> None:
     rt = context.current()
     if rt.runner is not None:
         rt.runner.stop(workflow_completion_timeout_sec)
+    close_model_loop()
     rt.db.close()
     context.install(None)
 

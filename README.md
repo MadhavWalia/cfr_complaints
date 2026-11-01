@@ -16,7 +16,7 @@ src/cfr_v2/
   contracts/    P1  typed contracts + canonical hashing
   state/        P2  SQL migrations, psycopg/psycopg2 access layer, repository
   artifacts/    P3  content-addressed artifact store (S3 bytes, Postgres metadata)
-  llm/          P5  model-client interface, budgets, deterministic fake
+  llm/          P5  model client: gateway (safechain), rate limits, retries, budgets, fake
   telemetry/    P6  OpenTelemetry / ee-logging facade (from V1), attribute allowlist, dev OTLP export
   runtime/      P6  durable runner on a Postgres job queue: lanes, leases, submit
   registry/     P4  release manifests: load, pin, resolve
@@ -106,6 +106,33 @@ Intake is submit-only: it admits and enqueues. Workflows run in worker processes
 ```
 
 Run as many workers as needed; any worker picks up jobs whose previous worker died.
+
+## Model gateway (P5)
+
+Stages call models through `cfr_v2.llm.GatewayModelClient`, which uses V1's access path
+(safechain's model for a key in the `models:` section of `CONFIG_PATH`). Each worker process
+builds the model once (safechain refreshes its IDaaS token) and runs model calls on one shared
+asyncio loop (`model_loop()`), so all cases in the process share one concurrency cap and one
+rate-limit cooldown. The model's `redaction: mode:` must be `disabled`: transcripts are already
+redacted at intake, and the client refuses a model that would mask them again.
+
+| Failure | Handling |
+|---|---|
+| 429 | every call in the process pauses (at least the `Retry-After`); doesn't use up attempts |
+| timeout, 5xx, 408/409, connection error | retried with jittered backoff |
+| 401 | model rebuilt with a fresh token, then retried |
+| 403 firewall, content filter (prompt or output), refusal | fails the case at once (`ModelBlockedError`) |
+| other 4xx, client bug | fails the case at once |
+| output not matching the schema | asked again, then fails the case |
+| retries or deadline exhausted | the run is retried later by the worker, not failed |
+
+Limits and timeouts are `CFR_LLM_*` variables; see `.env.example`.
+
+To check the gateway from an enterprise host (a few real calls, synthetic text only):
+
+```bash
+python -m cfr_v2.llm.smoke   # model build, plain text, json_schema output, strict schema, trace headers
+```
 
 ## Telemetry (LDR-0012)
 

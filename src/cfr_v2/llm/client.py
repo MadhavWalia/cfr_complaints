@@ -1,9 +1,10 @@
 """P5 model-client interface, error taxonomy and budget accounting.
 
 Components never talk to the gateway directly; they call a ``ModelClient``.
-The safechain-backed DSPy adapter lands in Phase C; Phase A ships the fake.
-See lld/modules/p5-llm-gateway/README.md.
+The gateway-backed client is in ``gateway.py``; tests use the fake.
+See lld/modules/p5-llm-gateway/README.md and LDR-0013.
 """
+
 from __future__ import annotations
 
 import threading
@@ -25,12 +26,20 @@ class ModelRequest(Contract):
     inputs: dict[str, JsonValue]
     redacted: bool
     trace_id: str | None = None
+    # JSON schema for structured output; None asks for plain text, returned as {"text": ...}.
+    output_schema: dict[str, JsonValue] | None = None
 
     @property
     def input_hash(self) -> str:
-        return canonical_hash(
-            {"program": self.program_id, "version": self.program_version, "instructions": self.instructions, "inputs": self.inputs}
-        )
+        hashed = {
+            "program": self.program_id,
+            "version": self.program_version,
+            "instructions": self.instructions,
+            "inputs": self.inputs,
+        }
+        if self.output_schema is not None:  # absent from the hash when unset, so existing fixtures keep their keys
+            hashed["output_schema"] = self.output_schema
+        return canonical_hash(hashed)
 
 
 class ModelUsage(Contract):
@@ -50,16 +59,47 @@ class ModelError(RuntimeError):
 
 
 class RetryableModelError(ModelError):
-    """429, timeout or 5xx after the client's own retries."""
+    """429, timeout or 5xx after the client's own retries; the runtime retries the run later."""
 
     task_status = TaskStatus.FAILED_RETRYABLE
     error_code = "MODEL_RETRYABLE"
 
+    def __init__(self, message: str = "", *, retry_after_sec: float | None = None) -> None:
+        super().__init__(message)
+        # Earliest sensible retry, e.g. from a 429's Retry-After; the runtime waits at least this long.
+        self.retry_after_sec = retry_after_sec
+
+
+class ModelRateLimitedError(RetryableModelError):
+    error_code = "MODEL_RATE_LIMITED"
+
+
+class ModelTimeoutError(RetryableModelError):
+    error_code = "MODEL_TIMEOUT"
+
 
 class PermanentModelError(ModelError):
-    """Firewall 403, schema-invalid output after retries, ..."""
+    """Retrying cannot help: rejected request, blocked content, invalid output, client bug."""
 
     error_code = "MODEL_PERMANENT"
+
+
+class ModelBlockedError(PermanentModelError):
+    """Firewall 403 or content filter (V1 recorded these and moved on)."""
+
+    error_code = "MODEL_BLOCKED"
+
+
+class ModelConfigError(PermanentModelError):
+    """The model can't be used as configured (e.g. safechain redaction left on)."""
+
+    error_code = "MODEL_CONFIG"
+
+
+class ModelOutputInvalidError(PermanentModelError):
+    """The model kept returning output that does not match ``output_schema``."""
+
+    error_code = "MODEL_OUTPUT_INVALID"
 
 
 class BudgetExhaustedError(ModelError):
