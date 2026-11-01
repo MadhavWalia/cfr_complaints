@@ -2,6 +2,7 @@
 
     python -m cfr_v2.intake --start-date 2026-09-01 --end-date 2026-09-07
     python -m cfr_v2.intake --synthetic 20     # offline: synthetic rows, regex masker
+    python -m cfr_v2.intake --print-sql > q.sql  # the BigQuery job's SQL, e.g. to check its cost
 
 Runs as a submit-only process: it admits and enqueues; worker processes
 (``python -m cfr_v2.runtime``) run the workflows. Configuration comes from the
@@ -22,7 +23,7 @@ from .bigquery import BigQueryCaseSource, BigQuerySettings
 from .coordinator import IntakeCoordinator
 from .redaction import EEUtilsMasker, Masker, ProfanityFilter
 from .settings import IntakeSettings
-from .source import CaseSource, RecordsCaseSource
+from .source import CaseSource, RecordsCaseSource, case_query_sql
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +31,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-date", type=date.fromisoformat)
     parser.add_argument("--end-date", type=date.fromisoformat)
     parser.add_argument("--synthetic", type=int, metavar="N", help="admit N synthetic rows instead of querying BigQuery")
+    parser.add_argument("--print-sql", action="store_true", help="print the case query (with the baseline unless CFR_INTAKE_BASELINE=0) and exit")
     args = parser.parse_args(argv)
+    if args.print_sql:
+        print(case_query_sql(with_baseline=IntakeSettings.from_env().baseline))
+        return 0
     if args.synthetic is None and (args.start_date is None or args.end_date is None):
         parser.error("--start-date and --end-date are required unless --synthetic is given")
 
@@ -41,9 +46,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.synthetic is not None:
         from .fakes import RegexMasker, synthetic_names, synthetic_rows
 
-        masker, source = RegexMasker(synthetic_names()), RecordsCaseSource(synthetic_rows(args.synthetic))
+        rows = synthetic_rows(args.synthetic, baseline=settings.baseline)
+        masker, source = RegexMasker(synthetic_names()), RecordsCaseSource(rows)
     else:
-        masker, source = EEUtilsMasker(), BigQueryCaseSource(BigQuerySettings.from_env())
+        masker, source = EEUtilsMasker(), BigQueryCaseSource(BigQuerySettings.from_env(), with_baseline=settings.baseline)
 
     store = S3ArtifactStore(S3Settings.from_env())
     manifest = ReleaseRegistry(settings.registry_dir).load(settings.release_id)

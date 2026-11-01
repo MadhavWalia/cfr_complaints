@@ -39,8 +39,8 @@ FAST = GatewaySettings(
     max_attempts=3,
     backoff_base_sec=0.001,
     backoff_max_sec=0.002,
-    attempt_timeout_sec=0.2,
-    call_deadline_sec=2.0,
+    attempt_timeout_sec=5.0,  # generous: a loaded CI host must not turn fake calls into timeouts
+    call_deadline_sec=10.0,
     rate_limit_cooldown_sec=0.01,
     rate_limit_cooldown_max_sec=0.05,
 )
@@ -257,8 +257,9 @@ async def test_transient_errors_exhaust_into_a_retryable_error():
 
 async def test_timeouts_exhaust_into_model_timeout():
     script = Script(1.0)  # every call takes longer than attempt_timeout_sec
+    settings = GatewaySettings(**{**FAST.__dict__, "attempt_timeout_sec": 0.05})
     with pytest.raises(ModelTimeoutError):
-        await _client(script).complete(_req())
+        await _client(script, settings).complete(_req())
     assert script.calls == FAST.max_attempts
 
 

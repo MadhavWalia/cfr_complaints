@@ -13,6 +13,7 @@ import pytest
 
 from cfr_v2.contracts import (
     AuthorizationContext,
+    BaselineProfile,
     CanonicalTranscript,
     Classification,
     IngestionRequest,
@@ -72,6 +73,7 @@ def test_batch_admits_valid_rows_and_reports_the_rest(running, coordinator, mani
         "UNIDENTIFIED": 1,
         "FAILED": 0,
         "NO_TRANSCRIPT": 1,
+        "NO_BASELINE": 1,  # synthetic case 3 has no C360 match
     }
     run_ids = [r.case_run_id for r in report.results if r.outcome is IntakeOutcome.ACCEPTED]
     wait_for_state(running.settings.state_database_url, run_ids, FINAL_STATE, timeout=60)
@@ -176,3 +178,34 @@ def test_transcript_with_nothing_to_redact_is_admitted(running, coordinator, sto
         assert store.get(interaction.redacted_text_ref, classification=classification, authorization=READ_ALL)
     sha = interaction.redacted_text_ref.removeprefix("sha256:")
     assert _scalar(running, "SELECT count(*) FROM artifact WHERE sha256 = %(h)s", h=sha) == 2
+
+
+def test_baseline_is_stored_registered_and_recorded_on_admission(running, coordinator, store):
+    present, absent = synthetic_row(0, seed=4), synthetic_row(3, seed=4)  # case 3: no C360 match
+    report = coordinator.admit_rows([present, absent])
+    by_case = {r.source_case_id: r for r in report.results}
+    assert by_case[present["case_no"]].baseline == "present"
+    assert by_case[absent["case_no"]].baseline == "absent"
+
+    run_id = by_case[present["case_no"]].case_run_id
+    request_ref = _scalar(running, "SELECT request_ref FROM case_run WHERE case_run_id = %(r)s", r=run_id)
+    request = IngestionRequest.model_validate_json(
+        store.get(request_ref, classification=Classification.RESTRICTED, authorization=READ_ALL)
+    )
+    profile = BaselineProfile.model_validate_json(
+        store.get(request.baseline_ref, classification=Classification.INTERNAL, authorization=READ_ALL)
+    )
+    assert profile.accounts[0].account_ref == "A1" and profile.accounts[0].is_case_account
+    for ref, expected in [(request.baseline_ref, "INTERNAL"), (request.baseline_ref_map_ref, "RESTRICTED")]:
+        assert (
+            _scalar(running, "SELECT classification FROM artifact WHERE sha256 = %(h)s", h=ref.removeprefix("sha256:"))
+            == expected
+        )
+    for row, status in [(present, "present"), (absent, "absent")]:
+        detail = _scalar(
+            running,
+            "SELECT e.detail->>'baseline' FROM case_run_event e JOIN case_run r USING (case_run_id)"
+            " WHERE r.case_run_id = %(r)s AND e.state = 'ADMITTED'",
+            r=by_case[row["case_no"]].case_run_id,
+        )
+        assert detail == status

@@ -1,6 +1,7 @@
 """C01 — intake and admission. See lld/components/c01-intake/README.md."""
 from __future__ import annotations
 
+from .baseline import BaselineStatus, ParsedBaseline, parse_baseline
 from .bigquery import BigQueryCaseSource, BigQuerySettings
 from .coordinator import BatchReport, IntakeCoordinator, IntakeOutcome, RowResult
 from .normalize import NORMALIZATION_VERSION, normalize_transcript
@@ -26,6 +27,8 @@ from .redaction import (
 )
 from .settings import IntakeSettings
 from .source import (
+    BASELINE_COLUMNS,
+    BASELINE_QUERY_VERSION,
     EVALUATION_LABELS,
     MODEL_VISIBLE_METADATA,
     SOURCE_COLUMNS,
@@ -37,6 +40,8 @@ from .source import (
 )
 
 __all__ = [
+    "BASELINE_COLUMNS",
+    "BASELINE_QUERY_VERSION",
     "EVALUATION_LABELS",
     "INGESTION_REVISION",
     "INTERACTION_ID",
@@ -48,6 +53,7 @@ __all__ = [
     "SOURCE_COLUMNS",
     "SOURCE_SYSTEM",
     "AlignmentError",
+    "BaselineStatus",
     "BatchReport",
     "BigQueryCaseSource",
     "BigQuerySettings",
@@ -58,6 +64,7 @@ __all__ = [
     "IntakeSettings",
     "InvalidSourceRowError",
     "Masker",
+    "ParsedBaseline",
     "PreparedCase",
     "ProfanityFilter",
     "RecordsCaseSource",
@@ -68,6 +75,7 @@ __all__ = [
     "align_masked",
     "case_query_sql",
     "normalize_transcript",
+    "parse_baseline",
     "prepare_case",
     "redact",
 ]

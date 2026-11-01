@@ -1,4 +1,4 @@
-"""C02 outputs: Pass 1 allegations, baseline profile, Pass 2 grounded claims."""
+"""C02 outputs: Pass 1 allegations and Pass 2 grounded claims. The baseline C02 reads is in ``baseline.py``."""
 from __future__ import annotations
 
 from enum import StrEnum
@@ -37,7 +37,7 @@ class Allegation(Contract):
     materiality_hint: str | None = None  # no business definition assumed (HD-13)
 
     @model_validator(mode="after")
-    def _ambiguity_note(self) -> "Allegation":
+    def _ambiguity_note(self) -> Allegation:
         if self.ambiguity_note and not self.ambiguous:
             raise ValueError("ambiguity_note given for a non-ambiguous allegation")
         return self
@@ -58,13 +58,6 @@ class ObservedFact(Contract):
     query_version: str = Field(min_length=1)
     observed_at: AwareDatetime
     temporal_quality: TemporalQuality = TemporalQuality.CURRENT_ONLY
-
-
-class BaselineProfile(Contract):
-    case_id: str
-    purpose: str = Field(min_length=1)
-    allowlist_version: str = Field(min_length=1)
-    facts: tuple[ObservedFact, ...] = ()
 
 
 class EvidenceNeed(Contract):
@@ -97,7 +90,7 @@ class GroundedClaim(Contract):
     grounding_status: GroundingStatus
 
     @model_validator(mode="after")
-    def _window_ordered(self) -> "GroundedClaim":
+    def _window_ordered(self) -> GroundedClaim:
         s, e = self.event_window_start, self.event_window_end
         if s is not None and e is not None and e < s:
             raise ValueError("event window end precedes start")
@@ -128,7 +121,7 @@ class ClaimSetRevision(Contract):
         )
 
     @model_validator(mode="after")
-    def _consistent(self) -> "ClaimSetRevision":
+    def _consistent(self) -> ClaimSetRevision:
         allegation_ids = {a.allegation_id for a in self.allegations}
         if len(allegation_ids) != len(self.allegations):
             raise ValueError("allegation ids must be unique")

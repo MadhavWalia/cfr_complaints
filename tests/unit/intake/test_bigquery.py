@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import types
-from datetime import date
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -62,12 +62,12 @@ class _Row(dict):
 
 
 class _FakeClient:
-    def __init__(self, rows):
-        self.rows, self.queries = rows, []
+    def __init__(self, rows, started=None):
+        self.rows, self.queries, self.started = rows, [], started
 
     def query(self, sql, job_config):
         self.queries.append((sql, job_config))
-        return SimpleNamespace(result=lambda: iter(self.rows))
+        return SimpleNamespace(result=lambda: iter(self.rows), started=self.started)
 
 
 def test_settings_from_env_and_secret_not_in_repr():
@@ -101,7 +101,8 @@ def test_invalid_service_account_json_is_not_echoed(fake_google):
 
 def test_fetch_binds_date_window_and_yields_dicts(fake_google):
     client = _FakeClient([_Row(case_no="1", msg_tx2="hi")])
-    rows = list(BigQueryCaseSource(client=client).fetch(start_date=date(2026, 9, 1), end_date=date(2026, 9, 7)))
+    source = BigQueryCaseSource(client=client, with_baseline=False)
+    rows = list(source.fetch(start_date=date(2026, 9, 1), end_date=date(2026, 9, 7)))
     assert rows == [{"case_no": "1", "msg_tx2": "hi"}]
     sql, job_config = client.queries[0]
     assert sql == case_query_sql()
@@ -109,3 +110,16 @@ def test_fetch_binds_date_window_and_yields_dicts(fake_google):
         ("start_date", "DATE", date(2026, 9, 1)),
         ("end_date", "DATE", date(2026, 9, 7)),
     ]
+
+
+def test_fetch_with_baseline_runs_the_combined_query_and_stamps_the_job_start(fake_google):
+    started = datetime(2026, 11, 1, 9, 30, tzinfo=UTC)
+    client = _FakeClient([_Row(case_no="1"), _Row(case_no="2")], started=started)
+    rows = list(BigQueryCaseSource(client=client).fetch(start_date=date(2026, 9, 1), end_date=date(2026, 9, 7)))
+    assert client.queries[0][0] == case_query_sql(with_baseline=True)  # one job for cases and baseline
+    assert [r["baseline_observed_at"] for r in rows] == [started, started]
+
+
+def test_observed_at_falls_back_to_submission_time(fake_google):
+    rows = list(BigQueryCaseSource(client=_FakeClient([_Row(case_no="1")])).fetch(start_date=date(2026, 9, 1), end_date=date(2026, 9, 1)))
+    assert rows[0]["baseline_observed_at"].tzinfo is not None

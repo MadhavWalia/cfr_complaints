@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -29,6 +29,7 @@ from cfr_v2.telemetry import (
     span,
 )
 
+from .baseline import BaselineStatus
 from .prepare import admission_key, prepare_case
 from .redaction import Masker, ProfanityFilter
 from .source import InvalidSourceRowError, source_record_bytes
@@ -54,6 +55,7 @@ class RowResult:
     case_run_id: str | None = None
     reason: str | None = None
     has_transcript: bool | None = None
+    baseline: str | None = None  # BaselineStatus value, for admitted rows
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,8 @@ class BatchReport:
 
     def summary(self) -> dict[str, int]:
         return {o.value: self.count(o) for o in IntakeOutcome} | {
-            "NO_TRANSCRIPT": sum(r.has_transcript is False for r in self.results)
+            "NO_TRANSCRIPT": sum(r.has_transcript is False for r in self.results),
+            "NO_BASELINE": sum(r.baseline not in (None, BaselineStatus.PRESENT) for r in self.results),
         }
 
 
@@ -79,7 +82,7 @@ class IntakeCoordinator:
         manifest_ref: str,
         profanity: ProfanityFilter | None = None,
         max_workers: int = 8,
-        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.store = store
         self.masker = masker
@@ -89,7 +92,7 @@ class IntakeCoordinator:
         self.clock = clock
 
     @classmethod
-    def pinned(cls, manifest: ReleaseManifest, *, store: ArtifactStore, **kwargs: Any) -> "IntakeCoordinator":
+    def pinned(cls, manifest: ReleaseManifest, *, store: ArtifactStore, **kwargs: Any) -> IntakeCoordinator:
         """Pin ``manifest`` (idempotent) and build a coordinator that admits under it."""
         ref = pin_manifest(manifest, store=store, db=runtime.current().db)
         logger.info("intake: pinned release manifest %s", ref)
@@ -128,6 +131,7 @@ class IntakeCoordinator:
                 case_run_id=result.case_run_id,
                 outcome=result.outcome.value,
                 has_transcript=result.has_transcript,
+                has_baseline=None if result.baseline is None else result.baseline == BaselineStatus.PRESENT,
             )
         admissions.add(1, {"outcome": result.outcome.value.lower()})
         return result
@@ -148,7 +152,10 @@ class IntakeCoordinator:
                 prepared.request,
                 release_manifest_ref=self.manifest_ref,
                 artifacts=prepared.artifacts,
-                admitted_detail={"transcript": "present" if prepared.has_transcript else "absent"},
+                admitted_detail={
+                    "transcript": "present" if prepared.has_transcript else "absent",
+                    "baseline": prepared.baseline.value,
+                },
             )
         except InvalidSourceRowError as exc:
             runtime.reject(key, reason=exc.reason, request_hash=_row_hash(row, exc.reason))
@@ -165,6 +172,7 @@ class IntakeCoordinator:
             case_run_id=record.case_run_id,
             reason=record.reason,
             has_transcript=prepared.has_transcript,
+            baseline=prepared.baseline.value,
         )
 
 

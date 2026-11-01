@@ -9,12 +9,12 @@ import json
 import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from cfr_v2.telemetry import get_logger, span
 
-from .source import case_query_sql
+from .source import BASELINE_OBSERVED_AT_COLUMN, case_query_sql
 
 logger = get_logger(__name__)
 
@@ -27,7 +27,7 @@ class BigQuerySettings:
     api_endpoint: str | None = None
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] = os.environ) -> "BigQuerySettings":
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> BigQuerySettings:
         missing = [k for k in ("GCP_PROJECT_ID", "GCP_SERVICE_ACCOUNT_JSON") if not env.get(k)]
         if missing:
             raise ValueError(f"BigQuery settings missing: {', '.join(missing)}")
@@ -53,14 +53,26 @@ def make_client(settings: BigQuerySettings) -> Any:
 
 
 class BigQueryCaseSource:
-    """Runs the packaged case query for a resolution-date window."""
+    """Runs the packaged case query for a resolution-date window.
 
-    def __init__(self, settings: BigQuerySettings | None = None, *, client: Any = None, sql: str | None = None) -> None:
+    With ``with_baseline`` (the default, LDR-0014) the LUMI baseline comes from the same
+    job, and every row is stamped with the job's start time as ``baseline_observed_at``.
+    """
+
+    def __init__(
+        self,
+        settings: BigQuerySettings | None = None,
+        *,
+        client: Any = None,
+        sql: str | None = None,
+        with_baseline: bool = True,
+    ) -> None:
         if client is None and settings is None:
             raise ValueError("BigQueryCaseSource needs settings or a client")
         self._settings = settings
         self._client = client
-        self.sql = sql or case_query_sql()
+        self.with_baseline = with_baseline
+        self.sql = sql or case_query_sql(with_baseline=with_baseline)
 
     @property
     def client(self) -> Any:
@@ -78,10 +90,17 @@ class BigQueryCaseSource:
                 bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
             ]
         )
-        logger.info("bigquery_fetch start_date=%s end_date=%s", start_date, end_date)
+        logger.info("bigquery_fetch start_date=%s end_date=%s baseline=%s", start_date, end_date, self.with_baseline)
         # Row iteration uses the REST API, like V1's create_bqstorage_client=False: the
         # gRPC storage API ignores the corporate trust store.
         with span("intake.fetch", window_start=start_date.isoformat(), window_end=end_date.isoformat()):
-            result = self.client.query(self.sql, job_config=job_config).result()
+            submitted = datetime.now(UTC)
+            job = self.client.query(self.sql, job_config=job_config)
+            result = job.result()
+        started = getattr(job, "started", None)
+        observed_at = started if isinstance(started, datetime) and started.tzinfo else submitted
         for row in result:
-            yield dict(row.items())
+            values = dict(row.items())
+            if self.with_baseline:
+                values[BASELINE_OBSERVED_AT_COLUMN] = observed_at
+            yield values

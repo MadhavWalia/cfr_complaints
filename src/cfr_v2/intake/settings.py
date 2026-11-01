@@ -15,13 +15,16 @@ class IntakeSettings:
     # V1 toxic_words.txt; without it profanity is not masked (as in V1).
     toxic_words_file: Path | None = None
     max_workers: int = 8
+    # Fetch the LUMI baseline in the case query's BigQuery job (LDR-0014).
+    baseline: bool = True
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] = os.environ) -> "IntakeSettings":
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> IntakeSettings:
         toxic = env.get("CFR_TOXIC_WORDS_FILE")
         return cls(
             release_id=env.get("CFR_RELEASE_ID", cls.release_id),
             registry_dir=Path(env.get("CFR_REGISTRY_DIR", str(cls.registry_dir))),
             toxic_words_file=Path(toxic) if toxic else None,
             max_workers=int(env.get("CFR_INTAKE_MAX_WORKERS", cls.max_workers)),
+            baseline=env.get("CFR_INTAKE_BASELINE", "1").lower() not in ("0", "false", "no"),
         )
