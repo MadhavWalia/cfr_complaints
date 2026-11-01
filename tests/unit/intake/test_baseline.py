@@ -7,6 +7,7 @@ import re
 from datetime import UTC, datetime
 
 import pytest
+import sqlglot
 
 from cfr_v2.artifacts import InMemoryArtifactStore
 from cfr_v2.contracts import (
@@ -100,6 +101,17 @@ def test_baseline_query_selects_no_protected_attributes():
     baseline_sql = case_query_sql(with_baseline=True).split("bl_params AS (", 1)[1].lower()
     for column in ("gend_cd", "mar_sta", "dob", "birth_yr", "birth_plce", "birth_ctry", "annual_incom"):
         assert column not in baseline_sql
+
+
+@pytest.mark.parametrize("with_baseline", [False, True])
+def test_query_parses_as_bigquery_sql(with_baseline):
+    """Catches syntax slips the structural checks miss (e.g. a trailing comma after the WITH clause)."""
+    tree = sqlglot.parse_one(case_query_sql(with_baseline=with_baseline), read="bigquery")
+    names = [c.alias_or_name for c in tree.selects]
+    if with_baseline:
+        assert names == ["*", "baseline_llm_context", "baseline_ref_map", "baseline_n_accounts"]
+    else:
+        assert names == list(SOURCE_COLUMNS)
 
 
 # --- parsing ---------------------------------------------------------------------------

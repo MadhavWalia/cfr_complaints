@@ -120,7 +120,7 @@ def case_query_sql(*, with_baseline: bool = False) -> str:
     ctes, final = sql[:cut], sql[cut + 1 :]
     if not final.startswith("SELECT\ncase_no"):
         raise RuntimeError("current_cases.sql: final SELECT not found where expected")
-    return f"{ctes},\n\ncases AS (\n{final}\n),\n\n{_packaged_sql('lumi_baseline.sql')},\n\n{_BASELINE_FINAL_SELECT}"
+    return f"{ctes},\n\ncases AS (\n{final}\n),\n\n{_packaged_sql('lumi_baseline.sql')}\n\n{_BASELINE_FINAL_SELECT}"
 
 
 def baseline_columns(row: Mapping[str, Any]) -> dict[str, Any] | None:
