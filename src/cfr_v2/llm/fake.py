@@ -1,4 +1,5 @@
 """Deterministic fake model client for tests and offline development."""
+
 from __future__ import annotations
 
 import json
@@ -34,7 +35,7 @@ class FakeModelClient:
         self.requests: list[ModelRequest] = []
 
     @classmethod
-    def from_file(cls, path: Path, **kwargs) -> "FakeModelClient":
+    def from_file(cls, path: Path, **kwargs) -> FakeModelClient:
         """Load ``[{"program_id": ..., "input_hash": ..., "output": {...}}, ...]``."""
         entries = json.loads(path.read_text())
         return cls({(e["program_id"], e["input_hash"]): e["output"] for e in entries}, **kwargs)
