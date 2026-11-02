@@ -49,8 +49,11 @@ from .routing import CandidateRoute, ClaimRouting, ClaimRoutingOutcome, RouteSou
 from .selection import PrimarySelection, SelectionStatus
 from .understanding import (
     Allegation,
+    AllegationSet,
     ClaimScope,
     ClaimSetRevision,
+    DroppedAllegation,
+    DroppedReason,
     EntityRef,
     EvidenceNeed,
     GroundedClaim,
@@ -66,6 +69,7 @@ __all__ = [
     "AdmissionRecord",
     "AdmissionStatus",
     "Allegation",
+    "AllegationSet",
     "ArtifactMetadata",
     "ArtifactRef",
     "AuthorizationContext",
@@ -84,6 +88,8 @@ __all__ = [
     "Classification",
     "Contract",
     "CostClass",
+    "DroppedAllegation",
+    "DroppedReason",
     "EntityRef",
     "EvidenceNeed",
     "EvidenceRequirement",

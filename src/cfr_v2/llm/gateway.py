@@ -342,10 +342,11 @@ class GatewayModelClient:
         s = self.settings
         llm = await self._get_model()
         # Transcript content stays in the data message, never in the instructions (HD-08).
-        messages = [
-            {"role": "system", "content": request.instructions},
-            {"role": "user", "content": json.dumps(request.inputs, ensure_ascii=False, sort_keys=True)},
-        ]
+        messages = [{"role": "system", "content": request.instructions}]
+        if request.messages:
+            messages += [t.model_dump() for t in request.messages]
+        else:
+            messages.append({"role": "user", "content": json.dumps(request.inputs, ensure_ascii=False, sort_keys=True)})
         kwargs: dict[str, Any] = {}
         if headers := elf_headers():  # this call's trace context, for gateway-side correlation
             kwargs["extra_headers"] = headers

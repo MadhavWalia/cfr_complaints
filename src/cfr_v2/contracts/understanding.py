@@ -43,6 +43,41 @@ class Allegation(Contract):
         return self
 
 
+class DroppedReason(StrEnum):
+    NO_QUOTE = "NO_QUOTE"  # the model gave no quote
+    QUOTE_NOT_FOUND = "QUOTE_NOT_FOUND"  # no quote occurs in the redacted transcript
+    INVALID = "INVALID"  # fails the Allegation contract (e.g. empty text)
+
+
+class DroppedAllegation(Contract):
+    """An extracted item that failed deterministic validation. Carries no text (it may quote the call)."""
+
+    index: int = Field(ge=0)  # position in the model's list
+    reason: DroppedReason
+
+
+class AllegationSet(Contract):
+    """Pass 1 result for one case run: the C02 stage artifact until Pass 2 and claim sets land.
+
+    Invalid items are dropped, never the whole result (C02 LLD); ``dropped`` records them.
+    """
+
+    case_id: str = Field(min_length=1)
+    program_id: str = Field(min_length=1)
+    program_version: str = Field(min_length=1)
+    transcript_ref: ArtifactRef | None  # None: the case has no transcript, and no model was called
+    allegations: tuple[Allegation, ...]
+    dropped: tuple[DroppedAllegation, ...] = ()
+
+    @model_validator(mode="after")
+    def _consistent(self) -> AllegationSet:
+        if len({a.allegation_id for a in self.allegations}) != len(self.allegations):
+            raise ValueError("allegation ids must be unique")
+        if self.transcript_ref is None and (self.allegations or self.dropped):
+            raise ValueError("a case without a transcript has no allegations")
+        return self
+
+
 class TemporalQuality(StrEnum):
     HISTORICAL_VERIFIED = "HISTORICAL_VERIFIED"
     CURRENT_ONLY = "CURRENT_ONLY"
