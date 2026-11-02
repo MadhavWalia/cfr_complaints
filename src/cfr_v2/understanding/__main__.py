@@ -6,7 +6,8 @@
 Reads admitted requests and transcripts as the worker would, calls the real gateway,
 and writes nothing to the state database or the artifact store. Prints counts,
 latency and tokens per case, plus a cost projection; with ``--out``, writes one
-review file per case: each allegation with the redacted text its spans cover.
+review file per case: each allegation, detail, request and agent statement with the
+redacted text its spans cover.
 
 Review files hold redacted transcript excerpts (INTERNAL): keep them on this machine
 and delete them after review.
@@ -22,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from cfr_v2.artifacts import S3ArtifactStore, S3Settings
-from cfr_v2.contracts import AllegationSet
+from cfr_v2.contracts import Pass1Result
 from cfr_v2.llm import GatewayModelClient, GatewaySettings, ModelError, ModelRequest, ModelResponse, close_model_loop
 from cfr_v2.llm.dspy_lm import gateway_lm
 from cfr_v2.runtime.settings import RuntimeSettings
@@ -57,18 +58,31 @@ def _case_runs(db: Database, ids: list[str], sample: int) -> list[tuple[str, str
     return [(r[0], r[1]) for r in rows]
 
 
-def _review(result: AllegationSet, segments: dict[str, str]) -> dict:
+def _review(result: Pass1Result, segments: dict[str, str]) -> dict:
+    def quoted(span) -> str:
+        return segments[span.interaction_id][span.start : span.end]
+
+    def item(obj, exclude=frozenset()) -> dict:
+        return {
+            **obj.model_dump(mode="json", exclude={"spans", *exclude}),
+            "quoted": [quoted(s) for s in obj.spans],
+        }
+
     return {
         "case_id": result.case_id,
         "program_version": result.program_version,
         "dropped": [d.model_dump(mode="json") for d in result.dropped],
         "allegations": [
             {
-                **a.model_dump(mode="json", exclude={"spans"}),
-                "quoted": [segments[s.interaction_id][s.start : s.end] for s in a.spans],
+                **item(a, {"details"}),
+                "details": [
+                    {"type": d.detail_type.value, "detail": d.text, "quoted": quoted(d.span)} for d in a.details
+                ],
             }
             for a in result.allegations
         ],
+        "requests": [item(r) for r in result.requests],
+        "agent_statements": [item(s) for s in result.agent_statements],
     }
 
 
@@ -90,14 +104,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
 
-    def run(case_run: tuple[str, str]) -> tuple[str, AllegationSet | None, float, str]:
+    def run(case_run: tuple[str, str]) -> tuple[str, Pass1Result | None, float, str]:
         run_id, request_ref = case_run
         started = time.monotonic()
         try:
             out = handler(StageInput(run_id, STAGES[0], request_ref, ()))
         except ModelError as exc:
             return run_id, None, time.monotonic() - started, type(exc).__name__
-        result = AllegationSet.model_validate_json(out.content)
+        result = Pass1Result.model_validate_json(out.content)
         if args.out and result.transcript_ref is not None:
             segments = dict(load_segments(store, result.transcript_ref))
             review = json.dumps(_review(result, segments), indent=2, ensure_ascii=False)
@@ -114,12 +128,23 @@ def main(argv: list[str] | None = None) -> int:
         db.close()
         shutdown_telemetry()
 
-    print(f"{'case':<14}{'allegations':>12}{'dropped':>9}{'seconds':>9}{'in tok':>9}{'out tok':>9}  error")
+    header = ("allegations", "details", "requests", "statements", "dropped", "seconds", "in tok", "out tok")
+    print(f"{'case':<14}" + "".join(f"{h:>12}" for h in header) + "  error")
     for run_id, result, took, error in results:
         case = result.case_id if result else run_id[:12]
         tokens = client.usage.get(case, [0, 0])
-        counts = (len(result.allegations), len(result.dropped)) if result else ("-", "-")
-        print(f"{case:<14}{counts[0]:>12}{counts[1]:>9}{took:>9.1f}{tokens[0]:>9}{tokens[1]:>9}  {error}")
+        if result:
+            counts = (
+                len(result.allegations),
+                sum(len(a.details) for a in result.allegations),
+                len(result.requests),
+                len(result.agent_statements),
+                len(result.dropped),
+            )
+        else:
+            counts = ("-",) * 5
+        cells = (*counts, f"{took:.1f}", *tokens)
+        print(f"{case:<14}" + "".join(f"{c:>12}" for c in cells) + f"  {error}")
     called = [u for u in client.usage.values() if u[0]]
     if called:
         avg_in = sum(u[0] for u in called) / len(called)

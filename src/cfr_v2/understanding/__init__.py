@@ -9,10 +9,13 @@ from .handler import load_segments, make_understanding_handler
 from .pass1 import (
     PASS1_PROGRAM_ID,
     PASS1_VERSION,
-    ExtractAllegations,
     ExtractedAllegation,
+    ExtractedDetail,
+    ExtractedRequest,
+    ExtractedStatement,
+    ExtractFromCall,
     Pass1,
-    build_allegation_set,
+    build_pass1_result,
     transcript_text,
 )
 from .spans import locate
@@ -20,10 +23,13 @@ from .spans import locate
 __all__ = [
     "PASS1_PROGRAM_ID",
     "PASS1_VERSION",
-    "ExtractAllegations",
+    "ExtractFromCall",
     "ExtractedAllegation",
+    "ExtractedDetail",
+    "ExtractedRequest",
+    "ExtractedStatement",
     "Pass1",
-    "build_allegation_set",
+    "build_pass1_result",
     "load_segments",
     "locate",
     "make_understanding_handler",

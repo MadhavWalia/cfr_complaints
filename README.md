@@ -21,7 +21,7 @@ src/cfr_v2/
   runtime/      P6  durable runner on a Postgres job queue: lanes, leases, submit
   registry/     P4  release manifests: load, pin, resolve
   intake/       C01 BigQuery case source, normalization, redaction, admission
-  understanding/ C02 Pass 1 (DSPy): allegations with spans from the redacted transcript
+  understanding/ C02 Pass 1 (DSPy): allegations, requests and agent statements, with spans
 registry/       release manifests (registry/releases/<id>.yaml)
 config/         ee-config template (config_gpt.example.yml); your config_gpt.yml is gitignored
 tests/

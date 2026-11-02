@@ -1,8 +1,8 @@
-"""The ``c02.understanding`` stage handler: Pass 1 for now (Phase C, first slice).
+"""The ``c02.understanding`` stage handler: Pass 1 for now (Phase C).
 
 Reads the admitted request for its refs only, loads the redacted transcript
 (INTERNAL), runs Pass 1 on the process's model loop and returns the
-``AllegationSet``. Nothing else from the request reaches the program: no case
+``Pass1Result``. Nothing else from the request reaches the program: no case
 metadata, baseline or evaluation labels (ADR-03, OQ-21).
 """
 
@@ -12,11 +12,11 @@ import dspy
 
 from cfr_v2.artifacts import ArtifactStore
 from cfr_v2.contracts import (
-    AllegationSet,
     AuthorizationContext,
     CanonicalTranscript,
     Classification,
     IngestionRequest,
+    Pass1Result,
     canonical_json,
 )
 from cfr_v2.llm import ModelLoop, model_loop
@@ -24,7 +24,7 @@ from cfr_v2.llm.dspy_lm import ProgramCall, run_program
 from cfr_v2.runtime.stages import StageHandler, StageInput, StageOutput
 from cfr_v2.telemetry import set_attributes, span
 
-from .pass1 import PASS1_PROGRAM_ID, PASS1_VERSION, Pass1, build_allegation_set, transcript_text
+from .pass1 import PASS1_PROGRAM_ID, PASS1_VERSION, Pass1, build_pass1_result, transcript_text
 
 # The request is RESTRICTED (it holds the evaluation labels); only its refs are used.
 _REQUEST_READER = AuthorizationContext(
@@ -61,12 +61,8 @@ def make_understanding_handler(
         case_id = request.key.source_case_id
         with span("c02.pass1", program=PASS1_PROGRAM_ID, program_version=PASS1_VERSION) as pass1_span:
             if request.transcript_ref is None:
-                result = AllegationSet(
-                    case_id=case_id,
-                    program_id=PASS1_PROGRAM_ID,
-                    program_version=PASS1_VERSION,
-                    transcript_ref=None,
-                    allegations=(),
+                result = Pass1Result(
+                    case_id=case_id, program_id=PASS1_PROGRAM_ID, program_version=PASS1_VERSION, transcript_ref=None
                 )
                 set_attributes(pass1_span, has_transcript=False)
             else:
@@ -82,14 +78,21 @@ def make_understanding_handler(
                 prediction = (loop or model_loop()).run(
                     run_program(pass1, lm=lm, call=call, transcript=transcript_text(segments))
                 )
-                result = build_allegation_set(
-                    prediction.allegations, segments, case_id=case_id, transcript_ref=request.transcript_ref
+                result = build_pass1_result(
+                    prediction.allegations,
+                    prediction.requests,
+                    prediction.agent_statements,
+                    segments,
+                    case_id=case_id,
+                    transcript_ref=request.transcript_ref,
                 )
                 set_attributes(
                     pass1_span,
                     has_transcript=True,
                     allegations=len(result.allegations),
-                    allegations_dropped=len(result.dropped),
+                    requests=len(result.requests),
+                    agent_statements=len(result.agent_statements),
+                    items_dropped=len(result.dropped),
                 )
         return StageOutput(canonical_json(result))
 

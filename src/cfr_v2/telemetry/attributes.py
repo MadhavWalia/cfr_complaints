@@ -50,7 +50,9 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
         "output_tokens",
         # C02 Pass 1 (counts only)
         "allegations",
-        "allegations_dropped",
+        "requests",
+        "agent_statements",
+        "items_dropped",
     }
 )
 
