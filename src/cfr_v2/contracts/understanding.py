@@ -1,6 +1,8 @@
 """C02 outputs: Pass 1 allegations, requests and agent statements, and Pass 2 grounded claims. The baseline C02 reads is in ``baseline.py``."""
+
 from __future__ import annotations
 
+from datetime import date
 from enum import StrEnum
 
 from pydantic import AwareDatetime, Field, JsonValue, model_validator
@@ -180,11 +182,27 @@ class ObservedFact(Contract):
     temporal_quality: TemporalQuality = TemporalQuality.CURRENT_ONLY
 
 
+SOURCE_ORIGIN_PATTERN = r"^[sr][1-9][0-9]*$"  # an agent statement (s1) or a customer request (r1)
+
+
 class EvidenceNeed(Contract):
+    """Something an investigator would check for one claim (Pass 2)."""
+
     need_id: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    capability_hint: str | None = None
-    proposition: str | None = None  # e.g. a CCP statement to verify against procedure
+    source_type: str = Field(min_length=1)  # an active id of the pinned evidence source taxonomy
+    proposition: str | None = None  # e.g. what an agent said, to verify against records or procedure
+    origin: str | None = Field(default=None, pattern=SOURCE_ORIGIN_PATTERN)
+
+
+class OtherCheck(Contract):
+    """An agent statement or request linked to no claim: still checked, outside primary selection (C03)."""
+
+    check_id: str = Field(min_length=1)
+    origin: str = Field(pattern=SOURCE_ORIGIN_PATTERN)
+    description: str = Field(min_length=1)
+    proposition: str | None = None
+    source_types: tuple[str, ...] = Field(min_length=1)
 
 
 class GroundingStatus(StrEnum):
@@ -194,9 +212,40 @@ class GroundingStatus(StrEnum):
     EVENT_TIME_APPROXIMATE = "EVENT_TIME_APPROXIMATE"
 
 
+class AccountResolution(StrEnum):
+    RESOLVED = "RESOLVED"  # one account
+    CANDIDATES = "CANDIDATES"  # several could fit; listed, case account first
+    NONE = "NONE"  # about an account, but none can be named (e.g. no baseline)
+    NOT_APPLICABLE = "NOT_APPLICABLE"  # not about an account (e.g. agent conduct)
+
+
+class TimeQuality(StrEnum):
+    EXACT = "EXACT"  # stated dates
+    APPROXIMATE = "APPROXIMATE"  # relative or vague ("last week")
+    UNKNOWN = "UNKNOWN"  # no time given
+
+
+def grounding_status_for(account: AccountResolution, time: TimeQuality, *, has_entities: bool) -> GroundingStatus:
+    """The HLD summary status, derived so it can't disagree with the two fields it summarises."""
+    account_known = account in (AccountResolution.RESOLVED, AccountResolution.NOT_APPLICABLE)
+    if account_known and time is TimeQuality.EXACT:
+        return GroundingStatus.GROUNDED
+    if account_known and time is TimeQuality.APPROXIMATE:
+        return GroundingStatus.EVENT_TIME_APPROXIMATE
+    if account is AccountResolution.NONE and time is TimeQuality.UNKNOWN and not has_entities:
+        return GroundingStatus.UNGROUNDED
+    return GroundingStatus.PARTIAL
+
+
+def account_resolution_for(refs: tuple[str, ...], *, about_an_account: bool) -> AccountResolution:
+    if not about_an_account:
+        return AccountResolution.NOT_APPLICABLE
+    return {0: AccountResolution.NONE, 1: AccountResolution.RESOLVED}.get(len(refs), AccountResolution.CANDIDATES)
+
+
 class EntityRef(Contract):
-    entity_type: str = Field(min_length=1)  # account, product, transaction, ...
-    reference: str = Field(min_length=1)
+    entity_type: str = Field(min_length=1)  # product, merchant, transaction, fee, other
+    reference: str = Field(min_length=1)  # as the customer stated it; never an identifier
 
 
 class GroundedClaim(Contract):
@@ -204,41 +253,99 @@ class GroundedClaim(Contract):
     allegation_ids: tuple[str, ...] = Field(min_length=1)
     statement: str = Field(min_length=1)
     entities: tuple[EntityRef, ...] = ()
-    event_window_start: AwareDatetime | None = None
-    event_window_end: AwareDatetime | None = None
+    account_refs: tuple[str, ...] = ()  # BaselineProfile refs (A1, ...); candidates in order, case account first
+    account_resolution: AccountResolution = AccountResolution.NONE
+    event_window_start: date | None = None
+    event_window_end: date | None = None
+    time_quality: TimeQuality = TimeQuality.UNKNOWN
+    grounding_note: str | None = None
     evidence_needs: tuple[EvidenceNeed, ...] = ()
     grounding_status: GroundingStatus
 
     @model_validator(mode="after")
-    def _window_ordered(self) -> GroundedClaim:
+    def _consistent(self) -> GroundedClaim:
         s, e = self.event_window_start, self.event_window_end
         if s is not None and e is not None and e < s:
             raise ValueError("event window end precedes start")
+        expected = {
+            AccountResolution.RESOLVED: len(self.account_refs) == 1,
+            AccountResolution.CANDIDATES: len(self.account_refs) > 1,
+        }.get(self.account_resolution, not self.account_refs)
+        if not expected:
+            raise ValueError(f"{self.account_resolution.value} does not fit {len(self.account_refs)} account refs")
+        derived = grounding_status_for(self.account_resolution, self.time_quality, has_entities=bool(self.entities))
+        if self.grounding_status is not derived:
+            raise ValueError(f"grounding_status must be {derived.value} for these fields")
+        if len({n.need_id for n in self.evidence_needs}) != len(self.evidence_needs):
+            raise ValueError("evidence need ids must be unique")
         return self
 
 
+class Pass2Issue(StrEnum):
+    UNCOVERED_ALLEGATION = "UNCOVERED_ALLEGATION"  # not in any claim: given a claim of its own by code
+    REPEATED_ALLEGATION = "REPEATED_ALLEGATION"  # in two claims: kept in the first only
+    EMPTY_CLAIM = "EMPTY_CLAIM"  # no known allegations left
+    UNKNOWN_ACCOUNT_REF = "UNKNOWN_ACCOUNT_REF"  # not in the baseline: removed
+    INVALID_WINDOW = "INVALID_WINDOW"  # unparseable or end before start: cleared
+    WINDOW_AFTER_RECEIVED = "WINDOW_AFTER_RECEIVED"  # ends after the received date: cut back
+    UNKNOWN_SOURCE_TYPE = "UNKNOWN_SOURCE_TYPE"  # not active in the taxonomy: need or check dropped
+    UNKNOWN_ORIGIN = "UNKNOWN_ORIGIN"  # not a Pass 1 statement or request: origin removed
+    NOT_COVERED = "NOT_COVERED"  # a statement or request with no need or check
+
+
+class Pass2Finding(Contract):
+    """A deterministic correction to Pass 2's output. Carries ids, not text."""
+
+    issue: Pass2Issue
+    ref: str | None = None  # claim position (c3), allegation, statement or request id, or source type
+
+
 class ClaimSetRevision(Contract):
-    """Immutable claim set; ``claim_set_hash`` binds downstream selections and routes."""
+    """Immutable claim set; ``claim_set_hash`` binds downstream selections and routes.
+
+    Holds Pass 1's lists unchanged (ADR-03) and Pass 2's claims and other checks.
+    """
 
     case_id: str
     run_id: str
     revision: int = Field(ge=0)
     previous_revision_hash: str | None = Field(default=None, pattern=SHA256_PATTERN)
     allegations: tuple[Allegation, ...]
+    requests: tuple[CustomerRequest, ...] = ()
+    agent_statements: tuple[AgentStatement, ...] = ()
     claims: tuple[GroundedClaim, ...]
-    baseline_profile_ref: ArtifactRef | None = None
+    other_checks: tuple[OtherCheck, ...] = ()
+    baseline_profile_ref: ArtifactRef | None = None  # None: no baseline; recorded as baseline absent
+    case_received_date: date | None = None
+    evidence_sources_version: str | None = None
+    evidence_sources_hash: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    findings: tuple[Pass2Finding, ...] = ()
     claim_set_hash: str = Field(pattern=SHA256_PATTERN)
 
     @staticmethod
-    def compute_hash(allegations: tuple[Allegation, ...], claims: tuple[GroundedClaim, ...]) -> str:
-        return canonical_hash(
-            {
-                "allegations": sorted(
-                    (a.model_dump(mode="json") for a in allegations), key=lambda a: a["allegation_id"]
-                ),
-                "claims": sorted((c.model_dump(mode="json") for c in claims), key=lambda c: c["claim_id"]),
-            }
-        )
+    def compute_hash(
+        allegations: tuple[Allegation, ...],
+        claims: tuple[GroundedClaim, ...],
+        requests: tuple[CustomerRequest, ...] = (),
+        agent_statements: tuple[AgentStatement, ...] = (),
+        other_checks: tuple[OtherCheck, ...] = (),
+    ) -> str:
+        def ordered(items, key):
+            return sorted((i.model_dump(mode="json") for i in items), key=lambda d: d[key])
+
+        body = {
+            "allegations": ordered(allegations, "allegation_id"),
+            "claims": ordered(claims, "claim_id"),
+        }
+        # Absent when empty, so claim sets without them keep their hash.
+        for name, items, key in (
+            ("requests", requests, "request_id"),
+            ("agent_statements", agent_statements, "statement_id"),
+            ("other_checks", other_checks, "check_id"),
+        ):
+            if items:
+                body[name] = ordered(items, key)
+        return canonical_hash(body)
 
     @model_validator(mode="after")
     def _consistent(self) -> ClaimSetRevision:
@@ -251,7 +358,15 @@ class ClaimSetRevision(Contract):
             missing = set(claim.allegation_ids) - allegation_ids
             if missing:
                 raise ValueError(f"claim {claim.claim_id} references unknown allegations {sorted(missing)}")
-        if self.claim_set_hash != self.compute_hash(self.allegations, self.claims):
+        origins = {r.request_id for r in self.requests} | {s.statement_id for s in self.agent_statements}
+        used = {n.origin for c in self.claims for n in c.evidence_needs if n.origin} | {
+            o.origin for o in self.other_checks
+        }
+        if not used <= origins:
+            raise ValueError(f"evidence needs reference unknown origins {sorted(used - origins)}")
+        if self.claim_set_hash != self.compute_hash(
+            self.allegations, self.claims, self.requests, self.agent_statements, self.other_checks
+        ):
             raise ValueError("claim_set_hash does not match content")
         return self
 

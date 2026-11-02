@@ -50,6 +50,8 @@ dev = [
     "ruff==0.17.3",  # pinned: rule defaults change between releases
     # Parses the packaged BigQuery SQL in tests (no BigQuery in dev); pinned: dialect rules change.
     "sqlglot==26.17.1",
+    # Evidence source workbook import/export (python -m cfr_v2.registry.evidence_sources).
+    "openpyxl>=3.1",
 ]
 
 [build-system]

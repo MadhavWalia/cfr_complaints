@@ -106,7 +106,7 @@ def test_rerun_of_same_cases_is_all_duplicates(running, coordinator):
     assert [r.case_run_id for r in second.results] == [r.case_run_id for r in first.results]
     assert _scalar(running, "SELECT count(*) FROM case_run") == 5
     with running.db.transaction() as s:
-        assert CaseStateRepository(s).task_attempts(first.results[0].case_run_id, "c02.understanding") == ["COMMITTED"]
+        assert CaseStateRepository(s).task_attempts(first.results[0].case_run_id, "c02.pass1") == ["COMMITTED"]
 
 
 def test_models_only_ever_get_redacted_text_and_v1_fields(running, coordinator, store):

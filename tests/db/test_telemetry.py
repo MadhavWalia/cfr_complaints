@@ -115,12 +115,12 @@ def test_produce_retries_are_span_events(running, spans):
             raise TimeoutError("gateway slow")
         return placeholder_handler(inp)
 
-    running.handlers = {**running.handlers, "c02.understanding": flaky}
+    running.handlers = {**running.handlers, "c02.pass1": flaky}
     _, handle = submit(make_request("trace-produce"), release_manifest_ref="spike@0")
     assert handle.get_result() == FINAL_STATE
     _wait_for(spans, "case_run.attempt")
     (produce,) = [
-        s for s in spans.get_finished_spans() if s.name == "produce" and s.attributes["cfr.stage"] == "c02.understanding"
+        s for s in spans.get_finished_spans() if s.name == "produce" and s.attributes["cfr.stage"] == "c02.pass1"
     ]
     assert [(e.name, dict(e.attributes)) for e in produce.events] == [
         ("retry", {"cfr.attempt": 1, "cfr.error_type": "TimeoutError"})

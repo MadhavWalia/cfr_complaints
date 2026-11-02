@@ -18,7 +18,8 @@ class GatewaySettings:
     # Key under `models:` in config_gpt.yml ("3" = gpt-5 in V1) and the name reported in usage.
     model_key: str = "3"
     model_id: str = "gpt-5"
-    max_completion_tokens: int = 16384
+    # Room for gpt-5's reasoning plus Pass 1's output (largest trial case: ~10.6k of 16k, 2026-11-03).
+    max_completion_tokens: int = 32768
     temperature: float = 0.0
 
     # Admission, shared by every case in the worker process.
@@ -30,8 +31,8 @@ class GatewaySettings:
     max_attempts: int = 4
     backoff_base_sec: float = 2.0
     backoff_max_sec: float = 30.0
-    attempt_timeout_sec: float = 180.0
-    call_deadline_sec: float = 600.0
+    attempt_timeout_sec: float = 360.0  # slowest Pass 1 trial call: ~129 s
+    call_deadline_sec: float = 1200.0
     # Schema-invalid responses tolerated before the call fails permanently.
     invalid_output_attempts: int = 2
     # Ask Azure to enforce output_schema exactly (json_schema "strict"). Needs every property

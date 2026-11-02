@@ -19,10 +19,10 @@ src/cfr_v2/
   llm/          P5  model client: gateway (safechain), rate limits, retries, budgets, fake; DSPy engine
   telemetry/    P6  OpenTelemetry / ee-logging facade (from V1), attribute allowlist, dev OTLP export
   runtime/      P6  durable runner on a Postgres job queue: lanes, leases, submit
-  registry/     P4  release manifests: load, pin, resolve
+  registry/     P4  release manifests: load, pin, resolve; evidence source taxonomy (YAML + workbook)
   intake/       C01 BigQuery case source, normalization, redaction, admission
-  understanding/ C02 Pass 1 (DSPy): allegations, requests and agent statements, with spans
-registry/       release manifests (registry/releases/<id>.yaml)
+  understanding/ C02 (DSPy): Pass 1 allegations, requests, agent statements; Pass 2 claims, accounts, evidence needs
+registry/       release manifests (releases/<id>.yaml), evidence source taxonomy (evidence_sources/<version>.yaml)
 config/         ee-config template (config_gpt.example.yml); your config_gpt.yml is gitignored
 tests/
   unit/         offline, no network
@@ -114,12 +114,18 @@ Intake is submit-only: it admits and enqueues. Workflows run in worker processes
 
 Run as many workers as needed; any worker picks up jobs whose previous worker died.
 
-Workers run C02 Pass 1 for real (gpt-5 through the gateway) and placeholders for C03–C05, so
-**starting a worker sends every queued case to the model.** Try Pass 1 on a few cases first:
+Workers run C02 for real (Pass 1 then Pass 2, two gpt-5 calls per case through the gateway) and
+placeholders for C03–C05, so **starting a worker sends every queued case to the model.** Try C02
+on a few cases first:
 
 ```bash
-python -m cfr_v2.understanding --sample 5 --out pass1_trial   # counts, latency, tokens, cost projection
+python -m cfr_v2.understanding --sample 5 --out c02_trial   # counts, latency, tokens, cost projection per pass
 ```
+
+Pass 2 tags each evidence need with a source type from `registry/evidence_sources/`
+(`CFR_EVIDENCE_SOURCES_VERSION`, default `evidence-sources-1`). The business team maintains where
+each source type's evidence lives through a workbook: `python -m cfr_v2.registry.evidence_sources
+export|import|check` ([guide](lld/guides/evidence-sources.md); `lld/` is local).
 
 It writes nothing to the state database or the artifact store. The review files in `--out` hold
 redacted transcript excerpts: keep them local and delete them after review.

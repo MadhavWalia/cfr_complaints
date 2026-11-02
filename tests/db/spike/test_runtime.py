@@ -28,7 +28,7 @@ def test_case_reaches_plan_ready_with_one_commit_per_stage(running):
     assert handle.get_result() == FINAL_STATE
     with running.db.transaction() as s:
         repo = CaseStateRepository(s)
-        assert repo.state_history(record.case_run_id) == ["ADMITTED", *(st.state for st in STAGES), FINAL_STATE]
+        assert repo.state_history(record.case_run_id) == ["ADMITTED", *dict.fromkeys(st.state for st in STAGES), FINAL_STATE]  # one entry per coarse state
         assert sorted(repo.committed_tasks(record.case_run_id)) == sorted(st.logical_task_id for st in STAGES)
     assert _job(running, record.case_run_id) == ("SUCCEEDED", 1, None)
 
@@ -40,7 +40,7 @@ def test_resubmitting_attaches_to_the_same_run(running):
     assert h1.get_workflow_id() == h2.get_workflow_id() == first.case_run_id
     assert h2.get_result() == FINAL_STATE
     with running.db.transaction() as s:
-        assert CaseStateRepository(s).task_attempts(first.case_run_id, "c02.understanding") == ["COMMITTED"]
+        assert CaseStateRepository(s).task_attempts(first.case_run_id, "c02.pass1") == ["COMMITTED"]
         assert s.scalar("SELECT count(*) FROM workflow_job") == 1
 
 
@@ -74,7 +74,7 @@ def test_rate_limited_model_retries_the_run_after_the_cooldown(running):
             raise ModelRateLimitedError("c02.pass1: rate_limited", retry_after_sec=0.5)
         return placeholder_handler(inp)
 
-    running.handlers = {**running.handlers, "c02.understanding": rate_limited_once}
+    running.handlers = {**running.handlers, "c02.pass1": rate_limited_once}
     record, handle = submit(make_request("ratelimit-1"), release_manifest_ref="spike@0")
     assert handle.get_result() == FINAL_STATE
     assert len(calls) == 2  # no step retries: the gateway client already retried
@@ -91,7 +91,7 @@ def test_blocked_model_call_fails_the_run_without_retrying(running):
         calls.append(inp.case_run_id)
         raise ModelBlockedError("c02.pass1: blocked (HTTP 403)")
 
-    running.handlers = {**running.handlers, "c02.understanding": blocked}
+    running.handlers = {**running.handlers, "c02.pass1": blocked}
     record, handle = submit(make_request("blocked-1"), release_manifest_ref="spike@0")
     with pytest.raises(WorkflowFailedError, match="ModelBlockedError"):
         handle.get_result()
@@ -184,7 +184,7 @@ def test_saturated_batch_lane_does_not_block_realtime(runtime_settings, store):
         return placeholder_handler(inp)
 
     handlers = {st.logical_task_id: placeholder_handler for st in STAGES}
-    handlers["c02.understanding"] = slow_for_batch
+    handlers["c02.pass1"] = slow_for_batch
     rt = start_runtime(settings, store, handlers=handlers)
     try:
         batch_ids = [submit(make_request(f"batch-{i}"), release_manifest_ref="spike@0")[0].case_run_id for i in range(8)]
