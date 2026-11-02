@@ -1,4 +1,4 @@
-"""Turn one source row into stored artifacts and an ``IngestionRequest`` (C01 steps 1, 3-5).
+"""Turn one source row into stored artifacts and an ``IngestionRequest`` (C01 steps 1-5).
 
 Every artifact is content-addressed, so preparing the same row twice yields the
 same refs; nothing here touches the database.
@@ -23,12 +23,15 @@ from cfr_v2.contracts import (
 )
 from cfr_v2.state import case_id_for
 
+from .baseline import BaselineStatus, parse_baseline
 from .normalize import NORMALIZATION_VERSION, normalize_transcript
 from .redaction import Masker, ProfanityFilter, redact
 from .source import (
+    BASELINE_QUERY_VERSION,
     LINKAGE_QUALITY_COLUMN,
     SOURCE_SYSTEM,
     TRANSCRIPT_COLUMN,
+    baseline_columns,
     case_metadata,
     evaluation_labels,
     source_case_id,
@@ -48,6 +51,7 @@ class PreparedCase:
     request: IngestionRequest
     artifacts: tuple[StoredArtifact, ...]  # registered in the admission transaction
     redaction_spans: int = 0  # count only, for telemetry; the spans stay in the RESTRICTED map
+    baseline: BaselineStatus = BaselineStatus.NOT_QUERIED
 
     @property
     def has_transcript(self) -> bool:
@@ -71,8 +75,16 @@ def prepare_case(
     original = normalize_transcript(row.get(TRANSCRIPT_COLUMN))
     redaction = redact(original, interaction_id=INTERACTION_ID, masker=masker, profanity=profanity) if original else None
 
+    baseline = parse_baseline(baseline_columns(row), query_version=BASELINE_QUERY_VERSION)
+
     source = store.put(source_record_bytes(row), media_type=JSON, classification=Classification.RESTRICTED)
     artifacts = [source]
+    baseline_ref = baseline_ref_map_ref = None
+    if baseline.profile is not None and baseline.ref_map is not None:
+        profile_a = store.put(canonical_json(baseline.profile), media_type=JSON, classification=Classification.INTERNAL)
+        ref_map_a = store.put(canonical_json(baseline.ref_map), media_type=JSON, classification=Classification.RESTRICTED)
+        artifacts += [profile_a, ref_map_a]
+        baseline_ref, baseline_ref_map_ref = profile_a.metadata.ref, ref_map_a.metadata.ref
     transcript_ref = None
     if redaction is not None:
         original_a = store.put(original.encode("utf-8"), media_type=TEXT, classification=Classification.RESTRICTED)
@@ -104,6 +116,9 @@ def prepare_case(
         key=key,
         source_record_ref=source.metadata.ref,
         transcript_ref=transcript_ref,
+        baseline_ref=baseline_ref,
+        baseline_ref_map_ref=baseline_ref_map_ref,
+        baseline_observed_at=baseline.observed_at,
         case_metadata=case_metadata(row),
         evaluation_labels=evaluation_labels(row),
         lane=lane,
@@ -113,4 +128,5 @@ def prepare_case(
         request=request,
         artifacts=tuple(artifacts),
         redaction_spans=0 if redaction is None else len(redaction.map.spans),
+        baseline=baseline.status,
     )

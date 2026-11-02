@@ -96,7 +96,13 @@ at startup and refuse to run with `pending migrations: ...` until it is current.
 set -a; source .env; set +a
 .venv/bin/python -m cfr_v2.intake --synthetic 20                          # offline, synthetic rows
 .venv/bin/python -m cfr_v2.intake --start-date 2026-09-01 --end-date 2026-09-07   # BigQuery (enterprise extra)
+.venv/bin/python -m cfr_v2.intake --print-sql > intake.sql                # the BigQuery job's SQL, e.g. to check its cost
 ```
+
+One BigQuery job returns the cases and each customer's LUMI baseline (approved account facts,
+`new_demographics.sql`). The baseline is stored per case: the model-visible profile as INTERNAL,
+the account ref map (`rel_id`, `cm15`) as RESTRICTED. A case without a match is still admitted and
+counted under `NO_BASELINE` in the summary. `CFR_INTAKE_BASELINE=0` fetches cases only.
 
 Intake is submit-only: it admits and enqueues. Workflows run in worker processes:
 

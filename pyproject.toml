@@ -46,6 +46,8 @@ dev = [
     # pinned to the OTel line ee-logging requires.
     "opentelemetry-exporter-otlp-proto-http==1.39.1",
     "ruff==0.17.3",  # pinned: rule defaults change between releases
+    # Parses the packaged BigQuery SQL in tests (no BigQuery in dev); pinned: dialect rules change.
+    "sqlglot==26.17.1",
 ]
 
 [build-system]

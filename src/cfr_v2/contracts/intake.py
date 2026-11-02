@@ -29,6 +29,11 @@ class IngestionRequest(Contract):
     source_record_ref: ArtifactRef | None = None
     # CanonicalTranscript artifact; None when the case has no usable transcript.
     transcript_ref: ArtifactRef | None
+    # LUMI baseline captured at admission (LDR-0014); None when the case has none.
+    baseline_ref: ArtifactRef | None = None  # BaselineProfile, INTERNAL
+    baseline_ref_map_ref: ArtifactRef | None = None  # BaselineRefMap, RESTRICTED
+    # When the baseline query ran (the BigQuery job start), with or without a match.
+    baseline_observed_at: AwareDatetime | None = None
     case_note_refs: dict[str, ArtifactRef] = Field(default_factory=dict)
     case_metadata: dict[str, JsonValue] = Field(default_factory=dict)
     evaluation_labels: dict[str, JsonValue] = Field(default_factory=dict)
@@ -36,11 +41,28 @@ class IngestionRequest(Contract):
     received_at: AwareDatetime
 
     def content_hash(self) -> str:
-        """Hash of what was ingested, ignoring when and on which lane it arrived."""
-        return canonical_hash(self.model_dump(mode="json", exclude={"received_at", "lane"}))
+        """Hash of what was ingested, ignoring when and on which lane it arrived.
+
+        The baseline observation time is excluded too, so a re-run over unchanged LUMI data is
+        a plain duplicate; unset baseline refs are left out, so requests admitted before the
+        baseline existed keep their hash.
+        """
+        payload = self.model_dump(mode="json", exclude={"received_at", "lane", "baseline_observed_at"})
+        for name in ("baseline_ref", "baseline_ref_map_ref"):
+            if payload[name] is None:
+                del payload[name]
+        return canonical_hash(payload)
 
     @model_validator(mode="after")
-    def _labels_disjoint_from_metadata(self) -> "IngestionRequest":
+    def _baseline_refs_together(self) -> IngestionRequest:
+        if (self.baseline_ref is None) != (self.baseline_ref_map_ref is None):
+            raise ValueError("baseline_ref and baseline_ref_map_ref are set together")
+        if self.baseline_ref is not None and self.baseline_observed_at is None:
+            raise ValueError("a baseline needs baseline_observed_at")
+        return self
+
+    @model_validator(mode="after")
+    def _labels_disjoint_from_metadata(self) -> IngestionRequest:
         overlap = set(self.case_metadata) & set(self.evaluation_labels)
         if overlap:
             raise ValueError(f"fields cannot be both metadata and labels: {sorted(overlap)}")
@@ -62,7 +84,7 @@ class AdmissionRecord(Contract):
     reason: str | None = None
 
     @model_validator(mode="after")
-    def _run_matches_status(self) -> "AdmissionRecord":
+    def _run_matches_status(self) -> AdmissionRecord:
         if self.status is AdmissionStatus.REJECTED and self.case_run_id is not None:
             raise ValueError("rejected admissions have no case run")
         if self.status is not AdmissionStatus.REJECTED and self.case_run_id is None:
@@ -106,7 +128,7 @@ class CanonicalTranscript(Contract):
     redaction_version: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _unique_interaction_ids(self) -> "CanonicalTranscript":
+    def _unique_interaction_ids(self) -> CanonicalTranscript:
         ids = [i.interaction_id for i in self.interactions]
         if len(ids) != len(set(ids)):
             raise ValueError("interaction ids must be unique")
@@ -121,7 +143,7 @@ class SpanRef(Contract):
     end: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def _ordered(self) -> "SpanRef":
+    def _ordered(self) -> SpanRef:
         if self.end <= self.start:
             raise ValueError("span end must be greater than start")
         return self
@@ -135,7 +157,7 @@ class RedactionSpan(Contract):
     entity_type: str | None = None
 
     @model_validator(mode="after")
-    def _ordered(self) -> "RedactionSpan":
+    def _ordered(self) -> RedactionSpan:
         if self.original_end <= self.original_start or self.redacted_end <= self.redacted_start:
             raise ValueError("redaction spans must be non-empty")
         return self
@@ -151,7 +173,7 @@ class RedactionMap(Contract):
     redaction_version: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _sorted_non_overlapping(self) -> "RedactionMap":
+    def _sorted_non_overlapping(self) -> RedactionMap:
         prev_o = prev_r = -1
         for s in self.spans:
             if s.original_start < prev_o or s.redacted_start < prev_r:

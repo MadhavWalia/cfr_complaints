@@ -38,6 +38,7 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
         # intake (counts and flags only)
         "rows",
         "has_transcript",
+        "has_baseline",
         "redaction_spans",
         "window_start",
         "window_end",

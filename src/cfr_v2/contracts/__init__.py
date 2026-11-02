@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from ._base import Contract
 from .artifacts import ArtifactMetadata, ArtifactRef, Classification, ref_from_sha256, sha256_from_ref
+from .baseline import BaselineAccount, BaselineProfile, BaselineRefEntry, BaselineRefMap
 from .execution import AuthorizationContext, ExecutionBudget, Lane, TaskEnvelope, TaskResult, TaskStatus
 from .hashing import canonical_hash, canonical_json, sha256_hex
 from .intake import (
@@ -48,7 +49,6 @@ from .routing import CandidateRoute, ClaimRouting, ClaimRoutingOutcome, RouteSou
 from .selection import PrimarySelection, SelectionStatus
 from .understanding import (
     Allegation,
-    BaselineProfile,
     ClaimScope,
     ClaimSetRevision,
     EntityRef,
@@ -69,16 +69,19 @@ __all__ = [
     "ArtifactMetadata",
     "ArtifactRef",
     "AuthorizationContext",
+    "BaselineAccount",
     "BaselineProfile",
+    "BaselineRefEntry",
+    "BaselineRefMap",
     "CandidateRoute",
     "CanonicalTranscript",
     "CapabilityDescriptor",
     "CaseNote",
-    "Classification",
     "ClaimRouting",
     "ClaimRoutingOutcome",
     "ClaimScope",
     "ClaimSetRevision",
+    "Classification",
     "Contract",
     "CostClass",
     "EntityRef",

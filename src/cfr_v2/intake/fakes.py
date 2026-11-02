@@ -1,18 +1,19 @@
-"""Offline stand-ins for C01: a regex masker and synthetic ``current_cases.sql`` rows.
+"""Offline stand-ins for C01: a regex masker and synthetic rows of the combined case query.
 
 All values are invented (``example.com`` addresses, 555 phone numbers, made-up
 names). Nothing here is derived from real case data.
 """
 from __future__ import annotations
 
+import json
 import random
 import re
 from collections.abc import Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .redaction import PII_TOKEN
-from .source import SOURCE_COLUMNS
+from .source import BASELINE_OBSERVED_AT_COLUMN, SOURCE_COLUMNS
 
 _EMAIL = r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"
 _PHONE = r"\b\d{3}[-. ]\d{3}[-. ]\d{4}\b"
@@ -76,11 +77,56 @@ def synthetic_transcript(rng: random.Random, subcategory: str, *, calls: int = 2
     return "|".join(" ".join(t.format(**values) for t in _TURNS[: rng.randint(5, len(_TURNS))]) for _ in range(calls))
 
 
-def synthetic_row(i: int, *, seed: int = 0, **overrides: Any) -> dict[str, Any]:
-    """One row with every ``current_cases.sql`` output column."""
+PRODUCTS = ("Gold Card", "Platinum Card", "Blue Cash Everyday", "Business Gold Card", "Delta SkyMiles Gold Card")
+OBSERVED_AT = datetime(2026, 9, 10, 6, 0, tzinfo=UTC)
+
+
+def synthetic_baseline(rng: random.Random, i: int, *, cm15: str, received: datetime) -> dict[str, Any]:
+    """Baseline columns as the combined query returns them; every seventh case has no C360 match."""
+    if i % 7 == 3:
+        return {"baseline_llm_context": None, "baseline_ref_map": None, "baseline_n_accounts": None}
+    n = rng.randint(1, 3)
+    accounts, ref_map = [], []
+    for k in range(1, n + 1):
+        product = rng.choice(PRODUCTS)
+        supplementary = k > 1 and rng.random() < 0.5
+        accounts.append(
+            {
+                "account_ref": f"A{k}",
+                "is_case_account": k == 1,
+                "product": product,
+                "co_brand_partner": "Delta" if "Delta" in product else None,
+                "business_unit": "OPEN (small business)" if "Business" in product else "Consumer",
+                "account_type": "Card",
+                "status_at_case": "Active",
+                "opened_month": f"{rng.randint(2010, 2025)}-{rng.randint(1, 12):02d}",
+                "card_replaced_month": None,
+                "holder": "Other cardholder" if supplementary else "Customer",
+                "card_role": "Supplementary on A1" if supplementary else "Basic",
+                "role_detail": None,
+                "market": "US",
+            }
+        )
+        ref_map.append(
+            {
+                "account_ref": f"A{k}",
+                "rel_id": f"REL{i:06d}{k}",
+                "cm15": cm15 if k == 1 else f"{rng.randint(10**14, 10**15 - 1)}",
+            }
+        )
+    context = {"case_received_date": received.date().isoformat(), "accounts": accounts}
+    return {
+        "baseline_llm_context": json.dumps(context, separators=(",", ":")),
+        "baseline_ref_map": ref_map,
+        "baseline_n_accounts": n,
+    }
+
+
+def synthetic_row(i: int, *, seed: int = 0, baseline: bool = True, **overrides: Any) -> dict[str, Any]:
+    """One row with every ``current_cases.sql`` output column, plus the baseline columns."""
     rng = random.Random(seed * 100_003 + i)
     category, subcategory = rng.choice(CATEGORIES)
-    resolved = datetime(2026, 9, 1, 12, tzinfo=timezone.utc) + timedelta(hours=7 * i)
+    resolved = datetime(2026, 9, 1, 12, tzinfo=UTC) + timedelta(hours=7 * i)
     row: dict[str, Any] = {
         "case_no": f"SYN{seed:02d}{i:06d}",
         "latest_rslv_optn": rng.choice(RESOLUTIONS),
@@ -113,9 +159,12 @@ def synthetic_row(i: int, *, seed: int = 0, **overrides: Any) -> dict[str, Any]:
         "msg_tx2": synthetic_transcript(rng, subcategory),
     }
     assert tuple(row) == SOURCE_COLUMNS
+    if baseline:
+        row |= synthetic_baseline(rng, i, cm15=row["cm15"], received=row["rcpt_ts"])
+        row[BASELINE_OBSERVED_AT_COLUMN] = OBSERVED_AT
     row.update(overrides)
     return row
 
 
-def synthetic_rows(n: int, *, seed: int = 0) -> list[dict[str, Any]]:
-    return [synthetic_row(i, seed=seed) for i in range(n)]
+def synthetic_rows(n: int, *, seed: int = 0, baseline: bool = True) -> list[dict[str, Any]]:
+    return [synthetic_row(i, seed=seed, baseline=baseline) for i in range(n)]

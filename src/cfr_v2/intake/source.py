@@ -4,6 +4,9 @@ A source yields one mapping per case with the columns of ``sql/current_cases.sql
 Field use matches V1 exactly: models see ``case_no``, the redacted ``msg_tx2``,
 ``prim_ctgy`` and ``prim_subctgy``; ``latest_rslv_optn`` is the only evaluation
 label; every other column is stored (RESTRICTED) and unused.
+
+With the LUMI baseline (LDR-0014) the query also returns ``BASELINE_COLUMNS``; they
+are split off before the source record is built (see ``intake/baseline.py``).
 """
 
 from __future__ import annotations
@@ -59,6 +62,22 @@ SOURCE_COLUMNS = (
     "msg_tx2",
 )
 
+# Bump on every change to sql/lumi_baseline.sql; recorded on each BaselineProfile.
+BASELINE_QUERY_VERSION = "lumi-baseline-1"
+# Added by the combined query (case_query_sql(with_baseline=True)).
+BASELINE_COLUMNS = ("baseline_llm_context", "baseline_ref_map", "baseline_n_accounts")
+# Added by the source, not the query: when the baseline query ran (the job start).
+BASELINE_OBSERVED_AT_COLUMN = "baseline_observed_at"
+_NOT_SOURCE = frozenset((*BASELINE_COLUMNS, BASELINE_OBSERVED_AT_COLUMN))
+
+_BASELINE_FINAL_SELECT = """SELECT
+  c.*,
+  bl.llm_context AS baseline_llm_context,
+  bl.ref_map AS baseline_ref_map,
+  bl.n_accounts AS baseline_n_accounts
+FROM cases c
+LEFT JOIN baseline bl ON bl.case_no = c.case_no"""
+
 
 class InvalidSourceRowError(ValueError):
     """The row cannot be admitted; ``reason`` is safe to persist (no field values)."""
@@ -82,10 +101,33 @@ class RecordsCaseSource:
         return iter(self.rows)
 
 
-def case_query_sql() -> str:
-    """The packaged V2 case query, ready for parameter binding."""
-    sql = resources.files("cfr_v2.intake").joinpath("sql/current_cases.sql").read_text(encoding="utf-8")
-    return sql.strip().rstrip(";")
+def _packaged_sql(name: str) -> str:
+    return resources.files("cfr_v2.intake").joinpath(f"sql/{name}").read_text(encoding="utf-8").strip().rstrip(";")
+
+
+def case_query_sql(*, with_baseline: bool = False) -> str:
+    """The packaged V2 case query, ready for parameter binding.
+
+    ``with_baseline`` appends the LUMI baseline (LDR-0014) to the same WITH clause, so
+    cases and baseline come from one BigQuery job: the case query's final SELECT becomes
+    the ``cases`` CTE, the baseline reads its ``base_cases`` CTE, and the result is
+    ``cases`` left-joined to ``baseline`` (a case without a match gets NULL columns).
+    """
+    sql = _packaged_sql("current_cases.sql")
+    if not with_baseline:
+        return sql
+    cut = sql.rindex("\nSELECT\n")
+    ctes, final = sql[:cut], sql[cut + 1 :]
+    if not final.startswith("SELECT\ncase_no"):
+        raise RuntimeError("current_cases.sql: final SELECT not found where expected")
+    return f"{ctes},\n\ncases AS (\n{final}\n),\n\n{_packaged_sql('lumi_baseline.sql')}\n\n{_BASELINE_FINAL_SELECT}"
+
+
+def baseline_columns(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The row's baseline columns, or None when the source did not query the baseline."""
+    if not any(name in row for name in _NOT_SOURCE):
+        return None
+    return {name: row.get(name) for name in _NOT_SOURCE}
 
 
 def source_case_id(row: Mapping[str, Any]) -> str:
@@ -123,11 +165,15 @@ def _source_value(value: Any) -> Any:
 
 
 def source_record_bytes(row: Mapping[str, Any]) -> bytes:
-    """Canonical JSON of the whole row, so a re-fetched identical row has the same ref."""
+    """Canonical JSON of the case row, so a re-fetched identical row has the same ref.
+
+    Baseline columns are left out: they are stored as their own artifacts, and the
+    source record stays the ``current_cases.sql`` row.
+    """
     try:
-        return canonical_json({name: _source_value(value) for name, value in row.items()})
+        return canonical_json({name: _source_value(value) for name, value in row.items() if name not in _NOT_SOURCE})
     except (TypeError, ValueError) as exc:
-        column = next((name for name, value in row.items() if not _serializable(value)), "?")
+        column = next((n for n, v in row.items() if n not in _NOT_SOURCE and not _serializable(v)), "?")
         raise InvalidSourceRowError(f"UNSERIALIZABLE_ROW:{column}:{type(exc).__name__}") from None
 
 
