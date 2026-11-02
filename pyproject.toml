@@ -16,6 +16,8 @@ dependencies = [
     "opentelemetry-api==1.39.1",
     "opentelemetry-sdk==1.39.1",
     "opentelemetry-instrumentation-httpx==0.60b1",
+    # C02+ programs (LDR-0015). Pinned: GatewayEngine uses the 3.4 custom-engine API.
+    "dspy==3.4.1",
 ]
 
 [project.optional-dependencies]

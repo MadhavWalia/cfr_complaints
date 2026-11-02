@@ -16,11 +16,12 @@ src/cfr_v2/
   contracts/    P1  typed contracts + canonical hashing
   state/        P2  SQL migrations, psycopg/psycopg2 access layer, repository
   artifacts/    P3  content-addressed artifact store (S3 bytes, Postgres metadata)
-  llm/          P5  model client: gateway (safechain), rate limits, retries, budgets, fake
+  llm/          P5  model client: gateway (safechain), rate limits, retries, budgets, fake; DSPy engine
   telemetry/    P6  OpenTelemetry / ee-logging facade (from V1), attribute allowlist, dev OTLP export
   runtime/      P6  durable runner on a Postgres job queue: lanes, leases, submit
   registry/     P4  release manifests: load, pin, resolve
   intake/       C01 BigQuery case source, normalization, redaction, admission
+  understanding/ C02 Pass 1 (DSPy): allegations, requests and agent statements, with spans
 registry/       release manifests (registry/releases/<id>.yaml)
 config/         ee-config template (config_gpt.example.yml); your config_gpt.yml is gitignored
 tests/
@@ -113,6 +114,16 @@ Intake is submit-only: it admits and enqueues. Workflows run in worker processes
 
 Run as many workers as needed; any worker picks up jobs whose previous worker died.
 
+Workers run C02 Pass 1 for real (gpt-5 through the gateway) and placeholders for C03–C05, so
+**starting a worker sends every queued case to the model.** Try Pass 1 on a few cases first:
+
+```bash
+python -m cfr_v2.understanding --sample 5 --out pass1_trial   # counts, latency, tokens, cost projection
+```
+
+It writes nothing to the state database or the artifact store. The review files in `--out` hold
+redacted transcript excerpts: keep them local and delete them after review.
+
 ## Model gateway (P5)
 
 Stages call models through `cfr_v2.llm.GatewayModelClient`, which uses V1's access path
@@ -133,6 +144,10 @@ redacted at intake, and the client refuses a model that would mask them again.
 | retries or deadline exhausted | the run is retried later by the worker, not failed |
 
 Limits and timeouts are `CFR_LLM_*` variables; see `.env.example`.
+
+DSPy programs (C02 onwards) reach the gateway through the same client: `cfr_v2.llm.dspy_lm`
+plugs a dspy 3.4 custom engine into `dspy.LM`, with DSPy's own retries, cache and history off
+(LDR-0015). Run programs with `run_program`, which carries the case identity to each call.
 
 To check the gateway from an enterprise host (a few real calls, synthetic text only):
 

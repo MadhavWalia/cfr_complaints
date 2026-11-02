@@ -1,4 +1,4 @@
-"""C02 outputs: Pass 1 allegations and Pass 2 grounded claims. The baseline C02 reads is in ``baseline.py``."""
+"""C02 outputs: Pass 1 allegations, requests and agent statements, and Pass 2 grounded claims. The baseline C02 reads is in ``baseline.py``."""
 from __future__ import annotations
 
 from enum import StrEnum
@@ -15,6 +15,7 @@ class ClaimScope(StrEnum):
     AGENT = "agent"
     CUSTOMER = "customer"
     SYSTEM = "system"
+    THIRD_PARTY = "third_party"  # a merchant, partner or another company
     MIXED = "mixed"
 
 
@@ -23,7 +24,34 @@ class StatementKind(StrEnum):
     IMPACT = "IMPACT"  # harm the customer reports
 
 
-class Allegation(Contract):
+class _Ambiguity(Contract):
+    ambiguous: bool = False
+    ambiguity_note: str | None = None
+
+    @model_validator(mode="after")
+    def _ambiguity_note(self) -> _Ambiguity:
+        if self.ambiguity_note and not self.ambiguous:
+            raise ValueError("ambiguity_note given for a non-ambiguous item")
+        return self
+
+
+class DetailType(StrEnum):
+    WHEN = "when"
+    AMOUNT = "amount"
+    MERCHANT_OR_PRODUCT = "merchant_or_product"
+    EARLIER_CONTACT = "earlier_contact"
+    OTHER = "other"
+
+
+class AllegationDetail(Contract):
+    """A specific fact the customer gives about one allegation, as stated (Pass 2 grounds it)."""
+
+    detail_type: DetailType
+    text: str = Field(min_length=1)
+    span: SpanRef
+
+
+class Allegation(_Ambiguity):
     """Pass 1 output: what the customer alleged, from the transcript only (ADR-03)."""
 
     allegation_id: str = Field(min_length=1)
@@ -31,15 +59,107 @@ class Allegation(Contract):
     kind: StatementKind
     scope: ClaimScope
     spans: tuple[SpanRef, ...] = Field(min_length=1)
+    details: tuple[AllegationDetail, ...] = ()
     issue_indicators: tuple[str, ...] = ()
-    ambiguous: bool = False
-    ambiguity_note: str | None = None
     materiality_hint: str | None = None  # no business definition assumed (HD-13)
 
+
+class RequestType(StrEnum):
+    REFUND_OR_CREDIT = "refund_or_credit"
+    FEE_REVERSAL = "fee_reversal"
+    CANCEL_OR_CLOSE = "cancel_or_close"
+    REPLACE_CARD = "replace_card"
+    EXPLANATION = "explanation"
+    ESCALATION = "escalation"
+    CALLBACK = "callback"
+    OTHER = "other"
+
+
+class CustomerRequest(_Ambiguity):
+    """Pass 1 output: one thing the customer asked American Express to do."""
+
+    request_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    request_type: RequestType
+    spans: tuple[SpanRef, ...] = Field(min_length=1)
+    allegation_ids: tuple[str, ...] = ()
+
+
+class AgentStatementKind(StrEnum):
+    FACT = "FACT"  # information stated as true
+    ACTION = "ACTION"  # something the agent says they did or are doing
+    COMMITMENT = "COMMITMENT"  # something promised for later
+    ADVICE = "ADVICE"  # something the agent told the customer to do
+
+
+class AgentStatement(_Ambiguity):
+    """Pass 1 output: something an agent said or did that can be checked against procedure or records.
+
+    Pass 2 turns these into evidence needs (C02 LLD); the V1 rule was "every CCP statement is checked".
+    """
+
+    statement_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    kind: AgentStatementKind
+    spans: tuple[SpanRef, ...] = Field(min_length=1)
+    allegation_ids: tuple[str, ...] = ()
+    request_ids: tuple[str, ...] = ()
+
+
+class DroppedReason(StrEnum):
+    NO_QUOTE = "NO_QUOTE"  # the model gave no quote
+    QUOTE_NOT_FOUND = "QUOTE_NOT_FOUND"  # no quote occurs in the redacted transcript
+    INVALID = "INVALID"  # fails its contract (e.g. empty text)
+
+
+class Pass1List(StrEnum):
+    ALLEGATIONS = "allegations"
+    DETAILS = "details"
+    REQUESTS = "requests"
+    AGENT_STATEMENTS = "agent_statements"
+
+
+class DroppedItem(Contract):
+    """An extracted item that failed deterministic validation. Carries no text (it may quote the call)."""
+
+    item_list: Pass1List
+    index: int = Field(ge=0)  # position in the model's list (for details: the allegation's)
+    detail_index: int | None = Field(default=None, ge=0)  # position within that allegation's details
+    reason: DroppedReason
+
+
+class Pass1Result(Contract):
+    """Pass 1 result for one case run: the C02 stage artifact until Pass 2 and claim sets land.
+
+    Invalid items are dropped, never the whole result (C02 LLD); ``dropped`` records them.
+    Links point only at kept items.
+    """
+
+    case_id: str = Field(min_length=1)
+    program_id: str = Field(min_length=1)
+    program_version: str = Field(min_length=1)
+    transcript_ref: ArtifactRef | None  # None: the case has no transcript, and no model was called
+    allegations: tuple[Allegation, ...] = ()
+    requests: tuple[CustomerRequest, ...] = ()
+    agent_statements: tuple[AgentStatement, ...] = ()
+    dropped: tuple[DroppedItem, ...] = ()
+
     @model_validator(mode="after")
-    def _ambiguity_note(self) -> Allegation:
-        if self.ambiguity_note and not self.ambiguous:
-            raise ValueError("ambiguity_note given for a non-ambiguous allegation")
+    def _consistent(self) -> Pass1Result:
+        allegation_ids = [a.allegation_id for a in self.allegations]
+        request_ids = [r.request_id for r in self.requests]
+        statement_ids = [s.statement_id for s in self.agent_statements]
+        ids = allegation_ids + request_ids + statement_ids
+        if len(set(ids)) != len(ids):
+            raise ValueError("item ids must be unique")
+        linked_allegations = {i for r in self.requests for i in r.allegation_ids} | {
+            i for s in self.agent_statements for i in s.allegation_ids
+        }
+        linked_requests = {i for s in self.agent_statements for i in s.request_ids}
+        if not linked_allegations <= set(allegation_ids) or not linked_requests <= set(request_ids):
+            raise ValueError("links must point at kept items")
+        if self.transcript_ref is None and (ids or self.dropped):
+            raise ValueError("a case without a transcript has nothing extracted")
         return self
 
 

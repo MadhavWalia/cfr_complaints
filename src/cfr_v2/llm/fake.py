@@ -54,7 +54,11 @@ class FakeModelClient:
         if isinstance(answer, ModelError):
             raise answer
         output = dict(answer)
-        prompt_chars = len(request.instructions) + len(json.dumps(request.inputs, sort_keys=True))
+        prompt_chars = (
+            len(request.instructions)
+            + len(json.dumps(request.inputs, sort_keys=True))
+            + sum(len(t.content) for t in request.messages)
+        )
         usage = ModelUsage(
             input_tokens=int(prompt_chars * self.tokens_per_char),
             output_tokens=int(len(json.dumps(output, sort_keys=True)) * self.tokens_per_char),

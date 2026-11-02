@@ -19,8 +19,20 @@ from cfr_v2.telemetry import get_logger, init_telemetry, shutdown_telemetry
 
 from .app import start_runtime, stop_runtime
 from .settings import RuntimeSettings
+from .stages import StageHandler, default_handlers
 
 logger = get_logger(__name__)
+
+
+def stage_handlers(store: S3ArtifactStore) -> dict[str, StageHandler]:
+    """Real components where they exist (C02 Pass 1), placeholders for the rest."""
+    from cfr_v2.llm import GatewayModelClient, GatewaySettings
+    from cfr_v2.llm.dspy_lm import gateway_lm
+    from cfr_v2.understanding import make_understanding_handler
+
+    settings = GatewaySettings.from_env()
+    lm = gateway_lm(GatewayModelClient(settings), settings.model_id)
+    return {**default_handlers(), "c02.understanding": make_understanding_handler(store, lm)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,7 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
 
-    start_runtime(RuntimeSettings.from_env(), S3ArtifactStore(S3Settings.from_env()), listen_lanes=lanes)
+    store = S3ArtifactStore(S3Settings.from_env())
+    start_runtime(RuntimeSettings.from_env(), store, handlers=stage_handlers(store), listen_lanes=lanes)
     try:
         stop.wait()
         logger.info("worker: stopping (drain timeout %.0fs)", args.drain_timeout)

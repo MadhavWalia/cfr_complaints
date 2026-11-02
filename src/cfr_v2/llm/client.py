@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from cfr_v2.contracts import Contract, ExecutionBudget, TaskStatus, canonical_hash
+
+
+class ChatTurn(Contract):
+    role: Literal["user", "assistant"]
+    content: str
 
 
 class ModelRequest(Contract):
@@ -28,6 +33,17 @@ class ModelRequest(Contract):
     trace_id: str | None = None
     # JSON schema for structured output; None asks for plain text, returned as {"text": ...}.
     output_schema: dict[str, JsonValue] | None = None
+    # A conversation already formatted by the caller (DSPy's adapter, LDR-0015), sent after the
+    # instructions in place of the single user message built from ``inputs``.
+    messages: tuple[ChatTurn, ...] = ()
+
+    @model_validator(mode="after")
+    def _messages_or_inputs(self) -> ModelRequest:
+        if self.messages and self.inputs:
+            raise ValueError("give either inputs or messages, not both")
+        if self.messages and self.messages[-1].role != "user":
+            raise ValueError("the conversation must end with a user turn")
+        return self
 
     @property
     def input_hash(self) -> str:
@@ -39,6 +55,8 @@ class ModelRequest(Contract):
         }
         if self.output_schema is not None:  # absent from the hash when unset, so existing fixtures keep their keys
             hashed["output_schema"] = self.output_schema
+        if self.messages:
+            hashed["messages"] = [t.model_dump(mode="json") for t in self.messages]
         return canonical_hash(hashed)
 
 
