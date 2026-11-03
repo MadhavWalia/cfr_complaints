@@ -98,3 +98,10 @@ def test_unknown_evidence_taxonomy_is_rejected(tmp_path):
     _write(tmp_path, BODY + "evidence_sources: evidence-sources-99\n")
     with pytest.raises(ManifestError, match="evidence-sources-99"):
         ReleaseRegistry(tmp_path).load("r1")
+
+
+def test_phase_d_release_adds_the_c03_selector():
+    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-d")
+    versions = {p.program_id: p.version for p in manifest.programs}
+    assert versions["c03.primary_selection"] == "select-1" and versions["c02.pass2"] == "pass2-1"
+    assert manifest.evidence_sources == "evidence-sources-1"

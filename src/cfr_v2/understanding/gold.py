@@ -42,6 +42,8 @@ SHEETS: dict[str, tuple[str, ...]] = {
         "statement_count",
         "speaker_labels",
         "could_not_label",
+        "primary_allegation_no",
+        "primary_unclear",
         "notes",
     ),
     "allegations": (
@@ -81,6 +83,10 @@ SHEETS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Added with C03 (LDR-0018); workbooks made before then don't have them.
+OPTIONAL_COLUMNS = frozenset({("cases", "primary_allegation_no"), ("cases", "primary_unclear")})
+
+
 class GoldError(ValueError):
     """A workbook problem, with its sheet and row; never the cell's text."""
 
@@ -112,6 +118,9 @@ class GoldCase:
     speaker_labels: str
     could_not_label: bool
     source: str  # workbook file name, for reports
+    row: int = 0  # row on the cases sheet
+    primary: int | None = None  # primary_allegation_no: the main complaint (LDR-0018)
+    primary_unclear: bool | None = None
     allegations: list[GoldItem] = field(default_factory=list)
     details: list[GoldDetail] = field(default_factory=list)
     requests: list[GoldItem] = field(default_factory=list)
@@ -134,7 +143,7 @@ def _rows(book, sheet: str, source: str) -> list[tuple[int, dict[str, str | None
         raise GoldError(f"{source}: missing sheet {sheet!r}")
     rows = book[sheet].iter_rows(values_only=True)
     header = [_cell(h) for h in next(rows, ())]
-    missing = [c for c in SHEETS[sheet] if c not in header]
+    missing = [c for c in SHEETS[sheet] if c not in header and (sheet, c) not in OPTIONAL_COLUMNS]
     if missing:
         raise GoldError(f"{source}: sheet {sheet!r} is missing columns {missing}")
     out = []
@@ -207,6 +216,9 @@ def read_gold(path: Path) -> list[GoldCase]:
             speaker_labels=r.choice("cases", row, rec, "speaker_labels", SPEAKER_LABELS),
             could_not_label=r.yes("cases", row, rec, "could_not_label"),
             source=path.name,
+            row=row,
+            primary=r.number("cases", row, rec, "primary_allegation_no") if rec.get("primary_allegation_no") else None,
+            primary_unclear=r.yes("cases", row, rec, "primary_unclear") if rec.get("primary_unclear") else None,
         )
 
     def case_for(sheet: str, row: int, rec: dict) -> GoldCase:
@@ -291,6 +303,11 @@ def read_gold(path: Path) -> list[GoldCase]:
             sheet = "requests" if item in case.requests else "agent_statements"
             if not item.allegations <= numbers or not item.requests <= request_numbers:
                 raise r.fail(sheet, item.row, "links to an allegation or request that doesn't exist")
+        if case.primary is not None:
+            if case.primary not in numbers:
+                raise r.fail("cases", case.row, "primary_allegation_no is not an allegation of this case")
+            if case.primary_unclear is None:
+                raise r.fail("cases", case.row, "primary_unclear is empty")
         if case.could_not_label and (case.allegations or case.requests or case.statements):
             raise GoldError(f"{path.name}: case {case.case_no} is could_not_label = Y but has rows")
     return list(cases.values())
@@ -308,6 +325,7 @@ def write_template(case_nos: list[str], path: Path) -> None:
     lists = {
         ("cases", "speaker_labels"): SPEAKER_LABELS,
         ("cases", "could_not_label"): ("Y", "N"),
+        ("cases", "primary_unclear"): ("Y", "N"),
         ("allegations", "type"): ("Claim", "Impact"),
         ("allegations", "about"): ABOUT,
         ("allegations", "ambiguous"): ("Y", "N"),

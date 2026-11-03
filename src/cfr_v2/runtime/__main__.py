@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 
 
 def stage_handlers(store: S3ArtifactStore) -> dict[str, StageHandler]:
-    """Real components where they exist (C02 Pass 1 and Pass 2), placeholders for the rest.
+    """Real components where they exist (C02 Pass 1 and Pass 2, C03), placeholders for the rest.
 
     Pass 2's evidence source taxonomy is the one the run's pinned release manifest names
     (``evidence-sources-1`` when it names none); each claim set records the version used.
@@ -34,6 +34,7 @@ def stage_handlers(store: S3ArtifactStore) -> dict[str, StageHandler]:
     from cfr_v2.llm import GatewayModelClient, GatewaySettings
     from cfr_v2.llm.dspy_lm import gateway_lm
     from cfr_v2.registry.evidence_sources import PinnedTaxonomies
+    from cfr_v2.selection import make_selection_handler
     from cfr_v2.understanding import make_pass1_handler, make_pass2_handler
 
     from . import context
@@ -45,6 +46,7 @@ def stage_handlers(store: S3ArtifactStore) -> dict[str, StageHandler]:
         **default_handlers(),
         "c02.pass1": make_pass1_handler(store, lm),
         "c02.pass2": make_pass2_handler(store, lm, taxonomies),
+        "c03.primary_selection": make_selection_handler(store, lm),
     }
 
 
