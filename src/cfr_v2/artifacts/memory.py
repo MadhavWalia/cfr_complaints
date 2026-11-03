@@ -40,3 +40,21 @@ class InMemoryArtifactStore:
             return self.objects[(classification, sha256_from_ref(ref))]
         except KeyError:
             raise ArtifactNotFoundError(ref) from None
+
+
+class OverlayArtifactStore:
+    """Reads fall through to ``base``; writes stay in memory. For trials and evaluation runs that must
+    read real artifacts but leave nothing behind."""
+
+    def __init__(self, base) -> None:
+        self.base = base
+        self.memory = InMemoryArtifactStore()
+
+    def put(self, data: bytes, *, media_type: str, classification: Classification) -> StoredArtifact:
+        return self.memory.put(data, media_type=media_type, classification=classification)
+
+    def get(self, ref: str, *, classification: Classification, authorization: AuthorizationContext) -> bytes:
+        try:
+            return self.memory.get(ref, classification=classification, authorization=authorization)
+        except ArtifactNotFoundError:
+            return self.base.get(ref, classification=classification, authorization=authorization)

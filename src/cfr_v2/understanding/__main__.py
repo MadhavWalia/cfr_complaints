@@ -24,8 +24,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cfr_v2.artifacts import ArtifactNotFoundError, InMemoryArtifactStore, S3ArtifactStore, S3Settings, StoredArtifact
-from cfr_v2.contracts import AuthorizationContext, ClaimSetRevision, Classification, Pass1Result
+from cfr_v2.artifacts import OverlayArtifactStore, S3ArtifactStore, S3Settings
+from cfr_v2.contracts import ClaimSetRevision, Classification, Pass1Result
 from cfr_v2.llm import GatewayModelClient, GatewaySettings, ModelError, ModelRequest, ModelResponse, close_model_loop
 from cfr_v2.llm.dspy_lm import gateway_lm
 from cfr_v2.registry.evidence_sources import PinnedTaxonomies
@@ -36,23 +36,6 @@ from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
 
 from .handler import load_segments, make_pass1_handler, make_pass2_handler
 from .pass1 import PASS1_PROGRAM_ID
-
-
-class _Overlay:
-    """Reads from the real store; writes stay in memory, so a trial leaves nothing behind."""
-
-    def __init__(self, base: S3ArtifactStore) -> None:
-        self.base = base
-        self.memory = InMemoryArtifactStore()
-
-    def put(self, data: bytes, *, media_type: str, classification: Classification) -> StoredArtifact:
-        return self.memory.put(data, media_type=media_type, classification=classification)
-
-    def get(self, ref: str, *, classification: Classification, authorization: AuthorizationContext) -> bytes:
-        try:
-            return self.memory.get(ref, classification=classification, authorization=authorization)
-        except ArtifactNotFoundError:
-            return self.base.get(ref, classification=classification, authorization=authorization)
 
 
 class _Metered:
@@ -136,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
 
     init_telemetry(service_name="cfr-v2-c02-trial")
     db = Database(RuntimeSettings.from_env().state_database_url, max_connections=2)
-    store = _Overlay(S3ArtifactStore(S3Settings.from_env()))
+    store = OverlayArtifactStore(S3ArtifactStore(S3Settings.from_env()))
     settings = GatewaySettings.from_env()
     client = _Metered(GatewayModelClient(settings))
     lm = gateway_lm(client, settings.model_id)
