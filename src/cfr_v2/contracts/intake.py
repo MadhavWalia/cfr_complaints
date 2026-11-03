@@ -191,6 +191,36 @@ class RedactionMap(Contract):
             raise ValueError("range end must be greater than start")
         return self._start_to_original(start), self._end_to_original(end)
 
+    def to_redacted(self, start: int, end: int) -> tuple[int, int]:
+        """Translate a half-open original-text range to the redacted text (the inverse of ``to_original``).
+
+        A boundary inside a redacted value expands to the whole redaction token, so the
+        range covers the token that replaced it.
+        """
+        if end <= start:
+            raise ValueError("range end must be greater than start")
+        return self._start_to_redacted(start), self._end_to_redacted(end)
+
+    def _start_to_redacted(self, p: int) -> int:
+        shift = 0
+        for s in self.spans:
+            if p < s.original_start:
+                break
+            if p < s.original_end:
+                return s.redacted_start
+            shift = s.redacted_end - s.original_end
+        return p + shift
+
+    def _end_to_redacted(self, p: int) -> int:
+        shift = 0
+        for s in self.spans:
+            if p <= s.original_start:
+                break
+            if p <= s.original_end:
+                return s.redacted_end
+            shift = s.redacted_end - s.original_end
+        return p + shift
+
     def _start_to_original(self, p: int) -> int:
         shift = 0
         for s in self.spans:

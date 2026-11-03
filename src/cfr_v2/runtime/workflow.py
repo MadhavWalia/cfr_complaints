@@ -146,7 +146,7 @@ def _execute(rt: Runtime, run_id: str) -> None:
                 stored = saved.get(step)
                 set_attributes(stage_span, checkpoint_reused=stored is not None)
                 if stored is None:
-                    stored = _produce(rt, run_id, stage, request_ref, tuple(upstream))
+                    stored = _produce(rt, run_id, stage, request_ref, tuple(upstream), run["release_manifest_ref"])
                     with rt.db.transaction() as tx:
                         stored = jobs.save_checkpoint(tx, run_id, step, stored)
 
@@ -171,13 +171,22 @@ def _execute(rt: Runtime, run_id: str) -> None:
             jobs.finish(tx, run_id, status="SUCCEEDED")
 
 
-def _produce(rt: Runtime, run_id: str, stage: Stage, request_ref: str, upstream: tuple[str, ...]) -> dict[str, Any]:
+def _produce(
+    rt: Runtime, run_id: str, stage: Stage, request_ref: str, upstream: tuple[str, ...], manifest_ref: str | None
+) -> dict[str, Any]:
     settings = rt.settings
     with span("produce", stage=stage.logical_task_id) as produce_span:
         for attempt in range(1, settings.step_max_attempts + 1):
             try:
                 output = rt.handlers[stage.logical_task_id](
-                    StageInput(run_id, stage, request_ref, upstream, trace_id=current_trace_id())
+                    StageInput(
+                        run_id,
+                        stage,
+                        request_ref,
+                        upstream,
+                        trace_id=current_trace_id(),
+                        release_manifest_ref=manifest_ref,
+                    )
                 )
                 stored = rt.store.put(output.content, media_type=output.media_type, classification=Classification.INTERNAL)
             except ModelError as exc:

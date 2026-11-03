@@ -122,13 +122,21 @@ on a few cases first:
 python -m cfr_v2.understanding --sample 5 --out c02_trial   # counts, latency, tokens, cost projection per pass
 ```
 
-Pass 2 tags each evidence need with a source type from `registry/evidence_sources/`
-(`CFR_EVIDENCE_SOURCES_VERSION`, default `evidence-sources-1`). The business team maintains where
+Pass 2 tags each evidence need with a source type from `registry/evidence_sources/`, in the
+version the run's release manifest names (`evidence_sources:`; `evidence-sources-1` if none). New
+intake uses `cfr-v2-phase-c` (`CFR_RELEASE_ID`). The business team maintains where
 each source type's evidence lives through a workbook: `python -m cfr_v2.registry.evidence_sources
 export|import|check` ([guide](lld/guides/evidence-sources.md); `lld/` is local).
 
-It writes nothing to the state database or the artifact store. The review files in `--out` hold
+The trial writes nothing to the state database or the artifact store. The review files in `--out` hold
 redacted transcript excerpts: keep them local and delete them after review.
+
+To score Pass 1 against the business team's gold-set workbooks (recall, precision, agreement):
+
+```bash
+python -m cfr_v2.understanding.score template --cases-file cases.txt gold_template.xlsx   # blank workbook
+python -m cfr_v2.understanding.score run gold_*.xlsx --out pass1_score.json               # needs RESTRICTED access
+```
 
 ## Model gateway (P5)
 

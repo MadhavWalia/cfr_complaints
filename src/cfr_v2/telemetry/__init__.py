@@ -7,6 +7,7 @@ split into focused submodules (``bootstrap``, ``logging``, ``http``, ``api``).
 from __future__ import annotations
 
 from .api import (
+    SafeExceptionFilter,
     add_event,
     aobserve,
     attach,
@@ -24,6 +25,7 @@ from .api import (
     link_to_current,
     mark_error,
     record_llm_call,
+    safe_traceback,
     set_attributes,
     span,
     telemetry,
@@ -45,6 +47,7 @@ __all__ = [
     "METRIC_LABELS",
     "SPAN_ATTRIBUTES",
     "JsonTraceHandler",
+    "SafeExceptionFilter",
     "add_event",
     "aobserve",
     "attach",
@@ -67,6 +70,7 @@ __all__ = [
     "link_to_current",
     "mark_error",
     "record_llm_call",
+    "safe_traceback",
     "safechain_httpx_kwargs",
     "set_attributes",
     "shutdown_telemetry",

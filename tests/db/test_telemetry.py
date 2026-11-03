@@ -225,3 +225,161 @@ def test_intake_batch_traces_and_privacy(running, store, spans, caplog):
     blob = "\n".join(exported)
     leaked = [text for text in forbidden if text and text in blob]
     assert not leaked, leaked[:3]
+
+
+# -- Part 2: model calls (LDR-0012) ---------------------------------------------------------
+
+REPLY = "REPLY-MARKER the customer was double charged at the Lisbon hotel"
+CLAIM = "CLAIM-MARKER two hotel charges on one stay"
+BAD_REPLY = "BADREPLY-MARKER not the schema at all"
+CAUSE = "CAUSE-MARKER upstream body echoed the prompt"
+TRANSCRIPTS = {  # the tag word picks each case's path through the fake model
+    "alpha": "Agent: How can I help? Customer: The hotel charged me twice, alpha booking, please refund one.",
+    "bravo": "Agent: Hello there. Customer: My bravo statement shows a fee I never agreed to pay.",
+    "charlie": "Agent: Good morning. Customer: The charlie app keeps declining my payment every time.",
+}
+
+
+def _pass1_answer(user: str, tag: str) -> dict:
+    transcript = user.split("[[ ## transcript ## ]]\n", 1)[1].split("\n\nRespond", 1)[0]
+    item = {"quotes": [transcript[8:40]], "ambiguous": False, "ambiguity_note": None}  # a real excerpt
+    text = f"{REPLY} ({tag})"
+    return {
+        "allegations": [
+            item | {"allegation": text, "kind": "CLAIM", "about": "third_party", "details": [], "issue_indicators": []}
+        ],
+        "requests": [item | {"request": text, "type": "refund_or_credit", "for_allegations": [1]}],
+        "agent_statements": [
+            item | {"statement": text, "kind": "FACT", "responds_to_allegations": [1], "responds_to_requests": [1]}
+        ],
+    }
+
+
+def _pass2_answer() -> dict:
+    need = {"description": CLAIM, "source_type": "transactions", "proposition": REPLY}
+    return {
+        "claims": [
+            {
+                "allegation_ids": ["a1"],
+                "statement": CLAIM,
+                "about_an_account": True,
+                "account_refs": ["A1"],
+                "entities": [{"type": "merchant", "value": CLAIM}],
+                "event_window_start": None,
+                "event_window_end": None,
+                "time_quality": "UNKNOWN",
+                "grounding_note": CLAIM,
+                "evidence_needs": [need | {"origin": "s1"}, need | {"origin": "r1"}],
+            }
+        ],
+        "other_checks": [],
+    }
+
+
+class _FakeChat:
+    """Stands in for safechain's chat model behind the real GatewayModelClient."""
+
+    redaction = None
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def ainvoke(self, messages, **kwargs):
+        import json
+        from types import SimpleNamespace
+
+        user = messages[-1]["content"]
+        tag = next(t for t in TRANSCRIPTS if t in user)
+        pass1 = "[[ ## transcript ## ]]" in user
+        self.calls.append(f"{tag}:{1 if pass1 else 2}")
+        if tag == "charlie":
+            raise TimeoutError(CAUSE)  # every attempt; the gateway gives up, then the runtime does
+        if pass1:
+            answer = _pass1_answer(user, tag)
+        elif tag == "bravo":
+            answer = {"claims": BAD_REPLY, "other_checks": BAD_REPLY}  # JSON, but not the signature
+        else:
+            answer = _pass2_answer()
+        return SimpleNamespace(
+            content=json.dumps(answer),
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"input_tokens": 100, "output_tokens": 50},
+            additional_kwargs={},
+        )
+
+
+def test_model_calls_keep_prompts_and_replies_out_of_spans_and_logs(running, store, spans, caplog):
+    """Prompts and model replies reach artifacts only: never span attributes, events, statuses or logs,
+    on success, on unparseable output, or when retries run out and the run fails with a traceback.
+    Runs the real C02 handlers and the real gateway client; only the chat model is fake."""
+    from cfr_v2.contracts import AuthorizationContext, ClaimSetRevision, Classification
+    from cfr_v2.llm import GatewayModelClient, GatewaySettings
+    from cfr_v2.llm.dspy_lm import gateway_lm
+    from cfr_v2.registry.evidence_sources import PinnedTaxonomies
+    from cfr_v2.state import CaseStateRepository
+    from cfr_v2.understanding import make_pass1_handler, make_pass2_handler
+    from cfr_v2.understanding.pass1 import ExtractFromCall
+    from cfr_v2.understanding.pass2 import INSTRUCTIONS
+
+    caplog.set_level(logging.DEBUG, logger="cfr_v2")
+    chat = _FakeChat()
+
+    async def factory(model_key, params):
+        return chat
+
+    settings = GatewaySettings(
+        model_id="fake-model",
+        max_attempts=2,
+        backoff_base_sec=0.001,
+        backoff_max_sec=0.002,
+        attempt_timeout_sec=5.0,
+        call_deadline_sec=10.0,
+    )
+    lm = gateway_lm(GatewayModelClient(settings, model_factory=factory), settings.model_id)
+    taxonomies = PinnedTaxonomies(store, running.db, REPO_ROOT / DEFAULT_REGISTRY_DIR)  # as the worker does
+    running.handlers = {
+        **running.handlers,
+        "c02.pass1": make_pass1_handler(store, lm),
+        "c02.pass2": make_pass2_handler(store, lm, taxonomies),
+    }
+    rows = [row | {"msg_tx2": text} for row, text in zip(synthetic_rows(3, seed=11), TRANSCRIPTS.values(), strict=True)]
+    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-c")
+    coordinator = IntakeCoordinator.pinned(
+        manifest, store=store, masker=RegexMasker(synthetic_names()), profanity=ProfanityFilter(["frustration"])
+    )
+    report = coordinator.admit_rows(rows)
+    ok, bad_output, failing = (r.case_run_id for r in report.results)
+    wait_for_state(running.settings.state_database_url, [ok], FINAL_STATE, timeout=60)
+    wait_for_state(running.settings.state_database_url, [bad_output, failing], "FAILED", timeout=60)
+
+    # The paths under test really ran, and Pass 2 used the taxonomy the run's manifest pins.
+    assert {"alpha:1", "alpha:2", "bravo:1", "bravo:2", "charlie:1"} <= set(chat.calls)
+    with running.db.transaction() as tx:
+        [pass2] = [c for c in CaseStateRepository(tx).committed_results(ok) if c.logical_task_id == "c02.pass2"]
+    reader = AuthorizationContext(principal="test", purpose="test")
+    claim_set = ClaimSetRevision.model_validate_json(
+        store.get(pass2.output_artifact_refs[0], classification=Classification.INTERNAL, authorization=reader)
+    )
+    assert claim_set.evidence_sources_version == manifest.evidence_sources == "evidence-sources-1"
+    assert any(s.name == "llm.call" for s in spans.get_finished_spans())
+    formatter = logging.Formatter()
+    logged = [formatter.format(record) for record in caplog.records]  # messages and tracebacks, as written
+    assert any("Traceback" in line and "ModelTimeoutError" in line for line in logged)
+
+    forbidden = {REPLY, CLAIM, BAD_REPLY, CAUSE, *synthetic_names()}
+    forbidden |= {ExtractFromCall.instructions[:60], INSTRUCTIONS[:60], "[[ ## transcript ## ]]"}  # prompt text
+    for text in TRANSCRIPTS.values():
+        forbidden |= {text[i : i + 24] for i in range(0, len(text) - 24, 12)}
+    exported: list[str] = []
+    for s in spans.get_finished_spans():
+        exported.append(s.name)
+        exported.append(s.status.description or "")
+        for key, value in s.attributes.items():
+            assert key.startswith("cfr.") and key[4:] in SPAN_ATTRIBUTES, (s.name, key)
+            exported.append(str(value))
+        for event in s.events:
+            exported.extend(str(v) for v in event.attributes.values())
+    exported.extend(logged)
+    blob = "\n".join(exported)
+    leaked = [text for text in forbidden if text and text in blob]
+    assert not leaked, leaked[:3]
