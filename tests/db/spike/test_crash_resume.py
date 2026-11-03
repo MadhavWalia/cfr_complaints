@@ -43,7 +43,7 @@ def test_killed_worker_resumes_without_duplicate_commits(tmp_path, runtime_setti
     with db.transaction() as s:
         repo = CaseStateRepository(s)
         assert repo.state_history(rid) == ["ADMITTED", "UNDERSTANDING", "SELECTING", "ROUTING"]
-        assert repo.committed_tasks(rid) == ["c02.understanding", "c03.primary_selection"]
+        assert repo.committed_tasks(rid) == ["c02.pass1", "c02.pass2", "c03.primary_selection"]
 
     # 2. A different worker process reclaims the job after the dead one's lease expires.
     second = spawn_worker(
@@ -58,7 +58,7 @@ def test_killed_worker_resumes_without_duplicate_commits(tmp_path, runtime_setti
 
     with db.transaction() as s:
         repo = CaseStateRepository(s)
-        assert repo.state_history(rid) == ["ADMITTED", *(st.state for st in STAGES), FINAL_STATE]
+        assert repo.state_history(rid) == ["ADMITTED", *dict.fromkeys(st.state for st in STAGES), FINAL_STATE]  # one entry per coarse state
         assert s.one("SELECT status, attempts FROM workflow_job WHERE case_run_id = %(r)s", {"r": rid}) == ("SUCCEEDED", 2)
         assert sorted(repo.committed_tasks(rid)) == sorted(st.logical_task_id for st in STAGES)
         # Completed stages were replayed from checkpoints, not re-committed.

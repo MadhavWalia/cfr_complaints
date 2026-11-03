@@ -33,7 +33,7 @@ from cfr_v2.understanding import (
     build_pass1_result,
     load_segments,
     locate,
-    make_understanding_handler,
+    make_pass1_handler,
 )
 
 SEGMENTS = [
@@ -218,7 +218,7 @@ def _admitted(row):
 
 
 def _handle(store, request_ref, client, loop) -> Pass1Result:
-    handler = make_understanding_handler(store, gateway_lm(client, "fake-model"), loop=loop)
+    handler = make_pass1_handler(store, gateway_lm(client, "fake-model"), loop=loop)
     out = handler(StageInput("run-1", STAGES[0], request_ref, (), trace_id="t1"))
     return Pass1Result.model_validate_json(out.content)
 

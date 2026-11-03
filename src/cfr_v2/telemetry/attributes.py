@@ -53,6 +53,11 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
         "requests",
         "agent_statements",
         "items_dropped",
+        # C02 Pass 2 (counts only)
+        "claims",
+        "evidence_needs",
+        "other_checks",
+        "findings",
     }
 )
 

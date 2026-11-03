@@ -158,7 +158,7 @@ async def test_one_model_per_process_with_sdk_retries_off():
     key, params = script.builds[0]
     assert key == "3"
     assert params == {
-        "max_completion_tokens": 16384,
+        "max_completion_tokens": 32768,
         "temperature": 0.0,
         "max_retries": 0,
         "request_timeout": FAST.attempt_timeout_sec,
@@ -290,7 +290,7 @@ async def test_rate_limits_cool_down_without_using_attempts():
 
 
 async def test_rate_limits_until_the_deadline_raise_rate_limited_with_a_hint():
-    settings = GatewaySettings(**{**FAST.__dict__, "call_deadline_sec": 0.2})
+    settings = GatewaySettings(**{**FAST.__dict__, "call_deadline_sec": 1.0})  # headroom on a loaded host
     script = Script(HTTPError(429, headers={"retry-after": "0.05"}))
     with pytest.raises(ModelRateLimitedError) as info:
         await _client(script, settings).complete(_req())

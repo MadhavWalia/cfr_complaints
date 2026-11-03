@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from cfr_v2.contracts import (
+    AccountResolution,
     AdmissionKey,
     AdmissionRecord,
     AdmissionStatus,
@@ -36,7 +37,10 @@ from cfr_v2.contracts import (
     TaskNode,
     TaskResult,
     TaskStatus,
+    TimeQuality,
     ValidationIssue,
+    account_resolution_for,
+    grounding_status_for,
 )
 
 NOW = datetime(2026, 10, 29, tzinfo=timezone.utc)
@@ -55,7 +59,13 @@ def _allegation(aid="a1"):
 
 def _claim(cid="c1", aids=("a1",)):
     return GroundedClaim(
-        claim_id=cid, allegation_ids=aids, statement="decline", grounding_status=GroundingStatus.GROUNDED
+        claim_id=cid,
+        allegation_ids=aids,
+        statement="decline",
+        account_refs=("A1",),
+        account_resolution=AccountResolution.RESOLVED,
+        time_quality=TimeQuality.EXACT,
+        grounding_status=GroundingStatus.GROUNDED,
     )
 
 
@@ -302,3 +312,49 @@ def test_manifest_checksum_depends_on_content():
     b = ReleaseManifest.build(release_id="rel-2")
     assert a.checksum != b.checksum
     assert a.ref.startswith("rel-1@")
+
+
+@pytest.mark.parametrize(
+    ("account", "time", "entities", "expected"),
+    [
+        (AccountResolution.RESOLVED, TimeQuality.EXACT, False, GroundingStatus.GROUNDED),
+        (AccountResolution.NOT_APPLICABLE, TimeQuality.EXACT, False, GroundingStatus.GROUNDED),
+        (AccountResolution.RESOLVED, TimeQuality.APPROXIMATE, False, GroundingStatus.EVENT_TIME_APPROXIMATE),
+        (AccountResolution.CANDIDATES, TimeQuality.EXACT, False, GroundingStatus.PARTIAL),
+        (AccountResolution.RESOLVED, TimeQuality.UNKNOWN, False, GroundingStatus.PARTIAL),
+        (AccountResolution.NONE, TimeQuality.UNKNOWN, True, GroundingStatus.PARTIAL),
+        (AccountResolution.NONE, TimeQuality.UNKNOWN, False, GroundingStatus.UNGROUNDED),
+    ],
+)
+def test_grounding_status_is_derived(account, time, entities, expected):
+    assert grounding_status_for(account, time, has_entities=entities) is expected
+
+
+def test_account_resolution_follows_the_refs():
+    assert account_resolution_for((), about_an_account=False) is AccountResolution.NOT_APPLICABLE
+    assert account_resolution_for((), about_an_account=True) is AccountResolution.NONE
+    assert account_resolution_for(("A1",), about_an_account=True) is AccountResolution.RESOLVED
+    assert account_resolution_for(("A1", "A2"), about_an_account=True) is AccountResolution.CANDIDATES
+
+
+def test_claim_rejects_a_status_that_disagrees_with_its_fields():
+    with pytest.raises(ValidationError, match="grounding_status must be PARTIAL"):
+        GroundedClaim(
+            claim_id="c1",
+            allegation_ids=("a1",),
+            statement="s",
+            account_refs=("A1", "A2"),
+            account_resolution=AccountResolution.CANDIDATES,
+            time_quality=TimeQuality.EXACT,
+            grounding_status=GroundingStatus.GROUNDED,
+        )
+    with pytest.raises(ValidationError, match="RESOLVED does not fit 2"):
+        GroundedClaim(
+            claim_id="c1",
+            allegation_ids=("a1",),
+            statement="s",
+            account_refs=("A1", "A2"),
+            account_resolution=AccountResolution.RESOLVED,
+            time_quality=TimeQuality.EXACT,
+            grounding_status=GroundingStatus.GROUNDED,
+        )

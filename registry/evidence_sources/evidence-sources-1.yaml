@@ -1,0 +1,156 @@
+# Evidence source taxonomy (P4); guide: lld/guides/evidence-sources.md
+# Source types: technical team, edited here (a new version for any change). Backends: business
+# team, via the workbook (`python -m cfr_v2.registry.evidence_sources import <workbook>`).
+version: evidence-sources-1
+source_types:
+- id: transactions
+  description: 'Charges, authorizations and other transactions on the account: what was charged or authorised, when, by which
+    merchant, for how much.'
+  examples:
+  - Were there two charges from the hotel on that date?
+  - Was the transaction authorised or declined?
+  backends:
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.wwcas_authorization
+    status: available
+    notes: Authorizations; V1 structured/transaction.sql
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.triumph_billed_unbilled
+    status: available
+    notes: Billed and unbilled charges; referenced in V1
+- id: payments_and_balance
+  description: Payments made and when they posted, balances, statements and payment due dates.
+  examples:
+  - When did the payment post?
+  - What was the balance on the statement date?
+  backends:
+  - system: unknown
+    status: none
+    notes: Source to be confirmed by the business team (OQ-07)
+- id: fees_and_interest
+  description: Fees and interest charged, waived or reversed, and why.
+  examples:
+  - Was a late fee charged?
+  - Was the annual fee waived for the first year?
+  backends:
+  - system: unknown
+    status: none
+    notes: Source to be confirmed by the business team (OQ-07)
+- id: disputes
+  description: 'Disputes opened by the customer or American Express: when, for which charge, status and outcome.'
+  examples:
+  - Was a dispute opened for the second charge?
+  - What was the dispute outcome?
+  backends:
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.risk_disputes
+    status: available
+    notes: V1 structured/dispute.sql
+- id: merchant_blocks
+  description: Blocks the customer or American Express placed on a merchant.
+  examples:
+  - Was the merchant blocked as the customer asked?
+  backends:
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.cas_cm_merchant_block
+    status: available
+    notes: V1 structured/merchant_block.sql
+- id: account_status
+  description: Whether the account was open, cancelled, suspended or restricted, and when that changed.
+  examples:
+  - Was the account cancelled on the date the customer says?
+  - Was the account restricted at the time?
+  backends:
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.cust360_customer_demographics
+    status: available
+    notes: Status and cancel date; partly in the admission baseline
+- id: card_status
+  description: Card replacement, reissue, activation and blocks.
+  examples:
+  - Was a replacement card issued?
+  - Was the card blocked after the fraud report?
+  backends:
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.cust360_customer_demographics
+    status: available
+    notes: Card replaced date; partly in the admission baseline
+- id: credit_decisions
+  description: Credit limit changes and credit or application decisions, and the reasons.
+  examples:
+  - Why was the credit limit lowered?
+  - Why was the application declined?
+  backends:
+  - system: LUMI (BigQuery)
+    status: available
+    notes: FICO / CDSS; V1 structured/fico_cdss.sql (table to be confirmed)
+- id: rewards_and_benefits
+  description: Membership Rewards points, partner miles, card benefits and enrolments.
+  examples:
+  - Were the points credited?
+  - Was the customer enrolled in the benefit?
+  backends:
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.rrdw_membership_reward_account
+    status: available
+    notes: With rrdw_membership_reward_account_linkage; V1 structured/mr_transaction.sql
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.r42_loyalty_ledger_event
+    status: available
+    notes: Loyalty ledger events
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.cpbm_benefit_enroll
+    status: available
+    notes: Benefit enrolment; V1 structured/benefit.sql
+- id: fraud_and_security
+  description: Fraud reports and flags, security alerts, identity checks and account takeover events.
+  examples:
+  - Was the charge flagged as fraud?
+  - Was there a security alert on the account?
+  backends:
+  - system: unknown
+    status: none
+    notes: Source to be confirmed by the business team (OQ-07)
+- id: contact_history
+  description: Earlier calls, chats and complaint cases with the customer, including what was promised.
+  examples:
+  - Did the customer call last week?
+  - Was a callback promised on the earlier call?
+  backends:
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.gsnmon_global_call
+    status: available
+    notes: Calls
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.askamex_chat_transcript
+    status: available
+    notes: Chats
+  - system: LUMI (BigQuery)
+    dataset: axp-lumi.dw.icare_cmpln_case_dtl
+    status: available
+    notes: Complaint cases
+- id: communications
+  description: Letters, emails, texts and app notifications sent to the customer.
+  examples:
+  - Was the confirmation letter sent?
+  - Did the customer get the text alert?
+  backends:
+  - system: unknown
+    status: none
+    notes: Source to be confirmed by the business team (OQ-07)
+- id: procedure
+  description: 'American Express procedures and policies: what an agent should have said or done, correct timelines, fees
+    and eligibility rules.'
+  examples:
+  - What is the correct timeline for a temporary credit?
+  - Should the agent have offered to open a dispute?
+  backends:
+  - system: procedure documents
+    status: available
+    notes: V1 procedure retrieval (src/chc, LightRAG); index to be confirmed
+- id: other
+  description: Any other evidence; say what in the need's description.
+  backends:
+  - system: unknown
+    status: none
+    notes: Catch-all; review needs of this type to find missing source types

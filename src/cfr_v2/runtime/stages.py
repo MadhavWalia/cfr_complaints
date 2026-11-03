@@ -19,8 +19,9 @@ class Stage:
 
 
 STAGES: tuple[Stage, ...] = (
-    # c02 runs Pass 1 in the worker (cfr_v2.understanding.PASS1_VERSION); tests may keep the placeholder.
-    Stage("UNDERSTANDING", "c02.understanding", "pass1-2"),
+    # C02 in the worker (cfr_v2.understanding PASS1_VERSION / PASS2_VERSION); tests may keep placeholders.
+    Stage("UNDERSTANDING", "c02.pass1", "pass1-2"),
+    Stage("UNDERSTANDING", "c02.pass2", "pass2-1"),
     Stage("SELECTING", "c03.primary_selection", "placeholder-0"),
     Stage("ROUTING", "c04.routing", "placeholder-0"),
     Stage("PLANNING", "c05.planning", "placeholder-0"),

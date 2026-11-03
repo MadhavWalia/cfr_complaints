@@ -1,20 +1,29 @@
-"""The ``c02.understanding`` stage handler: Pass 1 for now (Phase C).
+"""C02 stage handlers: ``c02.pass1`` and ``c02.pass2`` (two stages, so a Pass 2 retry never repeats Pass 1).
 
-Reads the admitted request for its refs only, loads the redacted transcript
-(INTERNAL), runs Pass 1 on the process's model loop and returns the
-``Pass1Result``. Nothing else from the request reaches the program: no case
-metadata, baseline or evaluation labels (ADR-03, OQ-21).
+Pass 1 reads the admitted request for its refs only and loads the redacted transcript
+(INTERNAL); nothing else reaches the program: no case metadata, baseline or evaluation
+labels (ADR-03, OQ-21). It returns a ``Pass1Result``.
+
+Pass 2 reads Pass 1's result (its upstream artifact), the admission-time baseline
+(INTERNAL) and the case received date, taken in code from the source record's
+``rcpt_ts`` so every case has one, baseline or not. The model sees the date only. It
+returns the ``ClaimSetRevision``.
 """
 
 from __future__ import annotations
+
+import json
+from datetime import date
 
 import dspy
 
 from cfr_v2.artifacts import ArtifactStore
 from cfr_v2.contracts import (
     AuthorizationContext,
+    BaselineProfile,
     CanonicalTranscript,
     Classification,
+    EvidenceSourceTaxonomy,
     IngestionRequest,
     Pass1Result,
     canonical_json,
@@ -25,12 +34,24 @@ from cfr_v2.runtime.stages import StageHandler, StageInput, StageOutput
 from cfr_v2.telemetry import set_attributes, span
 
 from .pass1 import PASS1_PROGRAM_ID, PASS1_VERSION, Pass1, build_pass1_result, transcript_text
+from .pass2 import PASS2_PROGRAM_ID, PASS2_VERSION, Pass2, build_claim_set, program_inputs
 
 # The request is RESTRICTED (it holds the evaluation labels); only its refs are used.
 _REQUEST_READER = AuthorizationContext(
     principal="c02.understanding", purpose="read request refs", allowed_classifications=frozenset({"RESTRICTED"})
 )
-_TRANSCRIPT_READER = AuthorizationContext(principal="c02.understanding", purpose="pass1 input")
+_TRANSCRIPT_READER = AuthorizationContext(principal="c02.pass1", purpose="pass1 input")
+_PASS2_READER = AuthorizationContext(principal="c02.pass2", purpose="pass2 input")
+# The source record is RESTRICTED; Pass 2 takes the received date from it and nothing else.
+_RECEIVED_DATE_READER = AuthorizationContext(
+    principal="c02.pass2", purpose="case received date", allowed_classifications=frozenset({"RESTRICTED"})
+)
+
+
+def load_request(store: ArtifactStore, request_ref: str) -> IngestionRequest:
+    return IngestionRequest.model_validate_json(
+        store.get(request_ref, classification=Classification.RESTRICTED, authorization=_REQUEST_READER)
+    )
 
 
 def load_segments(store: ArtifactStore, transcript_ref: str) -> list[tuple[str, str]]:
@@ -49,15 +70,30 @@ def load_segments(store: ArtifactStore, transcript_ref: str) -> list[tuple[str, 
     ]
 
 
-def make_understanding_handler(
+def received_date(store: ArtifactStore, request: IngestionRequest, baseline: BaselineProfile | None) -> date | None:
+    """``rcpt_ts`` from the source record, else the baseline's copy of it."""
+    if request.source_record_ref is not None:
+        record = json.loads(
+            store.get(
+                request.source_record_ref, classification=Classification.RESTRICTED, authorization=_RECEIVED_DATE_READER
+            )
+        )
+        value = record.get("rcpt_ts")
+        if isinstance(value, str) and len(value) >= 10:
+            try:
+                return date.fromisoformat(value[:10])
+            except ValueError:
+                pass
+    return baseline.case_received_date if baseline else None
+
+
+def make_pass1_handler(
     store: ArtifactStore, lm: dspy.LM, *, loop: ModelLoop | None = None, program: Pass1 | None = None
 ) -> StageHandler:
     pass1 = program or Pass1()
 
     def handle(inp: StageInput) -> StageOutput:
-        request = IngestionRequest.model_validate_json(
-            store.get(inp.request_ref, classification=Classification.RESTRICTED, authorization=_REQUEST_READER)
-        )
+        request = load_request(store, inp.request_ref)
         case_id = request.key.source_case_id
         with span("c02.pass1", program=PASS1_PROGRAM_ID, program_version=PASS1_VERSION) as pass1_span:
             if request.transcript_ref is None:
@@ -94,6 +130,66 @@ def make_understanding_handler(
                     agent_statements=len(result.agent_statements),
                     items_dropped=len(result.dropped),
                 )
+        return StageOutput(canonical_json(result))
+
+    return handle
+
+
+def make_pass2_handler(
+    store: ArtifactStore,
+    lm: dspy.LM,
+    taxonomy: EvidenceSourceTaxonomy,
+    *,
+    loop: ModelLoop | None = None,
+) -> StageHandler:
+    pass2 = Pass2(taxonomy)
+    # The taxonomy is part of what the model is told; a different one is a different program input.
+    version = f"{PASS2_VERSION}+{taxonomy.version}@{taxonomy.taxonomy_hash[:12]}"
+
+    def handle(inp: StageInput) -> StageOutput:
+        request = load_request(store, inp.request_ref)
+        pass1 = Pass1Result.model_validate_json(
+            store.get(inp.upstream_refs[-1], classification=Classification.INTERNAL, authorization=_PASS2_READER)
+        )
+        baseline = None
+        if request.baseline_ref is not None:
+            baseline = BaselineProfile.model_validate_json(
+                store.get(request.baseline_ref, classification=Classification.INTERNAL, authorization=_PASS2_READER)
+            )
+        received = received_date(store, request, baseline)
+        with span("c02.pass2", program=PASS2_PROGRAM_ID, program_version=PASS2_VERSION) as pass2_span:
+            claims, checks = (), ()
+            if pass1.allegations or pass1.requests or pass1.agent_statements:
+                call = ProgramCall(
+                    program_id=PASS2_PROGRAM_ID,
+                    program_version=version,
+                    case_id=pass1.case_id,
+                    task_id=inp.stage.logical_task_id,
+                    redacted=True,  # Pass 1's paraphrases of redacted text, and the approved baseline
+                    trace_id=inp.trace_id,
+                )
+                prediction = (loop or model_loop()).run(
+                    run_program(pass2, lm=lm, call=call, **program_inputs(pass1, baseline, received))
+                )
+                claims, checks = prediction.claims, prediction.other_checks
+            result = build_claim_set(
+                pass1,
+                claims,
+                checks,
+                run_id=inp.case_run_id,
+                baseline=baseline,
+                baseline_ref=request.baseline_ref,
+                received=received,
+                taxonomy=taxonomy,
+            )
+            set_attributes(
+                pass2_span,
+                has_baseline=baseline is not None,
+                claims=len(result.claims),
+                evidence_needs=sum(len(c.evidence_needs) for c in result.claims),
+                other_checks=len(result.other_checks),
+                findings=len(result.findings),
+            )
         return StageOutput(canonical_json(result))
 
     return handle

@@ -7,6 +7,7 @@ Stops on SIGTERM or Ctrl+C: waits up to ``--drain-timeout`` for running jobs, th
 hands the rest back so another worker takes them at once (LDR-0011). Configuration
 comes from the environment (see ``.env.example``).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,14 +26,26 @@ logger = get_logger(__name__)
 
 
 def stage_handlers(store: S3ArtifactStore) -> dict[str, StageHandler]:
-    """Real components where they exist (C02 Pass 1), placeholders for the rest."""
+    """Real components where they exist (C02 Pass 1 and Pass 2), placeholders for the rest.
+
+    Pass 2's evidence source taxonomy is ``CFR_EVIDENCE_SOURCES_VERSION`` (default
+    ``evidence-sources-1``) from ``registry/``; each claim set records the version used.
+    """
+    import os
+
     from cfr_v2.llm import GatewayModelClient, GatewaySettings
     from cfr_v2.llm.dspy_lm import gateway_lm
-    from cfr_v2.understanding import make_understanding_handler
+    from cfr_v2.registry.evidence_sources import DEFAULT_VERSION, load_taxonomy
+    from cfr_v2.understanding import make_pass1_handler, make_pass2_handler
 
     settings = GatewaySettings.from_env()
     lm = gateway_lm(GatewayModelClient(settings), settings.model_id)
-    return {**default_handlers(), "c02.understanding": make_understanding_handler(store, lm)}
+    taxonomy = load_taxonomy(os.environ.get("CFR_EVIDENCE_SOURCES_VERSION", DEFAULT_VERSION))
+    return {
+        **default_handlers(),
+        "c02.pass1": make_pass1_handler(store, lm),
+        "c02.pass2": make_pass2_handler(store, lm, taxonomy),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
