@@ -38,11 +38,61 @@ def is_enabled() -> bool:
 
 
 def get_logger(name: str, *, level: int | str | None = None) -> logging.Logger:
+    """A logger whose exception records keep types and stack frames but no messages (``SafeExceptionFilter``)."""
     if _state.enabled:
         from ee_logging import get_logger as _get_logger
 
-        return _get_logger(name, level=level)
-    return logging.getLogger(name)
+        logger = _get_logger(name, level=level)
+    else:
+        logger = logging.getLogger(name)
+    if isinstance(logger, logging.Filterer) and not any(isinstance(f, SafeExceptionFilter) for f in logger.filters):
+        logger.addFilter(SafeExceptionFilter())
+    return logger
+
+
+class SafeExceptionFilter(logging.Filter):
+    """Strip exception messages from log records; keep the type chain and the stack frames.
+
+    An exception's message can quote its input: a pydantic error on model output, a DSPy
+    parse error quoting the reply, an SDK error echoing a request. ``logger.exception``
+    would write it, with every chained cause, into logs that are not covered by the span
+    allowlist (LDR-0012). This replaces ``exc_info`` with a traceback of frames (file,
+    line, function, source line) and exception types only. As a logger filter it applies
+    to records logged through that logger, which is how every ``cfr_v2`` module logs.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info and record.exc_info[1] is not None:
+            record.exc_text = safe_traceback(record.exc_info[1])
+            record.exc_info = None
+        return True
+
+
+def safe_traceback(exc: BaseException) -> str:
+    """Like ``traceback.format_exception``, without any exception message."""
+    import traceback
+
+    chain: list[tuple[BaseException, str]] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    note = ""
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append((current, note))
+        if current.__cause__ is not None:
+            current, note = current.__cause__, "The above exception was the direct cause of the following exception:"
+        elif current.__context__ is not None and not current.__suppress_context__:
+            current, note = current.__context__, "During handling of the above exception, another exception occurred:"
+        else:
+            current = None
+    parts: list[str] = []
+    for i, (e, _) in enumerate(reversed(chain)):
+        if i:
+            parts.append(f"\n{chain[len(chain) - i][1]}\n\n")
+        parts.append("Traceback (most recent call last):\n")
+        parts.extend(traceback.format_tb(e.__traceback__))
+        parts.append(f"{type(e).__module__}.{type(e).__qualname__} (message withheld)\n")
+    return "".join(parts).rstrip("\n")
 
 
 def get_tracer(name: str) -> Any:

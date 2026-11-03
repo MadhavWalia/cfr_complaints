@@ -35,7 +35,6 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
-import logging
 import random
 import re
 import time
@@ -43,7 +42,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from cfr_v2.telemetry import elf_headers, record_llm_call, set_attributes, span
+from cfr_v2.telemetry import elf_headers, get_logger, record_llm_call, set_attributes, span
 
 from .client import (
     ModelBlockedError,
@@ -61,7 +60,7 @@ from .client import (
 from .limiter import RateGate
 from .settings import GatewaySettings
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # (model_key, params) -> LangChain chat model (safechain's SafeAzureChatOpenAI) with ``ainvoke``.
 ModelFactory = Callable[[str, dict[str, Any]], Awaitable[Any]]
