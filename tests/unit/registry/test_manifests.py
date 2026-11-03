@@ -72,3 +72,29 @@ def test_release_id_must_match_file_name(tmp_path):
 def test_unknown_release(tmp_path):
     with pytest.raises(ManifestError, match="no manifest"):
         ReleaseRegistry(tmp_path).load("nope")
+
+
+def test_phase_c_release_names_the_c02_programs_and_its_evidence_taxonomy():
+    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-c")
+    assert {"c02.pass1", "c02.pass2"} <= {p.program_id for p in manifest.programs}
+    assert manifest.evidence_sources == "evidence-sources-1"
+
+
+def test_manifests_without_an_evidence_taxonomy_keep_their_checksum():
+    """Manifests pinned before the field existed must still validate (their JSON has no key)."""
+    from cfr_v2.contracts import canonical_hash
+
+    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-b")
+    legacy = manifest.model_dump(mode="json", exclude={"checksum", "evidence_sources"})
+    assert manifest.checksum == canonical_hash(legacy)
+    pinned_before = {**legacy, "checksum": manifest.checksum}  # what an older version froze
+    assert ReleaseManifest.model_validate(pinned_before) == manifest
+
+    with_taxonomy = ReleaseManifest.build(**legacy, evidence_sources="evidence-sources-1")
+    assert with_taxonomy.checksum != manifest.checksum  # the field counts once it is set
+
+
+def test_unknown_evidence_taxonomy_is_rejected(tmp_path):
+    _write(tmp_path, BODY + "evidence_sources: evidence-sources-99\n")
+    with pytest.raises(ManifestError, match="evidence-sources-99"):
+        ReleaseRegistry(tmp_path).load("r1")

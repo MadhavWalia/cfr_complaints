@@ -61,6 +61,11 @@ class ReleaseRegistry:
         manifest = load_manifest(path)
         if manifest.release_id != release_id:
             raise ManifestError(f"{path}: release_id {manifest.release_id!r} does not match file name")
+        if manifest.evidence_sources is not None:
+            from .evidence_sources import path_for
+
+            if not path_for(manifest.evidence_sources, self.directory).is_file():
+                raise ManifestError(f"{path}: no evidence source taxonomy {manifest.evidence_sources!r} in the registry")
         return manifest
 
 

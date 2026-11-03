@@ -24,6 +24,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import sys
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,9 +33,9 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from cfr_v2.contracts import EvidenceBackend, EvidenceSourceTaxonomy
+from cfr_v2.contracts import AuthorizationContext, EvidenceBackend, EvidenceSourceTaxonomy
 
-from .manifests import DEFAULT_REGISTRY_DIR
+from .manifests import DEFAULT_REGISTRY_DIR, load_pinned
 
 DEFAULT_VERSION = "evidence-sources-1"  # used by release manifests that name none
 SUBDIR = "evidence_sources"
@@ -81,6 +83,42 @@ def load_taxonomy(version: str = DEFAULT_VERSION, directory: Path = DEFAULT_REGI
     if taxonomy.version != version:
         raise EvidenceSourceError(f"{path}: version {taxonomy.version!r} does not match the file name")
     return taxonomy
+
+
+class PinnedTaxonomies:
+    """The taxonomy for a case run's pinned release manifest (P4, ADR-14), cached per manifest ref.
+
+    A manifest that names none, or a run with no manifest ref, gets ``DEFAULT_VERSION``. A
+    manifest ref that was never pinned is an error: the run's release is unknown.
+    ``db`` may be a callable, for handlers built before the runtime opens its pool.
+    """
+
+    _READER = AuthorizationContext(principal="c02.pass2", purpose="release manifest")
+
+    def __init__(self, store: Any, db: Any, directory: Path = DEFAULT_REGISTRY_DIR) -> None:
+        self.store = store
+        self._db = db
+        self.directory = directory
+        self._cache: dict[str | None, EvidenceSourceTaxonomy] = {}
+        self._lock = threading.Lock()
+
+    def __call__(self, manifest_ref: str | None) -> EvidenceSourceTaxonomy:
+        with self._lock:
+            cached = self._cache.get(manifest_ref)
+        if cached is not None:
+            return cached
+        version = DEFAULT_VERSION
+        if manifest_ref is not None:
+            db = self._db() if callable(self._db) else self._db
+            manifest = load_pinned(manifest_ref, store=self.store, db=db, authorization=self._READER)
+            version = manifest.evidence_sources or DEFAULT_VERSION
+        taxonomy = load_taxonomy(version, self.directory)
+        with self._lock:
+            self._cache[manifest_ref] = taxonomy
+        return taxonomy
+
+
+TaxonomySource = EvidenceSourceTaxonomy | Callable[[str | None], EvidenceSourceTaxonomy]
 
 
 def to_yaml(taxonomy: EvidenceSourceTaxonomy) -> str:

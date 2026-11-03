@@ -146,19 +146,29 @@ class ReleaseManifest(Contract):
     capabilities: tuple[str, ...] = ()  # "<capability_id>@<version>"
     router_policy_version: str | None = None
     decision_policy_version: str | None = None
+    # Evidence source taxonomy version for C02 Pass 2 (registry/evidence_sources/<version>.yaml);
+    # None: the default version. Left out of the checksum when unset, so manifests pinned
+    # before it existed keep their checksum.
+    evidence_sources: str | None = None
     checksum: str = Field(pattern=SHA256_PATTERN)
+
+    def _checksum_body(self) -> dict[str, Any]:
+        body = self.model_dump(mode="json", exclude={"checksum"})
+        if body["evidence_sources"] is None:
+            del body["evidence_sources"]
+        return body
 
     @classmethod
     def build(cls, **body: Any) -> "ReleaseManifest":
         """Construct a manifest, computing its checksum from the validated content."""
         draft = cls.model_validate({**body, "checksum": "0" * 64}, context={_UNCHECKED: True})
-        return cls(**body, checksum=canonical_hash(draft.model_dump(mode="json", exclude={"checksum"})))
+        return cls(**body, checksum=canonical_hash(draft._checksum_body()))
 
     @model_validator(mode="after")
     def _checksum_matches(self, info: ValidationInfo) -> "ReleaseManifest":
         if info.context and info.context.get(_UNCHECKED):
             return self
-        if self.checksum != canonical_hash(self.model_dump(mode="json", exclude={"checksum"})):
+        if self.checksum != canonical_hash(self._checksum_body()):
             raise ValueError("manifest checksum does not match content")
         return self
 

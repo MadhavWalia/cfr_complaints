@@ -36,6 +36,7 @@ class StageInput:
     request_ref: str
     upstream_refs: tuple[str, ...]
     trace_id: str | None = None  # for TaskEnvelope.trace_id and gateway calls (LDR-0012)
+    release_manifest_ref: str | None = None  # the run's pinned manifest (P4), e.g. for C02's evidence taxonomy
 
 
 @dataclass(frozen=True)

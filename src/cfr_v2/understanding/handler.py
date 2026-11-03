@@ -13,6 +13,7 @@ returns the ``ClaimSetRevision``.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import date
 
 import dspy
@@ -30,6 +31,7 @@ from cfr_v2.contracts import (
 )
 from cfr_v2.llm import ModelLoop, model_loop
 from cfr_v2.llm.dspy_lm import ProgramCall, run_program
+from cfr_v2.registry.evidence_sources import TaxonomySource
 from cfr_v2.runtime.stages import StageHandler, StageInput, StageOutput
 from cfr_v2.telemetry import set_attributes, span
 
@@ -138,13 +140,19 @@ def make_pass1_handler(
 def make_pass2_handler(
     store: ArtifactStore,
     lm: dspy.LM,
-    taxonomy: EvidenceSourceTaxonomy,
+    taxonomy: TaxonomySource,
     *,
     loop: ModelLoop | None = None,
 ) -> StageHandler:
-    pass2 = Pass2(taxonomy)
-    # The taxonomy is part of what the model is told; a different one is a different program input.
-    version = f"{PASS2_VERSION}+{taxonomy.version}@{taxonomy.taxonomy_hash[:12]}"
+    """``taxonomy``: a fixed taxonomy, or a resolver from the run's manifest ref (``PinnedTaxonomies``)."""
+    programs: dict[str, Pass2] = {}  # one program per taxonomy: its instructions and output enum differ
+    lock = threading.Lock()
+
+    def program_for(t: EvidenceSourceTaxonomy) -> Pass2:
+        with lock:
+            if t.taxonomy_hash not in programs:
+                programs[t.taxonomy_hash] = Pass2(t)
+            return programs[t.taxonomy_hash]
 
     def handle(inp: StageInput) -> StageOutput:
         request = load_request(store, inp.request_ref)
@@ -157,6 +165,10 @@ def make_pass2_handler(
                 store.get(request.baseline_ref, classification=Classification.INTERNAL, authorization=_PASS2_READER)
             )
         received = received_date(store, request, baseline)
+        run_taxonomy = taxonomy if isinstance(taxonomy, EvidenceSourceTaxonomy) else taxonomy(inp.release_manifest_ref)
+        pass2 = program_for(run_taxonomy)
+        # The taxonomy is part of what the model is told; a different one is a different program input.
+        version = f"{PASS2_VERSION}+{run_taxonomy.version}@{run_taxonomy.taxonomy_hash[:12]}"
         with span("c02.pass2", program=PASS2_PROGRAM_ID, program_version=PASS2_VERSION) as pass2_span:
             claims, checks = (), ()
             if pass1.allegations or pass1.requests or pass1.agent_statements:
@@ -180,7 +192,7 @@ def make_pass2_handler(
                 baseline=baseline,
                 baseline_ref=request.baseline_ref,
                 received=received,
-                taxonomy=taxonomy,
+                taxonomy=run_taxonomy,
             )
             set_attributes(
                 pass2_span,

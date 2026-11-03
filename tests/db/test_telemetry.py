@@ -312,9 +312,11 @@ def test_model_calls_keep_prompts_and_replies_out_of_spans_and_logs(running, sto
     """Prompts and model replies reach artifacts only: never span attributes, events, statuses or logs,
     on success, on unparseable output, or when retries run out and the run fails with a traceback.
     Runs the real C02 handlers and the real gateway client; only the chat model is fake."""
+    from cfr_v2.contracts import AuthorizationContext, ClaimSetRevision, Classification
     from cfr_v2.llm import GatewayModelClient, GatewaySettings
     from cfr_v2.llm.dspy_lm import gateway_lm
-    from cfr_v2.registry.evidence_sources import load_taxonomy
+    from cfr_v2.registry.evidence_sources import PinnedTaxonomies
+    from cfr_v2.state import CaseStateRepository
     from cfr_v2.understanding import make_pass1_handler, make_pass2_handler
     from cfr_v2.understanding.pass1 import ExtractFromCall
     from cfr_v2.understanding.pass2 import INSTRUCTIONS
@@ -334,14 +336,14 @@ def test_model_calls_keep_prompts_and_replies_out_of_spans_and_logs(running, sto
         call_deadline_sec=10.0,
     )
     lm = gateway_lm(GatewayModelClient(settings, model_factory=factory), settings.model_id)
-    taxonomy = load_taxonomy("evidence-sources-1", REPO_ROOT / DEFAULT_REGISTRY_DIR)
+    taxonomies = PinnedTaxonomies(store, running.db, REPO_ROOT / DEFAULT_REGISTRY_DIR)  # as the worker does
     running.handlers = {
         **running.handlers,
         "c02.pass1": make_pass1_handler(store, lm),
-        "c02.pass2": make_pass2_handler(store, lm, taxonomy),
+        "c02.pass2": make_pass2_handler(store, lm, taxonomies),
     }
     rows = [row | {"msg_tx2": text} for row, text in zip(synthetic_rows(3, seed=11), TRANSCRIPTS.values(), strict=True)]
-    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-b")
+    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-c")
     coordinator = IntakeCoordinator.pinned(
         manifest, store=store, masker=RegexMasker(synthetic_names()), profanity=ProfanityFilter(["frustration"])
     )
@@ -350,8 +352,15 @@ def test_model_calls_keep_prompts_and_replies_out_of_spans_and_logs(running, sto
     wait_for_state(running.settings.state_database_url, [ok], FINAL_STATE, timeout=60)
     wait_for_state(running.settings.state_database_url, [bad_output, failing], "FAILED", timeout=60)
 
-    # The paths under test really ran.
+    # The paths under test really ran, and Pass 2 used the taxonomy the run's manifest pins.
     assert {"alpha:1", "alpha:2", "bravo:1", "bravo:2", "charlie:1"} <= set(chat.calls)
+    with running.db.transaction() as tx:
+        [pass2] = [c for c in CaseStateRepository(tx).committed_results(ok) if c.logical_task_id == "c02.pass2"]
+    reader = AuthorizationContext(principal="test", purpose="test")
+    claim_set = ClaimSetRevision.model_validate_json(
+        store.get(pass2.output_artifact_refs[0], classification=Classification.INTERNAL, authorization=reader)
+    )
+    assert claim_set.evidence_sources_version == manifest.evidence_sources == "evidence-sources-1"
     assert any(s.name == "llm.call" for s in spans.get_finished_spans())
     formatter = logging.Formatter()
     logged = [formatter.format(record) for record in caplog.records]  # messages and tracebacks, as written

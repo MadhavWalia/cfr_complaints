@@ -10,7 +10,7 @@ from cfr_v2.registry import DEFAULT_REGISTRY_DIR
 
 @dataclass(frozen=True)
 class IntakeSettings:
-    release_id: str = "cfr-v2-phase-b"
+    release_id: str = "cfr-v2-phase-c"
     registry_dir: Path = DEFAULT_REGISTRY_DIR
     # V1 toxic_words.txt; without it profanity is not masked (as in V1).
     toxic_words_file: Path | None = None

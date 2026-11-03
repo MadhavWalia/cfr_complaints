@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from cfr_v2.registry import ReleaseRegistry, pin_manifest
 from cfr_v2.runtime import FINAL_STATE, start_runtime, stop_runtime, submit
 from cfr_v2.runtime.__main__ import main
 
@@ -18,9 +19,11 @@ pytestmark = pytest.mark.db
 
 
 def test_worker_cli_runs_queued_jobs_and_stops_on_sigterm(runtime_settings, s3_settings, store):
-    start_runtime(runtime_settings, store, listen_lanes=())  # submit-only, like intake
+    rt = start_runtime(runtime_settings, store, listen_lanes=())  # submit-only, like intake
     try:
-        submit(make_request("cli-1"), release_manifest_ref="spike@0")
+        # The real worker runs C02, whose Pass 2 reads the run's pinned manifest; pin one as intake does.
+        manifest = ReleaseRegistry(REPO_ROOT / "registry").load("cfr-v2-phase-c")
+        submit(make_request("cli-1"), release_manifest_ref=pin_manifest(manifest, store=store, db=rt.db))
     finally:
         stop_runtime()
 

@@ -122,8 +122,9 @@ on a few cases first:
 python -m cfr_v2.understanding --sample 5 --out c02_trial   # counts, latency, tokens, cost projection per pass
 ```
 
-Pass 2 tags each evidence need with a source type from `registry/evidence_sources/`
-(`CFR_EVIDENCE_SOURCES_VERSION`, default `evidence-sources-1`). The business team maintains where
+Pass 2 tags each evidence need with a source type from `registry/evidence_sources/`, in the
+version the run's release manifest names (`evidence_sources:`; `evidence-sources-1` if none). New
+intake uses `cfr-v2-phase-c` (`CFR_RELEASE_ID`). The business team maintains where
 each source type's evidence lives through a workbook: `python -m cfr_v2.registry.evidence_sources
 export|import|check` ([guide](lld/guides/evidence-sources.md); `lld/` is local).
 

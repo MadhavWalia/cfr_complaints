@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +28,7 @@ from cfr_v2.artifacts import ArtifactNotFoundError, InMemoryArtifactStore, S3Art
 from cfr_v2.contracts import AuthorizationContext, ClaimSetRevision, Classification, Pass1Result
 from cfr_v2.llm import GatewayModelClient, GatewaySettings, ModelError, ModelRequest, ModelResponse, close_model_loop
 from cfr_v2.llm.dspy_lm import gateway_lm
-from cfr_v2.registry.evidence_sources import DEFAULT_VERSION, load_taxonomy
+from cfr_v2.registry.evidence_sources import PinnedTaxonomies
 from cfr_v2.runtime.settings import RuntimeSettings
 from cfr_v2.runtime.stages import STAGES, StageInput
 from cfr_v2.state import Database
@@ -80,13 +79,14 @@ class _Outcome:
     error: str = ""
 
 
-def _case_runs(db: Database, ids: list[str], sample: int) -> list[tuple[str, str]]:
+def _case_runs(db: Database, ids: list[str], sample: int) -> list[tuple[str, str, str]]:
+    columns = "case_run_id, request_ref, release_manifest_ref"
     with db.transaction() as tx:
         if ids:
-            rows = tx.all("SELECT case_run_id, request_ref FROM case_run WHERE case_run_id = ANY(%s)", (ids,))
+            rows = tx.all(f"SELECT {columns} FROM case_run WHERE case_run_id = ANY(%s)", (ids,))
         else:
-            rows = tx.all("SELECT case_run_id, request_ref FROM case_run ORDER BY random() LIMIT %s", (sample,))
-    return [(r[0], r[1]) for r in rows]
+            rows = tx.all(f"SELECT {columns} FROM case_run ORDER BY random() LIMIT %s", (sample,))
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 def _review(result: Pass1Result, segments: dict[str, str], claim_set: ClaimSetRevision | None) -> dict:
@@ -140,24 +140,28 @@ def main(argv: list[str] | None = None) -> int:
     settings = GatewaySettings.from_env()
     client = _Metered(GatewayModelClient(settings))
     lm = gateway_lm(client, settings.model_id)
-    taxonomy = load_taxonomy(os.environ.get("CFR_EVIDENCE_SOURCES_VERSION", DEFAULT_VERSION))
+    taxonomies = PinnedTaxonomies(store, db)  # each run's pinned release manifest names its taxonomy
     pass1_handler = make_pass1_handler(store, lm)
-    pass2_handler = make_pass2_handler(store, lm, taxonomy)
+    pass2_handler = make_pass2_handler(store, lm, taxonomies)
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
 
-    def run(case_run: tuple[str, str]) -> _Outcome:
-        run_id, request_ref = case_run
+    def run(case_run: tuple[str, str, str]) -> _Outcome:
+        run_id, request_ref, manifest_ref = case_run
         outcome = _Outcome(run_id)
         try:
             started = time.monotonic()
-            out = pass1_handler(StageInput(run_id, STAGES[0], request_ref, ()))
+            out = pass1_handler(StageInput(run_id, STAGES[0], request_ref, (), release_manifest_ref=manifest_ref))
             outcome.seconds.append(time.monotonic() - started)
             outcome.pass1 = Pass1Result.model_validate_json(out.content)
             if not args.pass1_only:
                 stored = store.put(out.content, media_type=out.media_type, classification=Classification.INTERNAL)
                 started = time.monotonic()
-                out = pass2_handler(StageInput(run_id, STAGES[1], request_ref, (stored.metadata.ref,)))
+                out = pass2_handler(
+                    StageInput(
+                        run_id, STAGES[1], request_ref, (stored.metadata.ref,), release_manifest_ref=manifest_ref
+                    )
+                )
                 outcome.seconds.append(time.monotonic() - started)
                 outcome.claim_set = ClaimSetRevision.model_validate_json(out.content)
         except ModelError as exc:
@@ -170,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         runs = _case_runs(db, args.case_run_id, args.sample)
-        passes = "Pass 1" if args.pass1_only else f"Pass 1 + Pass 2 ({taxonomy.version})"
+        passes = "Pass 1" if args.pass1_only else "Pass 1 + Pass 2"
         print(f"{passes} on {len(runs)} case runs, model {settings.model_id!r}")
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
             outcomes = list(pool.map(run, runs))
