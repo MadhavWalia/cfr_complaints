@@ -13,6 +13,9 @@ Checks:
 4. the same with ``strict`` json_schema (informational: tells you if CFR_LLM_STRICT_SCHEMA=1 works);
 5. per-call trace headers (``extra_headers``) reach the HTTP request (needs ee-logging telemetry).
 
+``--embeddings`` checks the embedding model instead: it builds, has safechain redaction disabled,
+and returns vectors of the expected size for two synthetic texts.
+
 Calls go through ``model_loop()``, the same path stage handlers use. Exit code 0 when no
 required check fails.
 """
@@ -30,6 +33,7 @@ from cfr_v2.telemetry import elf_headers, init_telemetry, shutdown_telemetry, sp
 
 from .bridge import close_model_loop, model_loop
 from .client import ModelError, ModelRequest
+from .embeddings import EmbeddingSettings, GatewayEmbeddingClient, safechain_embeddings
 from .gateway import GatewayModelClient, ModelFactory, safechain_model
 from .settings import GatewaySettings
 
@@ -163,11 +167,26 @@ def _check_trace_headers(client: GatewayModelClient, loop) -> Check:
     )
 
 
+def run_embedding_check(settings: EmbeddingSettings, factory=safechain_embeddings) -> Check:
+    client = GatewayEmbeddingClient(settings, model_factory=factory)
+    start = time.monotonic()
+    try:
+        vectors = model_loop().run(client.embed(["a red bicycle", "a blue boat"], purpose="smoke.embed", redacted=True))
+    except ModelError as exc:
+        return Check("embeddings", "FAIL", f"{type(exc).__name__}: {exc}")
+    return Check("embeddings", "PASS", f"{len(vectors)} vectors of {len(vectors[0])} ({time.monotonic() - start:.1f}s)")
+
+
 def main(argv: list[str] | None = None) -> int:
-    argparse.ArgumentParser(prog="python -m cfr_v2.llm.smoke", description=__doc__.split("\n")[0]).parse_args(argv)
+    parser = argparse.ArgumentParser(prog="python -m cfr_v2.llm.smoke", description=__doc__.split("\n")[0])
+    parser.add_argument("--embeddings", action="store_true", help="check the embedding model instead")
+    args = parser.parse_args(argv)
     init_telemetry(service_name="cfr-v2-smoke")
     try:
-        checks = run_checks(GatewaySettings.from_env())
+        if args.embeddings:
+            checks = [run_embedding_check(EmbeddingSettings.from_env())]
+        else:
+            checks = run_checks(GatewaySettings.from_env())
     finally:
         close_model_loop()
         shutdown_telemetry()

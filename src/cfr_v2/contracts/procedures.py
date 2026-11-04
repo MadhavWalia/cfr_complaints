@@ -84,3 +84,48 @@ class ProcedureSnapshot(Contract):
     source: str
     entries: tuple[ProcedureSnapshotEntry, ...]
     failures: tuple[ProcedureFailure, ...] = ()
+
+
+class ProcedureIndex(Contract):
+    """A searchable set of current procedures. Vector rows follow the documents' sections in order;
+    a zero row is a section the gateway blocked, which stays findable by keyword."""
+
+    snapshot_ref: ArtifactRef
+    embedding_model: str = Field(min_length=1)
+    dimensions: int = Field(ge=1)
+    vectors_ref: ArtifactRef
+    document_refs: tuple[ArtifactRef, ...]
+
+
+class ProcedureSearchRequest(Contract):
+    """``procedure.search``. The query must already be redacted."""
+
+    query: str = Field(min_length=1)
+    limit: int = Field(default=8, ge=1, le=50)
+    max_per_document: int = Field(default=3, ge=1)  # so the largest documents can't fill the results
+    redacted: bool
+
+
+class ProcedureHit(Contract):
+    """Everything needed to cite the passage, and to review it without re-running the search."""
+
+    procedure_name: str
+    file_name: str
+    source_sha256: str = Field(pattern=SHA256_PATTERN)
+    annual_review_date: date | None = None
+    monthly_revision_date: date | None = None
+    section_index: int = Field(ge=0)
+    section_title: str
+    part: int = Field(ge=1)
+    page_start: int = Field(ge=1)
+    page_end: int = Field(ge=1)
+    text: str
+    score: float
+    vector_rank: int | None = Field(default=None, ge=1)
+    keyword_rank: int | None = Field(default=None, ge=1)
+
+
+class ProcedureSearchResult(Contract):
+    index_ref: ArtifactRef
+    vector_search: bool  # false: the query was blocked, so these are keyword results only
+    hits: tuple[ProcedureHit, ...]

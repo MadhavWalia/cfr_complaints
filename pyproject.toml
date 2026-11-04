@@ -20,6 +20,8 @@ dependencies = [
     "dspy==3.4.1",
     # Procedure PDFs (LDR-0019): python -m cfr_v2.procedures.
     "pdfplumber>=0.11",
+    # Vector search over the procedure index (LDR-0019).
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from .corpus import SnapshotResult, build_snapshot, choose_current, load_snapshot
 from .extract import ExtractedDocument, extract_pdf
 from .inspect import DocumentReport, inspect_pdf, inspect_pdfs
+from .search import HybridProcedureSearch, IndexBuild, ProcedureSearch, build_index
 from .sources import (
     ConfluenceSettings,
     ConfluenceSource,
@@ -19,11 +20,15 @@ __all__ = [
     "ConfluenceSource",
     "DocumentReport",
     "ExtractedDocument",
+    "HybridProcedureSearch",
+    "IndexBuild",
     "ManualPdfSource",
+    "ProcedureSearch",
     "ProcedureSource",
     "ProcedureSourceError",
     "SnapshotResult",
     "SourceDocument",
+    "build_index",
     "build_snapshot",
     "choose_current",
     "extract_pdf",

@@ -21,12 +21,23 @@ from .client import (
     RetryableModelError,
     UnredactedPayloadError,
 )
-from .fake import FAKE_MODEL_ID, FakeModelClient
+from .embeddings import (
+    EmbeddingClient,
+    EmbeddingSettings,
+    GatewayEmbeddingClient,
+    embed_allowing_blocks,
+)
+from .fake import FAKE_MODEL_ID, FakeEmbeddingClient, FakeModelClient
 from .gateway import Classified, Failure, GatewayModelClient, classify, safechain_model
 from .limiter import RateGate
 from .settings import GatewaySettings
 
 __all__ = [
+    "EmbeddingClient",
+    "EmbeddingSettings",
+    "FakeEmbeddingClient",
+    "GatewayEmbeddingClient",
+    "embed_allowing_blocks",
     "FAKE_MODEL_ID",
     "BudgetExhaustedError",
     "BudgetTracker",

@@ -5,11 +5,15 @@
     python -m cfr_v2.procedures extract /path/to/pdfs --out extract_trial
     python -m cfr_v2.procedures snapshot /path/to/pdfs [--previous sha256:...]
     python -m cfr_v2.procedures snapshot --confluence
+    python -m cfr_v2.procedures index sha256:<snapshot>
+    python -m cfr_v2.procedures search sha256:<index> "fee charged after the card was cancelled"
 
 ``inspect`` and the printed output of ``extract`` and ``snapshot`` carry file names, dates, counts
 and flags only, never document text, so they can be shared. ``extract`` is a trial: it stores
 nothing, and ``--out`` writes the redacted text for reading locally. **Those files are document
-text: keep them local.** ``snapshot`` stores the originals and the redacted sections.
+text: keep them local.** ``snapshot`` stores the originals and the redacted sections. ``index``
+embeds the current sections of a snapshot through the gateway. ``search`` is for trying queries:
+**it prints section titles, and passages with ``--text``, so keep its output local too.**
 """
 
 from __future__ import annotations
@@ -220,21 +224,77 @@ def run_extract(args: argparse.Namespace) -> int:
 
 
 def run_snapshot(args: argparse.Namespace) -> int:
-    from cfr_v2.artifacts import S3ArtifactStore, S3Settings, register
-    from cfr_v2.runtime import RuntimeSettings
-    from cfr_v2.state import CaseStateRepository, Database
-
-    store = S3ArtifactStore(S3Settings.from_env(), max_bytes=MAX_PDF_BYTES)
+    store = _store()
     previous = load_snapshot(store, args.previous) if args.previous else None
     result = build_snapshot(_source(args), store=store, masker=_masker(), previous=previous, progress=_progress)
-    db = Database(RuntimeSettings.from_env().state_database_url, max_connections=2)
-    with db.transaction() as tx:
-        repo = CaseStateRepository(tx)
-        for stored in result.stored:
-            register(repo, stored)
+    _register(result.stored)
     print_snapshot(result)
     print(f"\nsnapshot: {result.ref}")
     return 1 if result.snapshot.failures else 0
+
+
+def _store():
+    from cfr_v2.artifacts import S3ArtifactStore, S3Settings
+
+    return S3ArtifactStore(S3Settings.from_env(), max_bytes=MAX_PDF_BYTES)
+
+
+def _embedder():
+    from cfr_v2.llm import GatewayEmbeddingClient
+
+    return GatewayEmbeddingClient()
+
+
+def _register(stored: list) -> None:
+    from cfr_v2.artifacts import register
+    from cfr_v2.runtime import RuntimeSettings
+    from cfr_v2.state import CaseStateRepository, Database
+
+    db = Database(RuntimeSettings.from_env().state_database_url, max_connections=2)
+    with db.transaction() as tx:
+        repo = CaseStateRepository(tx)
+        for item in stored:
+            register(repo, item)
+
+
+def run_index(args: argparse.Namespace) -> int:
+    from cfr_v2.llm import model_loop
+
+    from .search import build_index
+
+    store = _store()
+    build = model_loop().run(build_index(store, args.snapshot, _embedder()))
+    _register(build.stored)
+    print(f"{build.procedures} procedures, {build.passages} passages")
+    print(f"blocked by the gateway (keyword search only): {build.blocked}")
+    print(f"index: {build.ref}")
+    return 0
+
+
+def print_hits(result, *, show_text: bool) -> None:
+    if not result.vector_search:
+        print("the gateway blocked the query: keyword results only")
+    print(f"{'#':>3} {'score':>8} {'vec':>4} {'key':>4} {'pages':>9}  document / section")
+    for number, hit in enumerate(result.hits, start=1):
+        pages = str(hit.page_start) if hit.page_start == hit.page_end else f"{hit.page_start}-{hit.page_end}"
+        print(
+            f"{number:>3} {hit.score:>8.4f} {hit.vector_rank or '-':>4} {hit.keyword_rank or '-':>4} {pages:>9}"
+            f"  {hit.file_name} / {hit.section_title}"
+        )
+        if show_text:
+            print(f"\n{hit.text}\n")
+
+
+def run_search(args: argparse.Namespace) -> int:
+    from cfr_v2.contracts import ProcedureSearchRequest
+    from cfr_v2.llm import model_loop
+
+    from .search import HybridProcedureSearch
+
+    search = HybridProcedureSearch.load(_store(), args.index, _embedder())
+    request = ProcedureSearchRequest(query=_masker().mask(args.query), limit=args.limit, redacted=True)
+    print_hits(model_loop().run(search.search(request)), show_text=args.text)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -251,7 +311,24 @@ def main(argv: list[str] | None = None) -> int:
             step.add_argument("--out", type=Path, help="write the redacted text here, for local reading")
         else:
             step.add_argument("--previous", help="snapshot ref: unchanged PDFs are not read again")
+    step = sub.add_parser("index", help="embed the current sections of a snapshot")
+    step.add_argument("snapshot", help="snapshot ref")
+    step = sub.add_parser("search", help="try a query against an index")
+    step.add_argument("index", help="index ref")
+    step.add_argument("query")
+    step.add_argument("--limit", type=int, default=8)
+    step.add_argument("--text", action="store_true", help="print the passages too")
     args = parser.parse_args(argv)
+    if args.command in ("index", "search"):
+        from cfr_v2.llm import close_model_loop
+        from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
+
+        init_telemetry(service_name="cfr-v2-procedures")
+        try:
+            return run_index(args) if args.command == "index" else run_search(args)
+        finally:
+            close_model_loop()
+            shutdown_telemetry()
     if args.command != "inspect":
         if not args.folder and not args.confluence:
             parser.error("give a folder of PDFs, or --confluence")

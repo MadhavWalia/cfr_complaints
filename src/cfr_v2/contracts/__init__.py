@@ -27,6 +27,10 @@ from .procedures import (
     ExtractionQuality,
     ProcedureDocument,
     ProcedureFailure,
+    ProcedureHit,
+    ProcedureIndex,
+    ProcedureSearchRequest,
+    ProcedureSearchResult,
     ProcedureSection,
     ProcedureSnapshot,
     ProcedureSnapshotEntry,
@@ -93,6 +97,10 @@ from .understanding import (
 )
 
 __all__ = [
+    "ProcedureHit",
+    "ProcedureIndex",
+    "ProcedureSearchRequest",
+    "ProcedureSearchResult",
     "ExtractionQuality",
     "ProcedureDocument",
     "ProcedureFailure",

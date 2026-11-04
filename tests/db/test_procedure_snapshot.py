@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from cfr_v2.artifacts import register
-from cfr_v2.contracts import AuthorizationContext, Classification, ProcedureDocument
+from cfr_v2.contracts import AuthorizationContext, Classification, ProcedureDocument, ProcedureSearchRequest
 from cfr_v2.intake.fakes import RegexMasker
-from cfr_v2.procedures import ManualPdfSource, build_snapshot, load_snapshot
+from cfr_v2.llm import FakeEmbeddingClient
+from cfr_v2.procedures import HybridProcedureSearch, ManualPdfSource, build_index, build_snapshot, load_snapshot
 from cfr_v2.state import CaseStateRepository
 from tests.unit.procedures.procedure_pdfs import _page, _pdf
 
@@ -38,3 +41,9 @@ def test_snapshot_is_stored_registered_and_loaded_by_ref(db, store, tmp_path):
 
     again = build_snapshot(source, store=store, masker=RegexMasker([NAME]), previous=loaded)
     assert (again.reused, again.ref) == (1, result.ref)
+
+    embedder = FakeEmbeddingClient()
+    build = asyncio.run(build_index(store, result.ref, embedder))
+    search = HybridProcedureSearch.load(store, build.ref, embedder)
+    found = asyncio.run(search.search(ProcedureSearchRequest(query="Example Procedure", redacted=True)))
+    assert found.hits and found.hits[0].file_name == "Example Procedure Sep'26.pdf"
