@@ -1,0 +1,2 @@
+# Keep LF everywhere, whichever tool does the checkout (a Windows Git client rewrote files as CRLF).
+* text=auto eol=lf
