@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-from .inspect import PAGE_ONE_LABELS, DocumentReport, inspect_pdf
+from .inspect import FRONT_LABELS, DocumentReport, inspect_pdf
 
 
 def _pct(value: float | None) -> str:
@@ -27,11 +27,14 @@ def print_report(reports: list[DocumentReport]) -> None:
         "chars/pg",
         "low-text",
         "tables",
+        "real tbl",
         "images",
-        "pg1",
-        "toc pgs",
+        "real img",
+        "front",
         "toc items",
-        "toc match",
+        "toc near",
+        "toc any",
+        "font hdg",
         "repeated",
     )
     print(f"{'document':<46}" + "".join(f"{h:>10}" for h in header))
@@ -39,35 +42,59 @@ def print_report(reports: list[DocumentReport]) -> None:
         if r.status != "ok":
             print(f"{r.document[:45]:<46}  could not read: {r.status}")
             continue
-        found = sum(r.page_one_fields.values())
         cells = (
             r.pages,
             r.chars_per_page,
             r.low_text_pages,
             r.tables,
+            r.content_tables,
             r.images,
-            f"{found}/{len(PAGE_ONE_LABELS)}",
-            r.contents_pages,
+            r.content_images,
+            f"{sum(r.front_fields.values())}/{len(FRONT_LABELS)}",
             r.contents_entries,
             _pct(r.contents_match),
+            _pct(r.contents_anywhere_match),
+            r.font_headings,
             r.repeated_lines,
         )
         print(f"{r.document[:45]:<46}" + "".join(f"{c:>10}" for c in cells))
     read = [r for r in reports if r.status == "ok"]
-    pages = sum(r.pages for r in read)
-    print(f"\n{len(read)} of {len(reports)} documents read; {pages:,} pages; {sum(r.chars for r in read):,} characters")
+    unique = {r.sha256: r for r in read}
+    pages = sum(r.pages for r in unique.values())
+    print(f"\n{len(read)} of {len(reports)} files read; {len(unique)} distinct by content")
+    print(f"distinct: {pages:,} pages; {sum(r.chars for r in unique.values()):,} characters")
     if pages:
-        low = sum(r.low_text_pages for r in read)
+        distinct = unique.values()
+        low = sum(r.low_text_pages for r in distinct)
+        print(f"low-text pages: {low} ({_pct(low / pages)})")
+        print(f"tables: {sum(r.tables for r in distinct)}, real {sum(r.content_tables for r in distinct)}")
         print(
-            f"low-text pages: {low} ({_pct(low / pages)}); tables: {sum(r.tables for r in read)}; images: {sum(r.images for r in read)}"
+            f"images: {sum(r.images for r in distinct)}, real {sum(r.content_images for r in distinct)} "
+            f"on {sum(r.pages_with_content_images for r in distinct)} pages"
         )
-        for name in PAGE_ONE_LABELS:
-            print(f"page 1 has {name}: {sum(r.page_one_fields.get(name, False) for r in read)} of {len(read)}")
-    entries = sum(r.contents_entries for r in read)
-    if entries:
-        print(
-            f"contents entries found near their page: {_pct(sum(r.contents_found for r in read) / entries)} of {entries}"
-        )
+        for name in FRONT_LABELS:
+            print(f"first pages have {name}: {sum(r.front_fields.get(name, False) for r in distinct)} of {len(unique)}")
+        entries = sum(r.contents_entries for r in distinct)
+        if entries:
+            near = sum(r.contents_found for r in distinct) / entries
+            anywhere = sum(r.contents_anywhere for r in distinct) / entries
+            print(f"contents entries ({entries}): near their page {_pct(near)}; anywhere {_pct(anywhere)}")
+    groups: dict[str, list[str]] = {}
+    for r in read:
+        groups.setdefault(r.sha256, []).append(r.document)
+    copies = [names for names in groups.values() if len(names) > 1]
+    if copies:
+        print("\nidentical files:")
+        for names in copies:
+            print("  " + " = ".join(names))
+    same_size: dict[tuple[int, int], set[str]] = {}
+    for r in unique.values():
+        same_size.setdefault((r.pages, r.chars), set()).add(r.document)
+    lookalikes = [sorted(names) for names in same_size.values() if len(names) > 1]
+    if lookalikes:
+        print("\nsame size, different files (versions?):")
+        for names in lookalikes:
+            print("  " + " | ".join(names))
 
 
 def main(argv: list[str] | None = None) -> int:

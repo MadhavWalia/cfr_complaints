@@ -7,10 +7,13 @@ text**: errors give the exception type only.
 Measured per document:
 
 - pages, text per page, and pages with little text (a sign of scans or image-only pages);
-- tables and images found by ``pdfplumber``;
-- whether page 1 has the expected fields (found by their labels);
+- tables and images found by ``pdfplumber``, and how many are real content: ones in the same
+  place on most pages are page furniture (a logo, a header box), and tiny images are icons;
+- whether the first pages have the expected fields (found by their labels);
 - the contents pages: how many entries they list, and how many of those titles occur near
-  the page they name. That rate says whether sections can be split reliably;
+  the page they name, or anywhere after the contents. Those rates say whether sections can be
+  split reliably;
+- lines that look like headings by font, for documents without usable contents pages;
 - lines repeated on most pages (running headers and footers, to strip before indexing).
 """
 
@@ -20,7 +23,7 @@ import hashlib
 import logging
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -29,8 +32,12 @@ CONTENTS_SEARCH_PAGES = 8  # the contents follow page 1
 CONTENTS_MIN_ENTRIES = 3  # lines on a page before it counts as a contents page
 HEADING_PAGE_SLACK = 2  # printed page numbers can differ from PDF pages (cover, contents)
 REPEATED_LINE_SHARE = 0.5
+FRONT_PAGES = 3  # the procedure's fields are at the start, usually page 1 but sometimes page 2
+SMALL_IMAGE_AREA = 0.02  # of the page: below this an image is an icon or a bullet
+HEADING_SIZE_RATIO = 1.1  # against the document's most common font size
+HEADING_MAX_CHARS = 120
 
-PAGE_ONE_LABELS = {
+FRONT_LABELS = {
     "procedure_name": re.compile(r"procedure\s+name|^\s*procedure\b", re.IGNORECASE | re.MULTILINE),
     "annual_review_date": re.compile(r"annual\s+review", re.IGNORECASE),
     "monthly_revision_date": re.compile(r"monthly\s+revision", re.IGNORECASE),
@@ -55,12 +62,16 @@ class DocumentReport:
     chars: int = 0
     low_text_pages: int = 0
     tables: int = 0
+    content_tables: int = 0  # at least 2 rows and 2 columns, and not in the same place on most pages
     images: int = 0
-    pages_with_images: int = 0
-    page_one_fields: dict[str, bool] = field(default_factory=dict)
+    content_images: int = 0  # not tiny, and not in the same place on most pages
+    pages_with_content_images: int = 0
+    front_fields: dict[str, bool] = field(default_factory=dict)
     contents_pages: int = 0
     contents_entries: int = 0
     contents_found: int = 0  # entries whose title occurs near the page they name
+    contents_anywhere: int = 0  # entries whose title occurs anywhere after the contents
+    font_headings: int = 0  # short lines larger than body text, or bold
     repeated_lines: int = 0  # distinct lines on at least half the pages
 
     @property
@@ -71,11 +82,16 @@ class DocumentReport:
     def contents_match(self) -> float | None:
         return self.contents_found / self.contents_entries if self.contents_entries else None
 
+    @property
+    def contents_anywhere_match(self) -> float | None:
+        return self.contents_anywhere / self.contents_entries if self.contents_entries else None
+
     def as_dict(self) -> dict:
-        match = self.contents_match
+        near, anywhere = self.contents_match, self.contents_anywhere_match
         return asdict(self) | {
             "chars_per_page": self.chars_per_page,
-            "contents_match": None if match is None else round(match, 3),
+            "contents_match": None if near is None else round(near, 3),
+            "contents_anywhere_match": None if anywhere is None else round(anywhere, 3),
         }
 
 
@@ -117,6 +133,47 @@ def _entries_found(texts: Sequence[str], contents: Sequence[int], entries: Seque
     return found
 
 
+def _titles_anywhere(texts: Sequence[str], contents: Sequence[int], entries: Sequence[tuple[str, int]]) -> int:
+    after = max(contents, default=0) + 1
+    body = " ".join(_normal(t) for t in texts[after:])
+    return sum(_normal(title) in body for title, _ in entries)
+
+
+def _box(item: Mapping | Sequence[float]) -> tuple[int, ...]:
+    """A position to compare across pages, rounded so tiny differences don't matter."""
+    edges = (item["x0"], item["top"], item["x1"], item["bottom"]) if isinstance(item, Mapping) else item
+    return tuple(round(v / 5) for v in edges)
+
+
+def _furniture(boxes_per_page: Sequence[Sequence[tuple[int, ...]]]) -> set[tuple[int, ...]]:
+    """Positions used on most pages: a logo or header box, not content."""
+    counts: Counter[tuple[int, ...]] = Counter()
+    for boxes in boxes_per_page:
+        counts.update(set(boxes))
+    pages = len(boxes_per_page)
+    return {box for box, n in counts.items() if pages > 1 and n >= pages * REPEATED_LINE_SHARE}
+
+
+def _font_headings(lines_per_page: Sequence[Sequence[Mapping]]) -> int:
+    sizes: Counter[float] = Counter()
+    for lines in lines_per_page:
+        for line in lines:
+            sizes.update(round(c["size"], 1) for c in line["chars"])
+    if not sizes:
+        return 0
+    body = sizes.most_common(1)[0][0]
+    found = 0
+    for lines in lines_per_page:
+        for line in lines:
+            chars = line["chars"]
+            if not chars or len(chars) > HEADING_MAX_CHARS:
+                continue
+            bigger = sum(c["size"] for c in chars) / len(chars) >= body * HEADING_SIZE_RATIO
+            bold = all("bold" in c["fontname"].lower() for c in chars)
+            found += bigger or bold
+    return found
+
+
 def _repeated_lines(texts: Sequence[str]) -> int:
     counts: Counter[str] = Counter()
     for text in texts:
@@ -132,6 +189,9 @@ def inspect_pdf(path: Path) -> DocumentReport:
     try:
         report.sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
         texts: list[str] = []
+        tables: list[list[tuple[tuple[int, ...], bool]]] = []  # (position, has rows and columns) per page
+        images: list[list[tuple[tuple[int, ...], float]]] = []  # (position, share of page) per page
+        lines: list[list[Mapping]] = []
         with pdfplumber.open(path) as pdf:
             report.pages = len(pdf.pages)
             for page in pdf.pages:
@@ -139,19 +199,33 @@ def inspect_pdf(path: Path) -> DocumentReport:
                 texts.append(text)
                 report.chars += len(text)
                 report.low_text_pages += len(text.strip()) < LOW_TEXT_CHARS
-                report.tables += len(page.find_tables())
+                found = page.find_tables()
+                report.tables += len(found)
+                tables.append(
+                    [(_box(t.bbox), len(t.rows) >= 2 and max(len(r.cells) for r in t.rows) >= 2) for t in found]
+                )
+                area = float(page.width * page.height) or 1.0
                 report.images += len(page.images)
-                report.pages_with_images += bool(page.images)
+                images.append([(_box(i), (i["x1"] - i["x0"]) * (i["bottom"] - i["top"]) / area) for i in page.images])
+                lines.append(page.extract_text_lines())
                 page.flush_cache()
     except Exception as exc:  # noqa: BLE001 - one bad file must not stop the report; the type carries no content
         report.status = type(exc).__name__
         return report
-    first = texts[0] if texts else ""
-    report.page_one_fields = {name: bool(p.search(first)) for name, p in PAGE_ONE_LABELS.items()}
+    front = "\n".join(texts[:FRONT_PAGES])
+    report.front_fields = {name: bool(p.search(front)) for name, p in FRONT_LABELS.items()}
+    fixed_tables = _furniture([[box for box, _ in page] for page in tables])
+    report.content_tables = sum(real and box not in fixed_tables for page in tables for box, real in page)
+    fixed_images = _furniture([[box for box, _ in page] for page in images])
+    per_page = [sum(box not in fixed_images and share >= SMALL_IMAGE_AREA for box, share in page) for page in images]
+    report.content_images = sum(per_page)
+    report.pages_with_content_images = sum(n > 0 for n in per_page)
+    report.font_headings = _font_headings(lines)
     contents, entries = _find_contents(texts)
     report.contents_pages = len(contents)
     report.contents_entries = len(entries)
     report.contents_found = _entries_found(texts, contents, entries)
+    report.contents_anywhere = _titles_anywhere(texts, contents, entries)
     report.repeated_lines = _repeated_lines(texts)
     return report
 
