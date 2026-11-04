@@ -23,6 +23,7 @@ src/cfr_v2/
   intake/       C01 BigQuery case source, normalization, redaction, admission
   understanding/ C02 (DSPy): Pass 1 allegations, requests, agent statements; Pass 2 claims, accounts, evidence needs
   selection/    C03 (DSPy): the customer's main complaint (primary claim), bound to the claim-set hash
+  procedures/   Operating procedure PDFs for routing; so far a numbers-only inspection (LDR-0019)
 registry/       release manifests (releases/<id>.yaml), evidence source taxonomy (evidence_sources/<version>.yaml)
 config/         ee-config template (config_gpt.example.yml); your config_gpt.yml is gitignored
 tests/
