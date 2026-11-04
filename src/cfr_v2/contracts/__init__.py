@@ -23,6 +23,16 @@ from .intake import (
     SpanRef,
     TranscriptInteraction,
 )
+from .procedures import (
+    ExtractionQuality,
+    ProcedureDocument,
+    ProcedureFailure,
+    ProcedureSection,
+    ProcedureSnapshot,
+    ProcedureSnapshotEntry,
+    ProcedureStatus,
+    VersionFlag,
+)
 from .planning import (
     MANDATORY_TASK_KINDS,
     ExecutionPlan,
@@ -83,6 +93,14 @@ from .understanding import (
 )
 
 __all__ = [
+    "ExtractionQuality",
+    "ProcedureDocument",
+    "ProcedureFailure",
+    "ProcedureSection",
+    "ProcedureSnapshot",
+    "ProcedureSnapshotEntry",
+    "ProcedureStatus",
+    "VersionFlag",
     "MANDATORY_TASK_KINDS",
     "SOURCE_ORIGIN_PATTERN",
     "AccountResolution",

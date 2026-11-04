@@ -2,9 +2,14 @@
 
     python -m cfr_v2.procedures inspect /path/to/pdfs
     python -m cfr_v2.procedures inspect /path/to/pdfs --out inspect.json
+    python -m cfr_v2.procedures extract /path/to/pdfs --out extract_trial
+    python -m cfr_v2.procedures snapshot /path/to/pdfs [--previous sha256:...]
+    python -m cfr_v2.procedures snapshot --confluence
 
-``inspect`` prints file names, counts and yes/no flags only, never document text, so the
-output can be shared.
+``inspect`` and the printed output of ``extract`` and ``snapshot`` carry file names, dates, counts
+and flags only, never document text, so they can be shared. ``extract`` is a trial: it stores
+nothing, and ``--out`` writes the redacted text for reading locally. **Those files are document
+text: keep them local.** ``snapshot`` stores the originals and the redacted sections.
 """
 
 from __future__ import annotations
@@ -14,7 +19,14 @@ import json
 import sys
 from pathlib import Path
 
+from cfr_v2.contracts import ProcedureDocument, ProcedureStatus
+
+from .corpus import SnapshotResult, build_snapshot, load_snapshot
+from .extract import MAX_SECTION_CHARS
 from .inspect import FRONT_LABELS, DocumentReport, inspect_pdf
+from .sources import ConfluenceSettings, ConfluenceSource, ManualPdfSource, ProcedureSource, ProcedureSourceError
+
+MAX_PDF_BYTES = 200 * 1024 * 1024  # procedure PDFs with images are larger than case artifacts
 
 
 def _pct(value: float | None) -> str:
@@ -97,13 +109,152 @@ def print_report(reports: list[DocumentReport]) -> None:
             print("  " + " | ".join(names))
 
 
+def _progress(number: int, total: int, document) -> None:
+    print(f"[{number}/{total}] {document.name}", file=sys.stderr)
+
+
+def _date(value) -> str:
+    return value.isoformat() if value else "-"
+
+
+def print_snapshot(result: SnapshotResult) -> None:
+    header = ("status", "annual", "monthly", "file date", "pages", "method", "located", "sections", "largest", "over", "tables", "masked")
+    widths = (12, 12, 12, 12, 7, 10, 9, 10, 9, 6, 8, 8)
+    print(f"{'document':<46}" + "".join(f"{h:>{w}}" for h, w in zip(header, widths, strict=True)))
+    for entry in result.snapshot.entries:
+        d = result.documents[entry.source_sha256]
+        q = d.quality
+        located = _pct(q.contents_located / q.contents_entries) if q.contents_entries else "-"
+        cells = (
+            entry.status.value[:10],
+            _date(d.annual_review_date),
+            _date(d.monthly_revision_date),
+            _date(d.file_date),
+            q.pages,
+            q.method,
+            located,
+            len(d.sections),
+            max((len(s.text) for s in d.sections), default=0),
+            q.oversized_sections,
+            q.tables,
+            sum(s.pii_masked for s in d.sections),
+        )
+        print(f"{d.file_name[:45]:<46}" + "".join(f"{c:>{w}}" for c, w in zip(cells, widths, strict=True)))
+    entries = result.snapshot.entries
+    current = [result.documents[e.source_sha256] for e in entries if e.status == ProcedureStatus.CURRENT]
+    sections = [s for d in current for s in d.sections]
+    print(f"\n{len(entries)} distinct files, {len(current)} procedures; {result.reused} reused from the previous snapshot")
+    print(f"current: {sum(d.quality.pages for d in current):,} pages; {len(sections):,} sections; "
+          f"{sum(len(s.text) for s in sections):,} characters")
+    print(f"sections over {MAX_SECTION_CHARS:,} characters: {sum(d.quality.oversized_sections for d in current)}")
+    print(f"names taken from the file name: {sum(d.name_from_file for d in current)}")
+    print(f"no monthly date: {sum(d.monthly_revision_date is None for d in current)}; "
+          f"no annual date: {sum(d.annual_review_date is None for d in current)}")
+    print(f"PII masks: {sum(s.pii_masked for s in sections):,}")
+    groups: dict[str, list] = {}
+    for entry in entries:
+        groups.setdefault(entry.procedure_key, []).append(entry)
+    versions = [group for group in groups.values() if len(group) > 1]
+    if versions:
+        print("\nversions (first one is used):")
+        for group in versions:
+            ordered = sorted(group, key=lambda e: e.status != ProcedureStatus.CURRENT)
+            print("  " + " > ".join(e.file_names[0] for e in ordered))
+    review = [e for e in entries if e.flags]
+    if review:
+        print("\nplease check the version chosen:")
+        for entry in review:
+            print(f"  {entry.file_names[0]}: {', '.join(f.value for f in entry.flags)}")
+    copies = [e.file_names for e in entries if len(e.file_names) > 1]
+    if copies:
+        print("\nidentical files:")
+        for names in copies:
+            print("  " + " = ".join(names))
+    if result.snapshot.failures:
+        print("\ncould not prepare (left out):")
+        for failure in result.snapshot.failures:
+            print(f"  {failure.file_name}: {failure.error}")
+
+
+def _as_markdown(document: ProcedureDocument) -> str:
+    parts = [f"# {document.name}\n"]
+    for s in document.sections:
+        part = f" (part {s.part})" if s.part > 1 else ""
+        pages = f"page {s.page_start}" if s.page_start == s.page_end else f"pages {s.page_start}-{s.page_end}"
+        parts.append(f"## {s.title}{part}\n\n_{pages}_\n\n{s.text}\n")
+    return "\n".join(parts)
+
+
+def write_review(result: SnapshotResult, folder: Path) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    for document in result.documents.values():
+        name = f"{Path(document.file_name).stem}.md"
+        (folder / name).write_text(_as_markdown(document), encoding="utf-8")
+
+
+def _source(args: argparse.Namespace) -> ProcedureSource:
+    return ConfluenceSource(ConfluenceSettings.from_env()) if args.confluence else ManualPdfSource(args.folder)
+
+
+def _masker():
+    from cfr_v2.intake.redaction import EEUtilsMasker
+
+    return EEUtilsMasker()
+
+
+def run_extract(args: argparse.Namespace) -> int:
+    from cfr_v2.artifacts import InMemoryArtifactStore
+
+    store = InMemoryArtifactStore(max_bytes=MAX_PDF_BYTES)
+    result = build_snapshot(_source(args), store=store, masker=_masker(), progress=_progress)
+    print_snapshot(result)
+    if args.out:
+        write_review(result, args.out)
+        print(f"\nredacted text written to {args.out}: keep it local")
+    return 1 if result.snapshot.failures else 0
+
+
+def run_snapshot(args: argparse.Namespace) -> int:
+    from cfr_v2.artifacts import S3ArtifactStore, S3Settings, register
+    from cfr_v2.runtime import RuntimeSettings
+    from cfr_v2.state import CaseStateRepository, Database
+
+    store = S3ArtifactStore(S3Settings.from_env(), max_bytes=MAX_PDF_BYTES)
+    previous = load_snapshot(store, args.previous) if args.previous else None
+    result = build_snapshot(_source(args), store=store, masker=_masker(), previous=previous, progress=_progress)
+    db = Database(RuntimeSettings.from_env().state_database_url, max_connections=2)
+    with db.transaction() as tx:
+        repo = CaseStateRepository(tx)
+        for stored in result.stored:
+            register(repo, stored)
+    print_snapshot(result)
+    print(f"\nsnapshot: {result.ref}")
+    return 1 if result.snapshot.failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.procedures", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     cmd = sub.add_parser("inspect", help="numbers-only report on a folder of PDFs")
     cmd.add_argument("folder", type=Path)
     cmd.add_argument("--out", type=Path, help="also write the report as JSON")
+    for name, text in (("extract", "trial: store nothing"), ("snapshot", "store originals and redacted sections")):
+        step = sub.add_parser(name, help=text)
+        step.add_argument("folder", type=Path, nargs="?")
+        step.add_argument("--confluence", action="store_true", help="read from Confluence (not built yet)")
+        if name == "extract":
+            step.add_argument("--out", type=Path, help="write the redacted text here, for local reading")
+        else:
+            step.add_argument("--previous", help="snapshot ref: unchanged PDFs are not read again")
     args = parser.parse_args(argv)
+    if args.command != "inspect":
+        if not args.folder and not args.confluence:
+            parser.error("give a folder of PDFs, or --confluence")
+        try:
+            return run_extract(args) if args.command == "extract" else run_snapshot(args)
+        except ProcedureSourceError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     paths = sorted(p for p in args.folder.iterdir() if p.suffix.lower() == ".pdf") if args.folder.is_dir() else []
     if not paths:

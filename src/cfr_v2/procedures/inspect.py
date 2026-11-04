@@ -151,7 +151,7 @@ def _furniture(boxes_per_page: Sequence[Sequence[tuple[int, ...]]]) -> set[tuple
     for boxes in boxes_per_page:
         counts.update(set(boxes))
     pages = len(boxes_per_page)
-    return {box for box, n in counts.items() if pages > 1 and n >= pages * REPEATED_LINE_SHARE}
+    return {box for box, n in counts.items() if n >= max(2, pages * REPEATED_LINE_SHARE)}
 
 
 def _font_headings(lines_per_page: Sequence[Sequence[Mapping]]) -> int:

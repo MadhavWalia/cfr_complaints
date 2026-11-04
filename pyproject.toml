@@ -18,6 +18,8 @@ dependencies = [
     "opentelemetry-instrumentation-httpx==0.60b1",
     # C02+ programs (LDR-0015). Pinned: GatewayEngine uses the 3.4 custom-engine API.
     "dspy==3.4.1",
+    # Procedure PDFs (LDR-0019): python -m cfr_v2.procedures.
+    "pdfplumber>=0.11",
 ]
 
 [project.optional-dependencies]
@@ -52,8 +54,6 @@ dev = [
     "sqlglot==26.17.1",
     # Evidence source workbook import/export (python -m cfr_v2.registry.evidence_sources).
     "openpyxl>=3.1",
-    # Procedure PDFs (LDR-0019): python -m cfr_v2.procedures.
-    "pdfplumber>=0.11",
 ]
 
 [build-system]

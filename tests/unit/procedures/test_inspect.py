@@ -10,53 +10,11 @@ import pytest
 from cfr_v2.procedures import inspect_pdf
 from cfr_v2.procedures.__main__ import main
 from cfr_v2.procedures.inspect import contents_entries
+from tests.unit.procedures.procedure_pdfs import _page, _pdf
 
 SECRET = "SECRET-BODY-TEXT"
 FOOTER = "Internal Use Only"
 FILLER = f"{SECRET} the account team reviews each request and records the outcome in the case file before closing it"
-
-
-def _escape(text: str) -> str:
-    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-
-
-def _page(lines: list[str], extra: str = "") -> bytes:
-    text = "".join(f"BT /F1 10 Tf 50 {760 - 14 * i} Td ({_escape(line)}) Tj ET\n" for i, line in enumerate(lines))
-    return (text + extra).encode("latin-1")
-
-
-def _pdf(pages: list[bytes], *, with_image: bool = False) -> bytes:
-    """A small but real PDF: page objects, one font, optionally one image XObject."""
-    n = len(pages)
-    kids = " ".join(f"{3 + 2 * i} 0 R" for i in range(n))
-    font, image = 3 + 2 * n, 4 + 2 * n
-    xobject = f"/XObject << /Im0 {image} 0 R >>" if with_image else ""
-    objects = {1: b"<< /Type /Catalog /Pages 2 0 R >>", 2: f"<< /Type /Pages /Kids [{kids}] /Count {n} >>".encode()}
-    for i, stream in enumerate(pages):
-        page, content = 3 + 2 * i, 4 + 2 * i
-        objects[page] = (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {content} 0 R "
-            f"/Resources << /Font << /F1 {font} 0 R >> {xobject} >> >>"
-        ).encode()
-        objects[content] = b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream)
-    objects[font] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
-    if with_image:
-        objects[image] = (
-            b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray "
-            b"/BitsPerComponent 8 /Length 1 >>\nstream\n\x00\nendstream"
-        )
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = {}
-    for number in sorted(objects):
-        offsets[number] = len(out)
-        out += b"%d 0 obj\n%s\nendobj\n" % (number, objects[number])
-    xref = len(out)
-    size = max(objects) + 1
-    out += b"xref\n0 %d\n0000000000 65535 f \n" % size
-    for number in range(1, size):
-        out += b"%010d 00000 n \n" % offsets.get(number, 0)
-    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (size, xref)
-    return bytes(out)
 
 
 GRID = "".join(f"{x} {y} 120 30 re S\n" for x in (50, 170, 290) for y in (300, 330, 360))
