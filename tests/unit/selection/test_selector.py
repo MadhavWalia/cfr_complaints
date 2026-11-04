@@ -217,3 +217,29 @@ def test_handler_skips_the_model_for_a_single_claim(loop):
     client = FakeModelClient(responder=lambda r: pytest.fail("no call expected"))
     selection = _handle(_claim_set(claims=(_claim("c1", ("a1", "a2", "a3"), "s"),)), client, loop)
     assert selection.status is SelectionStatus.SELECTED and client.requests == []
+
+
+# --- trial output -------------------------------------------------------------------------
+
+
+def test_trial_prints_the_selection_table(capsys):
+    from cfr_v2.understanding.__main__ import _Metered, _Outcome, _print_selection
+
+    client = _Metered(inner=None)
+    client.usage[("GC-1", 3)] = [900, 300]
+    selected = build_selection(_claim_set(), _answer("SELECTED", "c1"))
+    ambiguous = build_selection(_claim_set(), _answer("AMBIGUOUS", candidates=("c1", "c2")))
+    _print_selection(
+        [
+            _Outcome("r1", claim_set=_claim_set(), selection=selected, seconds=[1.0, 2.0, 3.0]),
+            _Outcome("r2", claim_set=_claim_set(), selection=ambiguous, seconds=[1.0, 2.0, 3.0]),
+            _Outcome("r3", claim_set=_claim_set(), seconds=[1.0, 2.0], error="c03: ModelBlockedError"),
+            _Outcome("r4"),  # stopped before Pass 2: no row
+        ],
+        client,
+    )
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert len(lines) == 5  # title, header, three cases
+    assert "selected" in lines[2] and "c1" in lines[2] and "900" in lines[2]
+    assert "ambiguous" in lines[3]
+    assert "ModelBlockedError" in lines[4]

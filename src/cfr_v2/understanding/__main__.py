@@ -268,10 +268,6 @@ def _print_pass2(outcomes: list[_Outcome], client: _Metered) -> None:
         print(_row(case, cells))
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-
 def _print_selection(outcomes: list[_Outcome], client: _Metered) -> None:
     print("\nC03 primary selection (no model call for 0 or 1 claim)")
     print(_row("case", ("claims", "status", "claim", "candidates", "seconds", "in tok", "out tok")))
@@ -293,3 +289,7 @@ def _print_selection(outcomes: list[_Outcome], client: _Metered) -> None:
             *tokens,
         )
         print(_row(case, cells))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
