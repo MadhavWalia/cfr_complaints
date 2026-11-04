@@ -58,6 +58,10 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
         "evidence_needs",
         "other_checks",
         "findings",
+        # C03 selection (counts and statuses only)
+        "selection_status",
+        "candidates",
+        "model_called",
     }
 )
 

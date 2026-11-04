@@ -1,14 +1,15 @@
-"""C02 trial: run Pass 1 and Pass 2 on a few admitted cases, outside the workflow.
+"""C02 + C03 trial: run Pass 1, Pass 2 and primary selection on a few admitted cases, outside the workflow.
 
     python -m cfr_v2.understanding --sample 5 --out c02_trial
     python -m cfr_v2.understanding --case-run-id <id> --case-run-id <id> --out c02_trial
     python -m cfr_v2.understanding --sample 5 --pass1-only
 
 Reads admitted requests, transcripts and baselines as the worker would and calls the real
-gateway, but writes nothing to the state database or the artifact store (Pass 1's result
-is kept in memory for Pass 2). Prints counts, latency and tokens per case and pass, plus a
+gateway, but writes nothing to the state database or the artifact store (each step's result
+is kept in memory for the next). Prints counts, latency and tokens per case and step, plus a
 cost projection; with ``--out``, writes one review file per case: Pass 1's items with the
-redacted text their spans cover, then Pass 2's claims, other checks and findings.
+redacted text their spans cover, Pass 2's claims, other checks and findings, and C03's
+selection. ``--pass1-only`` stops after Pass 1.
 
 Review files hold redacted transcript excerpts (INTERNAL): keep them on this machine
 and delete them after review.
@@ -25,17 +26,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cfr_v2.artifacts import OverlayArtifactStore, S3ArtifactStore, S3Settings
-from cfr_v2.contracts import ClaimSetRevision, Classification, Pass1Result
+from cfr_v2.contracts import ClaimSetRevision, Classification, Pass1Result, PrimarySelection
 from cfr_v2.llm import GatewayModelClient, GatewaySettings, ModelError, ModelRequest, ModelResponse, close_model_loop
 from cfr_v2.llm.dspy_lm import gateway_lm
 from cfr_v2.registry.evidence_sources import PinnedTaxonomies
 from cfr_v2.runtime.settings import RuntimeSettings
 from cfr_v2.runtime.stages import STAGES, StageInput
+from cfr_v2.selection import make_selection_handler
 from cfr_v2.state import Database
 from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
 
 from .handler import load_segments, make_pass1_handler, make_pass2_handler
 from .pass1 import PASS1_PROGRAM_ID
+from .pass2 import PASS2_PROGRAM_ID
 
 
 class _Metered:
@@ -47,7 +50,8 @@ class _Metered:
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         response = await self.inner.complete(request)
-        totals = self.usage.setdefault((request.case_id, 1 if request.program_id == PASS1_PROGRAM_ID else 2), [0, 0])
+        step = {PASS1_PROGRAM_ID: 1, PASS2_PROGRAM_ID: 2}.get(request.program_id, 3)
+        totals = self.usage.setdefault((request.case_id, step), [0, 0])
         totals[0] += response.usage.input_tokens
         totals[1] += response.usage.output_tokens
         return response
@@ -58,6 +62,7 @@ class _Outcome:
     run_id: str
     pass1: Pass1Result | None = None
     claim_set: ClaimSetRevision | None = None
+    selection: PrimarySelection | None = None
     seconds: list[float] = field(default_factory=list)
     error: str = ""
 
@@ -72,7 +77,12 @@ def _case_runs(db: Database, ids: list[str], sample: int) -> list[tuple[str, str
     return [(r[0], r[1], r[2]) for r in rows]
 
 
-def _review(result: Pass1Result, segments: dict[str, str], claim_set: ClaimSetRevision | None) -> dict:
+def _review(
+    result: Pass1Result,
+    segments: dict[str, str],
+    claim_set: ClaimSetRevision | None,
+    selection: PrimarySelection | None = None,
+) -> dict:
     def quoted(span) -> str:
         return segments[span.interaction_id][span.start : span.end]
 
@@ -104,6 +114,8 @@ def _review(result: Pass1Result, segments: dict[str, str], claim_set: ClaimSetRe
             "other_checks": [o.model_dump(mode="json") for o in claim_set.other_checks],
             "pass2_findings": [f.model_dump(mode="json") for f in claim_set.findings],
         }
+    if selection is not None:
+        review["selection"] = selection.model_dump(mode="json", exclude={"supporting_spans", "claim_set_hash"})
     return review
 
 
@@ -126,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     taxonomies = PinnedTaxonomies(store, db)  # each run's pinned release manifest names its taxonomy
     pass1_handler = make_pass1_handler(store, lm)
     pass2_handler = make_pass2_handler(store, lm, taxonomies)
+    selection_handler = make_selection_handler(store, lm)
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
 
@@ -147,17 +160,34 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 outcome.seconds.append(time.monotonic() - started)
                 outcome.claim_set = ClaimSetRevision.model_validate_json(out.content)
+                claim_set_ref = store.put(
+                    out.content, media_type=out.media_type, classification=Classification.INTERNAL
+                )
+                started = time.monotonic()
+                out = selection_handler(
+                    StageInput(
+                        run_id,
+                        STAGES[2],
+                        request_ref,
+                        (stored.metadata.ref, claim_set_ref.metadata.ref),
+                        release_manifest_ref=manifest_ref,
+                    )
+                )
+                outcome.seconds.append(time.monotonic() - started)
+                outcome.selection = PrimarySelection.model_validate_json(out.content)
         except ModelError as exc:
-            outcome.error = f"pass {len(outcome.seconds) + 1}: {type(exc).__name__}"
+            outcome.error = f"{('pass 1', 'pass 2', 'c03')[min(len(outcome.seconds), 2)]}: {type(exc).__name__}"
         if args.out and outcome.pass1 is not None and outcome.pass1.transcript_ref is not None:
             segments = dict(load_segments(store, outcome.pass1.transcript_ref))
-            review = json.dumps(_review(outcome.pass1, segments, outcome.claim_set), indent=2, ensure_ascii=False)
+            review = json.dumps(
+                _review(outcome.pass1, segments, outcome.claim_set, outcome.selection), indent=2, ensure_ascii=False
+            )
             (args.out / f"{outcome.pass1.case_id}.json").write_text(review + "\n")
         return outcome
 
     try:
         runs = _case_runs(db, args.case_run_id, args.sample)
-        passes = "Pass 1" if args.pass1_only else "Pass 1 + Pass 2"
+        passes = "Pass 1" if args.pass1_only else "Pass 1 + Pass 2 + C03"
         print(f"{passes} on {len(runs)} case runs, model {settings.model_id!r}")
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
             outcomes = list(pool.map(run, runs))
@@ -169,13 +199,14 @@ def main(argv: list[str] | None = None) -> int:
     _print_pass1(outcomes, client)
     if not args.pass1_only:
         _print_pass2(outcomes, client)
-    for n in (1, 2):
+        _print_selection(outcomes, client)
+    for n, step in ((1, "pass 1"), (2, "pass 2"), (3, "c03")):
         called = [u for (case, p), u in client.usage.items() if p == n and u[0]]
         if called:
             avg_in = sum(u[0] for u in called) / len(called)
             avg_out = sum(u[1] for u in called) / len(called)
             print(
-                f"pass {n} average per case: {avg_in:,.0f} in / {avg_out:,.0f} out tokens; for {args.total_cases:,} "
+                f"{step} average per called case: {avg_in:,.0f} in / {avg_out:,.0f} out tokens; for {args.total_cases:,} "
                 f"cases about {avg_in * args.total_cases / 1e6:,.1f}M in / {avg_out * args.total_cases / 1e6:,.1f}M out"
             )
     if args.out:
@@ -233,6 +264,29 @@ def _print_pass2(outcomes: list[_Outcome], client: _Metered) -> None:
             len(c.findings),
             f"{o.seconds[1]:.1f}",
             *client.usage.get((case, 2), [0, 0]),
+        )
+        print(_row(case, cells))
+
+
+def _print_selection(outcomes: list[_Outcome], client: _Metered) -> None:
+    print("\nC03 primary selection (no model call for 0 or 1 claim)")
+    print(_row("case", ("claims", "status", "claim", "candidates", "seconds", "in tok", "out tok")))
+    for o in outcomes:
+        if o.claim_set is None:
+            continue
+        case, s = o.claim_set.case_id, o.selection
+        tokens = client.usage.get((case, 3), [0, 0])
+        if s is None:
+            print(_row(case, (len(o.claim_set.claims), "-", "-", "-", "-", *tokens), o.error))
+            continue
+        status = {"SELECTED": "selected", "AMBIGUOUS": "ambiguous", "NO_ELIGIBLE_CLAIM": "none"}[s.status.value]
+        cells = (
+            len(o.claim_set.claims),
+            status,
+            s.claim_id or "-",
+            len(s.candidate_claim_ids),
+            f"{o.seconds[2]:.1f}",
+            *tokens,
         )
         print(_row(case, cells))
 

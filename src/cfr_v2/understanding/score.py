@@ -9,7 +9,9 @@
 from the state database (with ``--run-missing``, runs Pass 1 now for cases without one,
 writing nothing), and prints recall, precision, F1, type, ``about`` and link agreement
 per list, a breakdown by ``prim_ctgy``, the pipeline's dropped-item rate, and the
-agreement between labellers on cases labelled twice. When a case is in several
+agreement between labellers on cases labelled twice. Where the gold ``cases`` sheet names
+the main complaint and the run has committed ``c02.pass2`` and ``c03`` results, it also
+prints C03's top-1 accuracy and how it used ``AMBIGUOUS``. When a case is in several
 workbooks, the first workbook given is the one the pipeline is scored against.
 
 Output holds counts, case numbers and workbook rows only: no transcript or gold text.
@@ -28,9 +30,11 @@ from cfr_v2.artifacts import OverlayArtifactStore, S3ArtifactStore, S3Settings
 from cfr_v2.contracts import (
     AuthorizationContext,
     CanonicalTranscript,
+    ClaimSetRevision,
     Classification,
     IngestionRequest,
     Pass1Result,
+    PrimarySelection,
     RedactionMap,
 )
 from cfr_v2.runtime.settings import RuntimeSettings
@@ -38,7 +42,7 @@ from cfr_v2.runtime.stages import STAGES, StageInput
 from cfr_v2.state import CaseStateRepository, Database
 
 from .gold import GoldCase, GoldError, read_gold, write_template
-from .scoring import LISTS, CaseText, ListScore, Report, gold_side, pipeline_side, score_sides
+from .scoring import LISTS, CaseText, ListScore, Report, gold_side, pipeline_side, score_selection, score_sides
 
 _EVALUATOR = AuthorizationContext(
     principal="c02.evaluation",
@@ -76,13 +80,14 @@ def _latest_runs(db: Database, case_nos: list[str]) -> dict[str, tuple[str, str,
     return {row[0]: (row[1], row[2], row[3]) for row in rows}
 
 
-def _committed_pass1(db: Database, store, run_id: str) -> Pass1Result | None:
+def _committed(db: Database, store, run_id: str, task: str, model):
+    """The run's committed result for ``task`` (latest), parsed as ``model``; None if there is none."""
     with db.transaction() as tx:
-        done = [c for c in CaseStateRepository(tx).committed_results(run_id) if c.logical_task_id == "c02.pass1"]
+        done = [c for c in CaseStateRepository(tx).committed_results(run_id) if c.logical_task_id == task]
     if not done:
         return None
     data = store.get(done[-1].output_artifact_refs[0], classification=Classification.INTERNAL, authorization=_EVALUATOR)
-    return Pass1Result.model_validate_json(data)
+    return model.model_validate_json(data)
 
 
 def _run_pass1(store, runs: dict[str, tuple[str, str, str]], case_nos: list[str]) -> dict[str, Pass1Result]:
@@ -135,7 +140,7 @@ def score(
         runs = _latest_runs(db, sorted(labelled))
         predictions: dict[str, Pass1Result] = {}
         for case_no, (run_id, _, _) in runs.items():
-            result = _committed_pass1(db, store, run_id)
+            result = _committed(db, store, run_id, "c02.pass1", Pass1Result)
             if result is not None:
                 predictions[case_no] = result
         missing = sorted(c for c in labelled if c in runs and c not in predictions)
@@ -158,7 +163,19 @@ def score(
             report.quote_problems += problems
             result = predictions[case_no]
             category = request.case_metadata.get("prim_ctgy")
-            report.add_case(case_no, score_sides(primary, pipeline_side(result), min_overlap), category, result)
+            predicted = pipeline_side(result)
+            report.add_case(case_no, score_sides(primary, predicted, min_overlap), category, result)
+            # C03: needs the committed claim set and selection (workers, or a full trial run).
+            run_id = runs[case_no][0]
+            claim_set = _committed(db, store, run_id, "c02.pass2", ClaimSetRevision)
+            selection = _committed(db, store, run_id, "c03.primary_selection", PrimarySelection)
+            if versions[0].primary is not None:
+                if claim_set is None or selection is None or claim_set.allegations != result.allegations:
+                    report.cases_without_selection.append(case_no)
+                else:
+                    report.selection.add(
+                        score_selection(versions[0], primary, predicted, claim_set, selection, min_overlap)
+                    )
             # Inter-labeller agreement: the first labeller against each other one.
             for other in versions[1:]:
                 second, problems = gold_side(other, text)
@@ -212,6 +229,19 @@ def print_report(report: Report) -> None:
         print("\nAllegations by prim_ctgy")
         for category, s in sorted(report.allegations_by_category.items()):
             print(f"  {category:<40} gold {s.gold:>4}  recall {_pct(s.recall):>5}  precision {_pct(s.precision):>5}")
+    s = report.selection
+    if s.clear or s.unclear or s.unmatched:
+        print("\nC03 main complaint against the gold primary_allegation_no")
+        print(
+            f"  clear cases (primary_unclear = N): {s.clear}; top-1 {_pct(s.top1)}; said AMBIGUOUS {_pct(s.ambiguous_when_clear)}"
+        )
+        print(f"  unclear cases (primary_unclear = Y): {s.unclear}; said AMBIGUOUS {_pct(s.ambiguous_when_unclear)}")
+        if s.unmatched:
+            print(f"  gold main complaint not found among the pipeline's allegations: {s.unmatched}")
+    if report.cases_without_selection:
+        print(
+            f"  no committed claim set and selection, not scored for C03: {', '.join(report.cases_without_selection)}"
+        )
     if report.agreement_cases:
         _table(
             f"Labeller agreement ({len(set(report.agreement_cases))} cases labelled twice; first as gold)",

@@ -249,3 +249,77 @@ def test_report_carries_numbers_and_ids_only(tmp_path):
         assert text not in dumped
     assert report.as_dict()["totals"]["allegations"]["recall"] == 1.0
     assert report.dropped_rate == 0.0
+
+
+# --- C03 against the gold main complaint ----------------------------------------------------
+
+
+def _claim_set_for(result: Pass1Result):
+    from cfr_v2.contracts import (
+        AccountResolution,
+        ClaimSetRevision,
+        GroundedClaim,
+        GroundingStatus,
+        TimeQuality,
+    )
+
+    claims = (
+        GroundedClaim(
+            claim_id="c1",
+            allegation_ids=("a1",),
+            statement="s",
+            account_resolution=AccountResolution.NOT_APPLICABLE,
+            time_quality=TimeQuality.EXACT,
+            grounding_status=GroundingStatus.GROUNDED,
+        ),
+    )
+    return ClaimSetRevision(
+        case_id="GC-1",
+        run_id="r",
+        revision=0,
+        allegations=result.allegations,
+        claims=claims,
+        claim_set_hash=ClaimSetRevision.compute_hash(result.allegations, claims),
+    )
+
+
+@pytest.mark.parametrize(
+    ("unclear", "status", "claim", "expected"),
+    [
+        (False, "SELECTED", "c1", {"clear": 1, "clear_correct": 1}),
+        (False, "AMBIGUOUS", None, {"clear": 1, "clear_ambiguous": 1}),
+        (True, "AMBIGUOUS", None, {"unclear": 1, "unclear_ambiguous": 1}),
+        (True, "SELECTED", "c1", {"unclear": 1}),
+    ],
+)
+def test_main_complaint_scoring(tmp_path, unclear, status, claim, expected):
+    from dataclasses import replace
+
+    from cfr_v2.contracts import PrimarySelection, SelectionStatus
+    from cfr_v2.understanding.scoring import SelectionScore, score_selection
+
+    [case] = read_gold(_workbook(tmp_path, GOLD_ROWS))
+    case = replace(case, primary=1, primary_unclear=unclear)
+    gold, _ = gold_side(case, TEXT)
+    result = _pipeline()
+    claim_set = _claim_set_for(result)
+    selection = PrimarySelection(
+        status=SelectionStatus(status),
+        claim_id=claim,
+        candidate_claim_ids=() if claim else ("c1", "c9"),
+        rationale="r",
+        program_id="c03.primary_selection",
+        program_version="select-1",
+        claim_set_hash=claim_set.claim_set_hash,
+    )
+    score = score_selection(case, gold, pipeline_side(result), claim_set, selection, 0.3)
+    assert score == SelectionScore(**expected)
+
+
+def test_primary_must_name_an_allegation_of_the_case(tmp_path):
+    path = _workbook(tmp_path, GOLD_ROWS)
+    book = load_workbook(path)
+    book["cases"]["H2"], book["cases"]["I2"] = 7, "N"  # primary_allegation_no, primary_unclear
+    book.save(path)
+    with pytest.raises(GoldError, match="cases row 2: primary_allegation_no"):
+        read_gold(path)

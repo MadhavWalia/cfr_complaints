@@ -22,6 +22,7 @@ src/cfr_v2/
   registry/     P4  release manifests: load, pin, resolve; evidence source taxonomy (YAML + workbook)
   intake/       C01 BigQuery case source, normalization, redaction, admission
   understanding/ C02 (DSPy): Pass 1 allegations, requests, agent statements; Pass 2 claims, accounts, evidence needs
+  selection/    C03 (DSPy): the customer's main complaint (primary claim), bound to the claim-set hash
 registry/       release manifests (releases/<id>.yaml), evidence source taxonomy (evidence_sources/<version>.yaml)
 config/         ee-config template (config_gpt.example.yml); your config_gpt.yml is gitignored
 tests/
@@ -114,17 +115,17 @@ Intake is submit-only: it admits and enqueues. Workflows run in worker processes
 
 Run as many workers as needed; any worker picks up jobs whose previous worker died.
 
-Workers run C02 for real (Pass 1 then Pass 2, two gpt-5 calls per case through the gateway) and
-placeholders for C03–C05, so **starting a worker sends every queued case to the model.** Try C02
-on a few cases first:
+Workers run C02 and C03 for real (Pass 1, Pass 2, then primary selection: two or three gpt-5 calls
+per case through the gateway; selection needs no call for 0 or 1 claim) and placeholders for
+C04–C05, so **starting a worker sends every queued case to the model.** Try them on a few cases first:
 
 ```bash
-python -m cfr_v2.understanding --sample 5 --out c02_trial   # counts, latency, tokens, cost projection per pass
+python -m cfr_v2.understanding --sample 5 --out c02_trial   # counts, latency, tokens, cost projection per step
 ```
 
 Pass 2 tags each evidence need with a source type from `registry/evidence_sources/`, in the
 version the run's release manifest names (`evidence_sources:`; `evidence-sources-1` if none). New
-intake uses `cfr-v2-phase-c` (`CFR_RELEASE_ID`). The business team maintains where
+intake uses `cfr-v2-phase-d` (`CFR_RELEASE_ID`). The business team maintains where
 each source type's evidence lives through a workbook: `python -m cfr_v2.registry.evidence_sources
 export|import|check` ([guide](lld/guides/evidence-sources.md); `lld/` is local).
 

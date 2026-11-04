@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from cfr_v2.contracts import Pass1Result, RedactionMap, SpanRef
+from cfr_v2.contracts import ClaimSetRevision, Pass1Result, PrimarySelection, RedactionMap, SelectionStatus, SpanRef
 
 from .gold import GoldCase
 from .spans import locate
@@ -278,6 +278,69 @@ def score_sides(gold: Side, predicted: Side, min_overlap: float) -> dict[str, Li
 
 
 @dataclass
+class SelectionScore:
+    """C03 against the gold ``primary_allegation_no`` (LDR-0018): top-1 and use of AMBIGUOUS."""
+
+    clear: int = 0  # gold primary_unclear = N, and its allegation matched a pipeline allegation
+    clear_correct: int = 0  # ...and C03 SELECTED the claim holding that allegation
+    clear_ambiguous: int = 0  # ...but C03 said AMBIGUOUS
+    unclear: int = 0  # gold primary_unclear = Y (matched)
+    unclear_ambiguous: int = 0  # ...and C03 said AMBIGUOUS
+    unmatched: int = 0  # the gold primary allegation matched no pipeline allegation
+
+    def add(self, other: SelectionScore) -> None:
+        for name in self.__dataclass_fields__:
+            setattr(self, name, getattr(self, name) + getattr(other, name))
+
+    @property
+    def top1(self) -> float | None:
+        return self.clear_correct / self.clear if self.clear else None
+
+    @property
+    def ambiguous_when_clear(self) -> float | None:
+        return self.clear_ambiguous / self.clear if self.clear else None
+
+    @property
+    def ambiguous_when_unclear(self) -> float | None:
+        return self.unclear_ambiguous / self.unclear if self.unclear else None
+
+    def as_dict(self) -> dict[str, float | int | None]:
+        values = {name: getattr(self, name) for name in self.__dataclass_fields__}
+        for name in ("top1", "ambiguous_when_clear", "ambiguous_when_unclear"):
+            value = getattr(self, name)
+            values[name] = round(value, 4) if value is not None else None
+        return values
+
+
+def score_selection(
+    case: GoldCase,
+    gold: Side,
+    predicted: Side,
+    claim_set: ClaimSetRevision,
+    selection: PrimarySelection,
+    min_overlap: float,
+) -> SelectionScore:
+    """The gold main complaint is matched to a pipeline allegation, then to the claim that holds it."""
+    score = SelectionScore()
+    if case.primary is None:
+        return score
+    allegation = match([g for g in gold.allegations if g.spans], predicted.allegations, min_overlap).get(
+        f"a{case.primary}"
+    )
+    claim = next((c.claim_id for c in claim_set.claims if allegation in c.allegation_ids), None)
+    if claim is None:
+        score.unmatched = 1
+        return score
+    ambiguous = selection.status is SelectionStatus.AMBIGUOUS
+    if case.primary_unclear:
+        score.unclear, score.unclear_ambiguous = 1, int(ambiguous)
+    else:
+        score.clear, score.clear_ambiguous = 1, int(ambiguous)
+        score.clear_correct = int(selection.status is SelectionStatus.SELECTED and selection.claim_id == claim)
+    return score
+
+
+@dataclass
 class Report:
     """Totals over cases; per-category totals for allegations; inter-labeller agreement."""
 
@@ -289,6 +352,8 @@ class Report:
     cases_not_labelled: list[str] = field(default_factory=list)
     agreement_cases: list[str] = field(default_factory=list)
     quote_problems: list[QuoteProblem] = field(default_factory=list)
+    selection: SelectionScore = field(default_factory=SelectionScore)
+    cases_without_selection: list[str] = field(default_factory=list)
     pipeline_kept: int = 0
     pipeline_dropped: int = 0
     program_versions: dict[str, int] = field(default_factory=dict)
@@ -323,5 +388,7 @@ class Report:
             "allegations_by_category": {c: s.as_dict() for c, s in sorted(self.allegations_by_category.items())},
             "agreement_cases": self.agreement_cases,
             "agreement": {n: s.as_dict() for n, s in self.agreement.items()},
+            "selection": self.selection.as_dict(),
+            "cases_without_selection": self.cases_without_selection,
             "gold_quote_problems": [p.__dict__ for p in self.quote_problems],
         }

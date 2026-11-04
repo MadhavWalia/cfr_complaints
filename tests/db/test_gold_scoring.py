@@ -1,4 +1,4 @@
-"""Gold-set scoring end to end: a committed Pass 1 result scored against two labellers' workbooks."""
+"""Gold-set scoring end to end: committed Pass 1, Pass 2 and C03 results scored against two labellers' workbooks."""
 
 from __future__ import annotations
 
@@ -13,8 +13,10 @@ from cfr_v2.intake.fakes import RegexMasker, synthetic_names, synthetic_rows
 from cfr_v2.llm import FakeModelClient
 from cfr_v2.llm.dspy_lm import gateway_lm
 from cfr_v2.registry import DEFAULT_REGISTRY_DIR, ReleaseRegistry
+from cfr_v2.registry.evidence_sources import PinnedTaxonomies
 from cfr_v2.runtime import FINAL_STATE
-from cfr_v2.understanding import make_pass1_handler
+from cfr_v2.selection import make_selection_handler
+from cfr_v2.understanding import make_pass1_handler, make_pass2_handler
 from cfr_v2.understanding.gold import write_template
 from cfr_v2.understanding.score import score
 
@@ -31,6 +33,25 @@ TRANSCRIPT = (
 
 
 def _respond(request):
+    if request.program_id == "c02.pass2":
+        need = {"description": "both charges", "source_type": "transactions", "proposition": None}
+        return {
+            "claims": [
+                {
+                    "allegation_ids": ["a1"],
+                    "statement": "The customer was charged twice",
+                    "about_an_account": True,
+                    "account_refs": [],
+                    "entities": [],
+                    "event_window_start": None,
+                    "event_window_end": None,
+                    "time_quality": "UNKNOWN",
+                    "grounding_note": None,
+                    "evidence_needs": [need | {"origin": "s1"}, need | {"origin": "r1"}],
+                }
+            ],
+            "other_checks": [],
+        }
     item = {"ambiguous": False, "ambiguity_note": None}
     return {
         "allegations": [
@@ -70,6 +91,7 @@ def _gold(path: Path, case_no: str, labeller: str, statement_type: str) -> Path:
     write_template([case_no], path)
     book = load_workbook(path)
     book["cases"]["B2"], book["cases"]["F2"], book["cases"]["G2"] = labeller, "reliable", "N"
+    book["cases"]["H2"], book["cases"]["I2"] = 1, "N"  # main complaint: allegation 1, clear
     book["allegations"].append(
         [
             case_no,
@@ -109,12 +131,17 @@ def _gold(path: Path, case_no: str, labeller: str, statement_type: str) -> Path:
 
 
 def test_score_against_two_labellers(running, store, tmp_path):
+    lm = gateway_lm(FakeModelClient(responder=_respond), "fake-model")
     running.handlers = {
         **running.handlers,
-        "c02.pass1": make_pass1_handler(store, gateway_lm(FakeModelClient(responder=_respond), "fake-model")),
+        "c02.pass1": make_pass1_handler(store, lm),
+        "c02.pass2": make_pass2_handler(
+            store, lm, PinnedTaxonomies(store, running.db, REPO_ROOT / DEFAULT_REGISTRY_DIR)
+        ),
+        "c03.primary_selection": make_selection_handler(store, lm),  # one claim: selected without a model call
     }
     row = synthetic_rows(1, seed=21)[0] | {"msg_tx2": TRANSCRIPT}
-    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-c")
+    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-d")
     coordinator = IntakeCoordinator.pinned(
         manifest, store=store, masker=RegexMasker(synthetic_names()), profanity=ProfanityFilter()
     )
@@ -139,6 +166,9 @@ def test_score_against_two_labellers(running, store, tmp_path):
     agreement = report.agreement["statements"]
     assert report.agreement_cases == [case_no]
     assert (agreement.matched, agreement.kind_agreement) == (2, 0.5)  # Action vs Fact on statement 1
+
+    # C03: the gold main complaint (allegation 1) is in the selected claim.
+    assert (report.selection.clear, report.selection.top1, report.cases_without_selection) == (1, 1.0, [])
 
     dumped = json.dumps(report.as_dict())
     assert NAME not in dumped and "Lisbon" not in dumped and "refund" not in dumped
