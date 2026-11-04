@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -66,7 +66,9 @@ def redact_document(
         source_sha256=sha256,
         name=name,
         name_from_file=extracted.name is None,
-        procedure_key=procedure_key(name) or procedure_key(file_name) or sha256,
+        # From the file name: a front-page name read wrongly must not make one procedure replace
+        # another. If file names drift, both stay current and the report lists them.
+        procedure_key=procedure_key(file_name) or sha256,
         annual_review_date=extracted.annual_review_date,
         monthly_revision_date=extracted.monthly_revision_date,
         file_date=date_from_file_name(file_name) or modified,
@@ -83,6 +85,18 @@ def redact_document(
         ),
         sections=tuple(sections),
     )
+
+
+def same_name_different_files(documents: Iterable[ProcedureDocument]) -> list[list[str]]:
+    """Documents treated as separate procedures that share a front-page name, to check by hand."""
+    groups: dict[str, list[ProcedureDocument]] = defaultdict(list)
+    for document in documents:
+        groups[procedure_key(document.name)].append(document)
+    return [
+        sorted(d.file_name for d in group)
+        for group in groups.values()
+        if len({d.procedure_key for d in group}) > 1
+    ]
 
 
 def _rank(document: ProcedureDocument) -> tuple[date, date, date]:

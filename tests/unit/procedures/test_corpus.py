@@ -71,6 +71,17 @@ def test_identical_files_are_one_entry_and_the_latest_version_is_current(folder)
     assert not any(e.flags for e in result.snapshot.entries)
 
 
+def test_a_shared_front_page_name_does_not_replace_another_procedure(tmp_path, monkeypatch, capsys):
+    (tmp_path / "Limit Management Sep'26.pdf").write_bytes(_procedure("Shared Heading", "1 September 2026"))
+    (tmp_path / "Business Loans.pdf").write_bytes(_procedure("Shared Heading", "1 August 2026"))
+    monkeypatch.setattr(cli, "_masker", lambda: RegexMasker([NAME]))
+    assert cli.main(["extract", str(tmp_path)]) == 0
+    printed = capsys.readouterr().out
+    assert "2 distinct files, 2 procedures" in printed
+    assert "SUPERSEDE" not in printed
+    assert "Business Loans.pdf | Limit Management Sep'26.pdf" in printed
+
+
 def test_only_originals_are_restricted_and_internal_text_is_redacted(folder):
     store, result = _build(folder)
     internal = b"".join(data for (kind, _), data in store.objects.items() if kind == Classification.INTERNAL)

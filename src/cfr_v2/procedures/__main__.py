@@ -21,7 +21,7 @@ from pathlib import Path
 
 from cfr_v2.contracts import ProcedureDocument, ProcedureStatus
 
-from .corpus import SnapshotResult, build_snapshot, load_snapshot
+from .corpus import SnapshotResult, build_snapshot, load_snapshot, same_name_different_files
 from .extract import MAX_SECTION_CHARS
 from .inspect import FRONT_LABELS, DocumentReport, inspect_pdf
 from .sources import ConfluenceSettings, ConfluenceSource, ManualPdfSource, ProcedureSource, ProcedureSourceError
@@ -160,6 +160,11 @@ def print_snapshot(result: SnapshotResult) -> None:
         for group in versions:
             ordered = sorted(group, key=lambda e: e.status != ProcedureStatus.CURRENT)
             print("  " + " > ".join(e.file_names[0] for e in ordered))
+    lookalikes = same_name_different_files(result.documents.values())
+    if lookalikes:
+        print("\nsame front-page name, different file names (kept apart, please check):")
+        for names in lookalikes:
+            print("  " + " | ".join(names))
     review = [e for e in entries if e.flags]
     if review:
         print("\nplease check the version chosen:")

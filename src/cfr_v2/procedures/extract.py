@@ -35,7 +35,7 @@ from .inspect import (
     _normal,
 )
 
-EXTRACTOR_VERSION = "pdf-sections-1"
+EXTRACTOR_VERSION = "pdf-sections-2"
 MAX_SECTION_CHARS = 6000  # about 1,500 tokens: one passage for retrieval
 MIN_SECTION_CHARS = 200  # with font headings only: shorter ones join the next section
 MARGIN_SHARE = 0.12  # of the page height, at top and bottom
