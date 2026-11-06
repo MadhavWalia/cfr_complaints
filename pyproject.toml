@@ -25,6 +25,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The retrieval bake-off's challenger (LDR-0019). Install alongside the pinned opentelemetry-api:
+# on its own it upgrades it past what ee-logging supports.
+lightrag = ["lightrag-hku>=1.5.7"]
 # Hosts without libpq: psycopg2-binary bundles it (select with CFR_DB_DRIVER=psycopg2).
 psycopg2 = ["psycopg2-binary>=2.9"]
 # Private packages from the internal Artifactory; the code degrades gracefully without them.
