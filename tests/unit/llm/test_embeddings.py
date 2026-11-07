@@ -47,16 +47,14 @@ class FakeEmbeddings:
 def _client(model, **kwargs):
     built = []
 
-    async def factory(key):
+    async def factory(key, params):
         built.append(key)
         return model
 
     async def no_sleep(_):
         return None
 
-    client = GatewayEmbeddingClient(
-        kwargs.pop("settings", SETTINGS), model_factory=factory, sleep=no_sleep, **kwargs
-    )
+    client = GatewayEmbeddingClient(kwargs.pop("settings", SETTINGS), model_factory=factory, sleep=no_sleep, **kwargs)
     return client, built
 
 
@@ -149,3 +147,27 @@ def test_nothing_to_embed_makes_no_call():
 def test_settings_from_the_environment():
     settings = EmbeddingSettings.from_env({"CFR_EMBEDDING_MODEL_KEY": "7", "CFR_EMBEDDING_BATCH_SIZE": "16"})
     assert (settings.model_key, settings.batch_size, settings.dimensions) == ("7", 16, 3072)
+
+
+def test_the_sdk_leaves_retries_and_timeouts_to_this_client():
+    """A call outlives its timeout on its thread, so SDK retries would run unseen past the limit."""
+    seen = {}
+
+    async def factory(key, params):
+        seen.update(params)
+        return FakeEmbeddings()
+
+    client = GatewayEmbeddingClient(SETTINGS, model_factory=factory)
+    asyncio.run(client.embed(["a"], purpose="p", redacted=True))
+    assert seen == {"max_retries": 0, "request_timeout": SETTINGS.attempt_timeout_sec}
+
+
+def test_the_attempt_timeout_can_be_set():
+    assert EmbeddingSettings.from_env({"CFR_EMBEDDING_ATTEMPT_TIMEOUT_SEC": "45"}).attempt_timeout_sec == 45
+
+
+def test_a_call_span_says_how_long_it_queued(spans):
+    client, _ = _client(FakeEmbeddings())
+    asyncio.run(client.embed(["a"], purpose="p", redacted=True))
+    (call,) = [s for s in spans.get_finished_spans() if s.name == "llm.call"]
+    assert call.attributes["cfr.queue_wait_sec"] >= 0

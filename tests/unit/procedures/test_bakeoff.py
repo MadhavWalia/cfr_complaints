@@ -537,6 +537,37 @@ def test_failure_reasons_are_fixed_words(error, reason):
     assert _reason(error) == reason
 
 
+def test_each_batch_is_a_trace_holding_its_flushes(tmp_path, monkeypatch, spans, metric_points):
+    pytest.importorskip("lightrag")
+    from cfr_v2.procedures import lightrag_engine
+
+    monkeypatch.setattr(lightrag_engine, "INSERT_BATCH", 2)
+    client = FakeModelClient(responder=_extraction)
+    asyncio.run(lightrag_engine.build_lightrag(tmp_path, _copies(4), FakeEmbeddingClient(), client, concurrency=2))
+    found = spans.get_finished_spans()
+    batches = [s for s in found if s.name == "procedures.lightrag.batch"]
+    flushes = [s for s in found if s.name == "procedures.lightrag.flush"]
+    assert len(batches) == 2 and len({s.context.trace_id for s in batches}) == 2
+    assert batches[-1].attributes["cfr.processed"] == 4 and batches[-1].attributes["cfr.outcome"] == "ok"
+    assert {s.context.trace_id for s in flushes} == {s.context.trace_id for s in batches}
+    points = metric_points()
+    assert {a["stage"] for a, _ in points["cfr.procedures.stage.duration"]} >= {
+        "batch",
+        "flush",
+        "model_call",
+        "embedding",
+    }
+    assert ({"status": "processed"}, 4) in [(dict(a), v) for a, v in points["cfr.procedures.passages"]]
+
+
+def test_tracing_flushes_is_safe_without_the_private_method():
+    from types import SimpleNamespace
+
+    from cfr_v2.procedures.lightrag_engine import _trace_flushes
+
+    _trace_flushes(SimpleNamespace())
+
+
 def test_lightrag_outlasts_the_gateway_clients_own_retries():
     from cfr_v2.llm import GatewaySettings
     from cfr_v2.llm.embeddings import EmbeddingSettings

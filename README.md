@@ -183,7 +183,8 @@ docker compose --profile observability up -d   # Collector (4318), Tempo, Loki, 
 export CFR_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-Then open Grafana at http://localhost:3000. Span attributes are allowlisted
+Then open Grafana at http://localhost:3000. The **CFR overview** dashboard shows a build's
+progress, time per stage, slow traces and logs. Span attributes are allowlisted
 (`src/cfr_v2/telemetry/attributes.py`) and never carry transcript or redaction-map content.
 
 ## Tests

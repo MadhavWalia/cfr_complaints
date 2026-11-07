@@ -16,6 +16,10 @@ Checks:
 ``--embeddings`` checks the embedding model instead: it builds, has safechain redaction disabled,
 and returns vectors of the expected size for two synthetic texts.
 
+``--embeddings-load`` adds what a build does to it, with synthetic text and in about two minutes:
+the model took our retry and timeout settings, batches of real sizes, then bursts at the real
+concurrency limit, with latencies, retries and a suggested attempt timeout.
+
 Calls go through ``model_loop()``, the same path stage handlers use. Exit code 0 when no
 required check fails.
 """
@@ -23,7 +27,10 @@ required check fails.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import dataclasses
+import math
+import statistics
 import sys
 import time
 from collections.abc import Callable
@@ -177,13 +184,121 @@ def run_embedding_check(settings: EmbeddingSettings, factory=safechain_embedding
     return Check("embeddings", "PASS", f"{len(vectors)} vectors of {len(vectors[0])} ({time.monotonic() - start:.1f}s)")
 
 
+class TimedEmbeddings:
+    """The real model, timing every attempt: the client's retries are otherwise out of sight."""
+
+    def __init__(self, model, attempts: list[tuple[float, bool]]) -> None:
+        self.model = model
+        self.attempts = attempts  # shared: a 401 rebuilds the model
+
+    def __getattr__(self, name: str):
+        return getattr(self.model, name)
+
+    def embed_documents(self, batch: list[str]) -> list[list[float]]:
+        start = time.monotonic()
+        try:
+            vectors = self.model.embed_documents(batch)
+        except Exception:
+            self.attempts.append((time.monotonic() - start, False))
+            raise
+        self.attempts.append((time.monotonic() - start, True))
+        return vectors
+
+
+def _texts(count: int, chars: int, salt: str) -> list[str]:
+    """Synthetic, and different on every call so nothing can be answered from a cache."""
+    return [
+        (f"{salt} item {i}: the red bicycle crossed the blue bridge. " * (chars // 40 + 1))[:chars]
+        for i in range(count)
+    ]
+
+
+def _percentile(values: list[float], share: float) -> float:
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(share * len(ordered)) - 1)]
+
+
+def run_embedding_load(
+    settings: EmbeddingSettings, factory=safechain_embeddings, *, rounds: int = 6, texts_per_call: int = 30
+) -> list[Check]:
+    timed: list[TimedEmbeddings] = []
+    attempts: list[tuple[float, bool]] = []
+
+    async def wrapped(key: str, params: dict) -> TimedEmbeddings:
+        timed.append(TimedEmbeddings(await factory(key, params), attempts))
+        return timed[-1]
+
+    client = GatewayEmbeddingClient(settings, model_factory=wrapped)
+
+    async def call(texts: list[str]) -> float:
+        start = time.monotonic()
+        await client.embed(texts, purpose="smoke.embed.load", redacted=True)
+        return time.monotonic() - start
+
+    async def run() -> list[Check]:
+        checks = []
+        try:
+            await call(_texts(1, 20, "warm"))
+        except ModelError as exc:
+            return [Check("embedding load", "FAIL", f"{type(exc).__name__}: {exc}")]
+        model = timed[-1]
+        retries, timeout = getattr(model, "max_retries", None), getattr(model, "request_timeout", None)
+        applied = retries == 0 and timeout == settings.attempt_timeout_sec
+        detail = f"max_retries={retries}, request_timeout={timeout}"
+        checks.append(Check("embedding settings", "PASS" if applied else "FAIL", detail))
+
+        for name, count, chars in (
+            ("8 short", 8, 300),
+            ("64 short", settings.batch_size, 300),
+            ("64 long", settings.batch_size, 6000),
+        ):
+            try:
+                seconds = await call(_texts(count, chars, name))
+                checks.append(Check(f"embedding batch: {name}", "PASS", f"{seconds:.1f}s"))
+            except ModelError as exc:
+                checks.append(Check(f"embedding batch: {name}", "FAIL", type(exc).__name__))
+
+        attempts.clear()
+        size, failures, latencies = settings.max_concurrency, 0, []
+        for number in range(rounds):
+            burst = [call(_texts(texts_per_call, 300, f"burst {number} {i}")) for i in range(size)]
+            for result in await asyncio.gather(*burst, return_exceptions=True):
+                if isinstance(result, ModelError):
+                    failures += 1
+                elif isinstance(result, BaseException):
+                    raise result
+                else:
+                    latencies.append(result)
+        extra, lost = len(attempts) - rounds * size, sum(not ok for _, ok in attempts)
+        name = f"embedding burst: {rounds} x {size} at once"
+        if not latencies:
+            return [*checks, Check(name, "FAIL", f"all {failures} calls failed")]
+        p95 = _percentile(latencies, 0.95)
+        detail = (
+            f"median {statistics.median(latencies):.1f}s, p95 {p95:.1f}s, slowest {max(latencies):.1f}s; "
+            f"{failures} failed, {lost} attempts lost, {extra} retries"
+        )
+        checks.append(Check(name, "FAIL" if failures else "PASS", detail))
+        good = [seconds for seconds, ok in attempts if ok]
+        if good:
+            suggested = max(30, math.ceil(3 * _percentile(good, 0.95) / 5) * 5)
+            hint = f"CFR_EMBEDDING_ATTEMPT_TIMEOUT_SEC={suggested} (3 x p95 of good attempts, at least 30)"
+            checks.append(Check("suggested attempt timeout", "INFO", hint, required=False))
+        return checks
+
+    return model_loop().run(run())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.llm.smoke", description=__doc__.split("\n")[0])
     parser.add_argument("--embeddings", action="store_true", help="check the embedding model instead")
+    parser.add_argument("--embeddings-load", action="store_true", help="measure the embedding model at a build's load")
     args = parser.parse_args(argv)
     init_telemetry(service_name="cfr-v2-smoke")
     try:
-        if args.embeddings:
+        if args.embeddings_load:
+            checks = run_embedding_load(EmbeddingSettings.from_env())
+        elif args.embeddings:
             checks = [run_embedding_check(EmbeddingSettings.from_env())]
         else:
             checks = run_checks(GatewaySettings.from_env())

@@ -36,13 +36,13 @@ logger = get_logger(__name__)
 
 PROGRAM_VERSION = "embed-1"
 
-EmbeddingFactory = Callable[[str], Awaitable[Any]]
+EmbeddingFactory = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
-async def safechain_embeddings(model_key: str) -> Any:
+async def safechain_embeddings(model_key: str, params: dict[str, Any]) -> Any:
     from safechain.core.model import model
 
-    return await asyncio.to_thread(model, model_key)
+    return await asyncio.to_thread(model, model_key, params)
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,12 @@ class EmbeddingSettings:
     rate_limit_cooldown_sec: float = 5.0
     rate_limit_cooldown_max_sec: float = 60.0
 
+    def model_params(self) -> dict[str, Any]:
+        """As for chat, retries and timeouts are this client's job. It matters more here: a call
+        runs on a thread that outlives its timeout, so the SDK would go on retrying a call we had
+        given up on, past the concurrency limit."""
+        return {"max_retries": 0, "request_timeout": self.attempt_timeout_sec}
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> EmbeddingSettings:
         d = cls()
@@ -69,6 +75,7 @@ class EmbeddingSettings:
             dimensions=int(env.get("CFR_EMBEDDING_DIMENSIONS", d.dimensions)),
             batch_size=int(env.get("CFR_EMBEDDING_BATCH_SIZE", d.batch_size)),
             max_concurrency=int(env.get("CFR_EMBEDDING_MAX_CONCURRENCY", d.max_concurrency)),
+            attempt_timeout_sec=float(env.get("CFR_EMBEDDING_ATTEMPT_TIMEOUT_SEC", d.attempt_timeout_sec)),
         )
 
 
@@ -174,13 +181,20 @@ class GatewayEmbeddingClient:
 
     async def _attempt(self, batch: list[str], purpose: str, deadline: float, tries: int) -> list[list[float]]:
         s = self.settings
+        queued = self._clock()
         async with self.gate.slot():
+            queue_wait = self._clock() - queued
             timeout = min(s.attempt_timeout_sec, deadline - self._clock())
             if timeout <= 0:
                 raise TimeoutError("call deadline reached while waiting for a slot")
             with (
                 span(
-                    "llm.call", program=purpose, program_version=PROGRAM_VERSION, model=s.model_id, attempt=tries
+                    "llm.call",
+                    program=purpose,
+                    program_version=PROGRAM_VERSION,
+                    model=s.model_id,
+                    attempt=tries,
+                    queue_wait_sec=round(queue_wait, 3),
                 ) as call_span,
                 record_llm_call(s.model_id, operation=purpose),
             ):
@@ -204,7 +218,7 @@ class GatewayEmbeddingClient:
         if self._model is None:
             async with self._model_lock:
                 if self._model is None:
-                    model = await self._model_factory(self.settings.model_key)
+                    model = await self._model_factory(self.settings.model_key, self.settings.model_params())
                     mode = getattr(getattr(model, "redaction", None), "mode", None)
                     if mode not in (None, "disabled"):
                         raise ModelConfigError(

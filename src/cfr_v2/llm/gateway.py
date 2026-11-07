@@ -289,7 +289,9 @@ class GatewayModelClient:
 
     async def _attempt(self, request: ModelRequest, deadline: float, tries: int) -> ModelResponse:
         s = self.settings
+        queued = self._clock()
         async with self.gate.slot():
+            queue_wait = self._clock() - queued
             timeout = min(s.attempt_timeout_sec, deadline - self._clock())
             if timeout <= 0:
                 raise TimeoutError("call deadline reached while waiting for a slot")
@@ -300,6 +302,7 @@ class GatewayModelClient:
                     program_version=request.program_version,
                     model=s.model_id,
                     attempt=tries,
+                    queue_wait_sec=round(queue_wait, 3),
                 ) as call_span,
                 record_llm_call(s.model_id, operation=request.program_id),
             ):

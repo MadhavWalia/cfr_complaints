@@ -32,7 +32,7 @@ from cfr_v2.contracts import (
 from cfr_v2.llm import EmbeddingClient, ModelBlockedError, ModelClient, ModelRequest, UnredactedPayloadError
 from cfr_v2.llm.client import ChatTurn
 from cfr_v2.llm.embeddings import embed_allowing_blocks
-from cfr_v2.telemetry import get_logger
+from cfr_v2.telemetry import get_logger, record_passages, record_stage, set_attributes, span
 
 from .search import _READER, CANDIDATES, Passage, load_passages
 
@@ -82,6 +82,11 @@ class GatewayLlm:
         self.calls = 0
         self.blocked = 0
         self.blocked_embeddings = 0
+        self.reset_timings()
+
+    def reset_timings(self) -> None:
+        self.slowest_call = self.slowest_embedding = 0.0
+        self.embedding_calls = 0
 
     async def __call__(
         self, prompt: str, system_prompt: str | None = None, history_messages: Sequence[dict] | None = None, **_: Any
@@ -102,14 +107,21 @@ class GatewayLlm:
             messages=(*turns, ChatTurn(role="user", content=prompt)),
         )
         self.calls += 1
+        started, outcome = time.monotonic(), "failed"
         try:
             response = await self.client.complete(request)
+            outcome = "ok"
         except ModelBlockedError:
+            outcome = "blocked"
             self.blocked += 1
             logger.warning(
                 "lightrag: the gateway blocked a model call (%d so far); it gives an empty answer", self.blocked
             )
             return ""
+        finally:
+            took = time.monotonic() - started
+            self.slowest_call = max(self.slowest_call, took)
+            record_stage("model_call", took, outcome)
         return str(response.output["text"])
 
 
@@ -126,7 +138,12 @@ def _embedding_func(embedder: EmbeddingClient, llm: GatewayLlm):
     async def embed(texts: list[str], context: str | None = None, **_: Any) -> np.ndarray:
         if context == "query":
             return np.asarray(await embedder.embed(texts, purpose=QUERY_PURPOSE, redacted=True), dtype=np.float32)
+        started = time.monotonic()
         found = await embed_allowing_blocks(embedder, texts, purpose=BUILD_PURPOSE, redacted=True)
+        took = time.monotonic() - started
+        llm.embedding_calls += 1
+        llm.slowest_embedding = max(llm.slowest_embedding, took)
+        record_stage("embedding", took)
         blocked = sum(v is None for v in found)
         if blocked:
             llm.blocked_embeddings += blocked
@@ -145,6 +162,28 @@ def _embedding_func(embedder: EmbeddingClient, llm: GatewayLlm):
         func=embed,
         supports_asymmetric=True,
     )
+
+
+def _trace_flushes(rag: Any) -> None:
+    """A span around LightRAG's save after each passage: its embeddings, the storage lock they are
+    made under, and the file writes. The method is private, so a version without it only loses
+    this span, and it never changes what the flush does."""
+    flush = getattr(rag, "_insert_done", None)
+    if flush is None:
+        logger.warning("lightrag: no _insert_done in this version, so flushes won't be traced")
+        return
+
+    async def traced(*args: Any, **kwargs: Any) -> None:
+        started, outcome = time.monotonic(), "failed"
+        with span("procedures.lightrag.flush") as flush_span:
+            try:
+                await flush(*args, **kwargs)
+                outcome = "ok"
+            finally:
+                set_attributes(flush_span, outcome=outcome)
+                record_stage("flush", time.monotonic() - started, outcome)
+
+    rag._insert_done = traced
 
 
 @asynccontextmanager
@@ -179,6 +218,7 @@ async def open_rag(
     if not any(isinstance(f, NoTextInLightRagLogs) for f in lightrag_logs.filters):
         lightrag_logs.addFilter(NoTextInLightRagLogs())
     await rag.initialize_storages()
+    _trace_flushes(rag)
     try:
         yield rag
     finally:
@@ -277,8 +317,9 @@ async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, n
     from lightrag.base import DocStatus
 
     ids = {passage_id(p) for p in passages}
-    cleared = await _clear_failed(rag)
-    await rag.apipeline_process_enqueue_documents()
+    with span("procedures.lightrag.recover", new_trace=True, pass_no=number):
+        cleared = await _clear_failed(rag)
+        await rag.apipeline_process_enqueue_documents()
     known = await rag.doc_status.get_docs_by_statuses(list(DocStatus))
     waiting = [p for p in passages if passage_id(p) not in known]
     state = await _progress(rag, ids)
@@ -292,31 +333,49 @@ async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, n
         len(state.failed),
         state.queued,
     )
-    started, first, stuck = time.monotonic(), state.processed, 0
+    stuck = 0
     batches = -(-len(waiting) // INSERT_BATCH)
     for batch_no, start in enumerate(range(0, len(waiting), INSERT_BATCH), start=1):
         batch = waiting[start : start + INSERT_BATCH]
         batch_ids = [passage_id(p) for p in batch]
         batch_started = time.monotonic()
-        await rag.ainsert([p.text for p in batch], ids=batch_ids, file_paths=batch_ids)
-        before, state = state, await _progress(rag, ids)
-        added = state.processed - first
-        elapsed = time.monotonic() - started
-        left = _duration(elapsed / added * (len(passages) - state.processed)) if added else "unknown"
+        # A trace per batch: a whole build would be thousands of spans, unseen until it ended
+        with span(
+            "procedures.lightrag.batch", new_trace=True, pass_no=number, batch_no=batch_no, passages=len(batch)
+        ) as batch_span:
+            await rag.ainsert([p.text for p in batch], ids=batch_ids, file_paths=batch_ids)
+            before, state = state, await _progress(rag, ids)
+            set_attributes(
+                batch_span,
+                processed=state.processed,
+                failed=len(state.failed),
+                queued=state.queued,
+                outcome="ok" if len(state.failed) <= len(before.failed) else "lost_passages",
+            )
+        took = time.monotonic() - batch_started
+        record_stage("batch", took)
+        record_passages(processed=state.processed, failed=len(state.failed), queued=state.queued)
+        added = state.processed - before.processed
+        left = _duration(took / added * (len(passages) - state.processed)) if added else "unknown"  # at this pace
         logger.info(
             "lightrag: [%d/%d] passages in the graph; %d failed, %d queued; batch %d of %d took %.0fs; "
-            "%d model calls, %d blocked; about %s left",
+            "%d model calls, %d blocked; slowest model call %.0fs; %d embedding calls, slowest %.0fs; "
+            "about %s left",
             state.processed,
             len(passages),
             len(state.failed),
             state.queued,
             batch_no,
             batches,
-            time.monotonic() - batch_started,
+            took,
             llm.calls,
             llm.blocked,
+            llm.slowest_call,
+            llm.embedding_calls,
+            llm.slowest_embedding,
             left,
         )
+        llm.reset_timings()
         lost = {k: v for k, v in state.failed.items() if k not in before.failed}
         if lost:
             logger.warning(
@@ -359,7 +418,7 @@ async def build_lightrag(
         logger.warning(
             "lightrag: %d passage(s) repeat another's text and go in once: %s", len(skipped), _sample(skipped)
         )
-    logger.info("lightrag: building %d passages at concurrency %d", len(distinct), concurrency)
+    logger.info("lightrag: %d passages to index at concurrency %d", len(distinct), concurrency)
     started = time.monotonic()
     llm = GatewayLlm(client)
     async with open_rag(workdir, embedder, llm, concurrency=concurrency) as rag:
