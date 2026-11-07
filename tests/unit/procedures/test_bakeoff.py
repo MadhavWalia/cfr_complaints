@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import json
 import sys
 
@@ -39,9 +40,25 @@ from cfr_v2.procedures.search import Passage
 REF = "sha256:" + "0" * 64
 
 
+class ByteTokens:
+    """Stands in for tiktoken, which downloads its encodings on first use."""
+
+    def encode(self, content):
+        return list(content.encode())
+
+    def decode(self, tokens):
+        return bytes(tokens).decode(errors="replace")
+
+
 @pytest.fixture(autouse=True)
-def fresh_lightrag_state():
-    """LightRAG keeps its stores in process-wide state, shared between working directories."""
+def fresh_lightrag_state(monkeypatch):
+    """No downloads, and a clean slate: LightRAG keeps its stores in process-wide state."""
+    if importlib.util.find_spec("lightrag"):
+        from lightrag.utils import Tokenizer
+
+        monkeypatch.setattr(
+            "lightrag.lightrag.TiktokenTokenizer", lambda *_: Tokenizer(model_name="bytes", tokenizer=ByteTokens())
+        )
     yield
     if "lightrag.kg.shared_storage" in sys.modules:
         sys.modules["lightrag.kg.shared_storage"].finalize_share_data()
@@ -255,6 +272,42 @@ def test_lightrag_builds_resumes_and_cites_sections(tmp_path):
     top = found.hits[0]
     assert (top.file_name, top.section_title, top.page_start, top.page_end) == ("Collections.pdf", "Late fees", 3, 4)
     assert {h.section_title for h in found.hits} == {"Late fees", "Plans", "Declines"}
+
+
+class Uncopyable(FakeModelClient):
+    """Like the real gateway client: it holds locks and futures, which can't be deep-copied."""
+
+    def __deepcopy__(self, memo):
+        raise TypeError("cannot pickle '_asyncio.Future' object")
+
+
+def test_lightrag_never_copies_the_model_client(tmp_path):
+    pytest.importorskip("lightrag")
+    from cfr_v2.procedures.lightrag_engine import build_lightrag
+
+    client = Uncopyable(responder=_extraction)
+    build = asyncio.run(build_lightrag(tmp_path, _passages(), FakeEmbeddingClient(), client, concurrency=2))
+    assert (build.processed, build.failed) == (3, 0)
+
+
+def test_a_failed_passage_is_retried_on_the_next_build(tmp_path):
+    pytest.importorskip("lightrag")
+    from cfr_v2.llm import ModelTimeoutError
+    from cfr_v2.procedures.lightrag_engine import build_lightrag
+
+    failing = {"on": True}
+
+    def flaky(request):
+        if failing["on"] and "Hardship" in request.messages[-1].content:
+            raise ModelTimeoutError("gave up")
+        return _extraction(request)
+
+    client, embedder, passages = FakeModelClient(responder=flaky), FakeEmbeddingClient(), _passages()
+    first = asyncio.run(build_lightrag(tmp_path, passages, embedder, client, concurrency=2))
+    assert (first.processed, first.failed) == (2, 1)
+    failing["on"] = False
+    second = asyncio.run(build_lightrag(tmp_path, passages, embedder, client, concurrency=2))
+    assert (second.processed, second.failed) == (3, 0)
 
 
 def test_passage_ids_are_stable_and_distinct():

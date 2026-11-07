@@ -99,10 +99,15 @@ async def open_rag(
 ) -> AsyncIterator[Any]:
     from lightrag import LightRAG
 
+    # A plain function on purpose: LightRAG deep-copies its configuration on every extraction, which
+    # would reach the gateway client's locks through an object. Functions are copied by reference.
+    async def model_func(*args: Any, **kwargs: Any) -> str:
+        return await llm(*args, **kwargs)
+
     workdir.mkdir(parents=True, exist_ok=True)
     rag = LightRAG(
         working_dir=str(workdir),
-        llm_model_func=llm,
+        llm_model_func=model_func,
         embedding_func=_embedding_func(embedder),
         chunk_token_size=CHUNK_TOKENS,
         chunk_overlap_token_size=0,
@@ -147,11 +152,14 @@ async def build_lightrag(
     concurrency: int = 16,
     progress: Callable[[int, int], None] | None = None,
 ) -> LightRagBuild:
-    """Passages already processed are skipped, so an interrupted build can resume."""
+    """Passages already processed are skipped, so an interrupted build can resume. Failed ones are
+    cleared first and tried again: LightRAG would treat a second insert as a duplicate."""
     from lightrag.base import DocStatus
 
     llm = GatewayLlm(client)
     async with open_rag(workdir, embedder, llm, concurrency=concurrency) as rag:
+        for doc_id in await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED]):
+            await rag.adelete_by_doc_id(doc_id)
         done = await rag.doc_status.get_docs_by_statuses([DocStatus.PROCESSED])
         waiting = [p for p in passages if passage_id(p) not in done]
         for start in range(0, len(waiting), INSERT_BATCH):
