@@ -129,7 +129,20 @@ def _date(value) -> str:
 
 
 def print_snapshot(result: SnapshotResult) -> None:
-    header = ("status", "annual", "monthly", "file date", "pages", "method", "located", "sections", "largest", "over", "tables", "masked")
+    header = (
+        "status",
+        "annual",
+        "monthly",
+        "file date",
+        "pages",
+        "method",
+        "located",
+        "sections",
+        "largest",
+        "over",
+        "tables",
+        "masked",
+    )
     widths = (12, 12, 12, 12, 7, 10, 9, 10, 9, 6, 8, 8)
     print(f"{'document':<46}" + "".join(f"{h:>{w}}" for h, w in zip(header, widths, strict=True)))
     for entry in result.snapshot.entries:
@@ -154,13 +167,19 @@ def print_snapshot(result: SnapshotResult) -> None:
     entries = result.snapshot.entries
     current = [result.documents[e.source_sha256] for e in entries if e.status == ProcedureStatus.CURRENT]
     sections = [s for d in current for s in d.sections]
-    print(f"\n{len(entries)} distinct files, {len(current)} procedures; {result.reused} reused from the previous snapshot")
-    print(f"current: {sum(d.quality.pages for d in current):,} pages; {len(sections):,} sections; "
-          f"{sum(len(s.text) for s in sections):,} characters")
+    print(
+        f"\n{len(entries)} distinct files, {len(current)} procedures; {result.reused} reused from the previous snapshot"
+    )
+    print(
+        f"current: {sum(d.quality.pages for d in current):,} pages; {len(sections):,} sections; "
+        f"{sum(len(s.text) for s in sections):,} characters"
+    )
     print(f"sections over {MAX_SECTION_CHARS:,} characters: {sum(d.quality.oversized_sections for d in current)}")
     print(f"names taken from the file name: {sum(d.name_from_file for d in current)}")
-    print(f"no monthly date: {sum(d.monthly_revision_date is None for d in current)}; "
-          f"no annual date: {sum(d.annual_review_date is None for d in current)}")
+    print(
+        f"no monthly date: {sum(d.monthly_revision_date is None for d in current)}; "
+        f"no annual date: {sum(d.annual_review_date is None for d in current)}"
+    )
     print(f"PII masks: {sum(s.pii_masked for s in sections):,}")
     groups: dict[str, list] = {}
     for entry in entries:
@@ -316,17 +335,18 @@ def run_lightrag_build(args: argparse.Namespace) -> int:
     from .lightrag_engine import build_lightrag, index_passages
 
     passages = index_passages(_store(), args.index)
-
-    def progress(done: int, total: int) -> None:
-        print(f"[{done}/{total}] passages", file=sys.stderr)
-
     build = model_loop().run(
-        build_lightrag(
-            args.workdir, passages, _embedder(), _chat_client(), concurrency=args.concurrency, progress=progress
-        )
+        build_lightrag(args.workdir, passages, _embedder(), _chat_client(), concurrency=args.concurrency)
     )
     print(f"{build.processed} of {build.passages} passages in the graph; {build.failed} failed")
-    print(f"model calls this run: {build.model_calls}; blocked by the gateway: {build.blocked_calls}")
+    print(
+        f"model calls this run: {build.model_calls}; blocked by the gateway: "
+        f"{build.blocked_calls} model calls, {build.blocked_embeddings} embeddings"
+    )
+    if build.duplicates:
+        print(f"{build.duplicates} passages with identical text went in once")
+    if build.stopped:
+        print("stopped early: batches in a row added nothing. Check the gateway, then run this again to resume")
     return 1 if build.failed or build.processed < build.passages else 0
 
 
@@ -339,7 +359,7 @@ async def _collect(args: argparse.Namespace, claims: list):
     hybrid = HybridProcedureSearch.load(store, args.index, embedder)
     llm = GatewayLlm(_chat_client())
     async with open_rag(args.workdir, embedder, llm) as rag:
-        lightrag = LightRagProcedureSearch(rag, args.index, index_passages(store, args.index))
+        lightrag = LightRagProcedureSearch(rag, args.index, index_passages(store, args.index), llm)
         return await collect(claims, {"hybrid": hybrid, "lightrag": lightrag}, top=args.top)
 
 
@@ -409,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
     step = sub.add_parser("lightrag-build", help="build the LightRAG graph and vectors from an index's passages")
     step.add_argument("index", help="index ref")
     step.add_argument("--workdir", type=Path, required=True)
-    step.add_argument("--concurrency", type=int, default=16, help="model calls at once (default 16)")
+    step.add_argument("--concurrency", type=int, default=16, help="passages processed at once (default 16)")
     step = sub.add_parser("bakeoff", help="search with both engines and write the blind workbook")
     step.add_argument("index", help="index ref")
     step.add_argument("--workdir", type=Path, required=True, help="the LightRAG working directory")

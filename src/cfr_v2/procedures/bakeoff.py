@@ -11,13 +11,15 @@ care, and delete it after scoring. The key holds numbers only.
 from __future__ import annotations
 
 import json
+import logging
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from cfr_v2.contracts import ProcedureHit, ProcedureSearchRequest
+from cfr_v2.telemetry import get_logger
 
 from .search import ProcedureSearch
 
@@ -37,6 +39,8 @@ INSTRUCTIONS = (
     "Add a note if a claim needs a procedure that never appears.",
     "This file holds claim text: keep it local and delete it when you're done.",
 )
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -84,17 +88,35 @@ async def collect(
     """One item per distinct passage per claim, shuffled within the claim."""
     generator = random.Random(seed)
     items: list[BakeoffItem] = []
-    for claim in claims:
+    degraded: Counter[str] = Counter()
+    empty: Counter[str] = Counter()
+    for done, claim in enumerate(claims, start=1):
         found: dict[tuple[str, int], BakeoffItem] = {}
         for name, engine in engines.items():
             request = ProcedureSearchRequest(query=claim.statement, limit=top, redacted=True)
             result = await engine.search(request)
+            empty[name] += not result.hits
+            if not result.vector_search:
+                degraded[name] += 1
+                logger.warning(
+                    "bakeoff: %s lost model calls on claim %d, so it may have found less", name, claim.claim_no
+                )
             for rank, hit in enumerate(result.hits, start=1):
                 key = (hit.source_sha256, hit.section_index)
                 found.setdefault(key, BakeoffItem(0, claim, hit)).ranks[name] = rank
         passages = list(found.values())
         generator.shuffle(passages)
         items += passages
+        logger.info("bakeoff: claim %d of %d: %d passages to judge", done, len(claims), len(passages))
+    for name in engines:
+        logger.log(
+            logging.WARNING if degraded[name] else logging.INFO,
+            "bakeoff: %s: %d searches, %d lost model calls, %d found nothing",
+            name,
+            len(claims),
+            degraded[name],
+            empty[name],
+        )
     for number, item in enumerate(items, start=1):
         item.item = number
     return items
@@ -219,8 +241,7 @@ def score(answers: Mapping[int, str], key: Mapping) -> BakeoffReport:
             only += answer == RELEVANT and len(entry["ranks"]) == 1
         rows = [row for group in shown.values() for row in group]
         first = [
-            next((1 / rank for rank, answer, _ in sorted(group) if answer == RELEVANT), 0.0)
-            for group in shown.values()
+            next((1 / rank for rank, answer, _ in sorted(group) if answer == RELEVANT), 0.0) for group in shown.values()
         ]
         total = len(claims) or 1
         scores.append(
