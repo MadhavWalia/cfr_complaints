@@ -3,6 +3,7 @@
 No I/O and no business logic beyond structural validation.
 See lld/modules/p1-contracts/README.md.
 """
+
 from __future__ import annotations
 
 from ._base import Contract
@@ -23,6 +24,18 @@ from .intake import (
     SpanRef,
     TranscriptInteraction,
 )
+from .planning import (
+    MANDATORY_TASK_KINDS,
+    ExecutionPlan,
+    PlannerSource,
+    PlanRevision,
+    PlanRevisionTrigger,
+    PlanValidationReport,
+    TaskEdge,
+    TaskKind,
+    TaskNode,
+    ValidationIssue,
+)
 from .procedures import (
     ExtractionQuality,
     ProcedureDocument,
@@ -36,18 +49,6 @@ from .procedures import (
     ProcedureSnapshotEntry,
     ProcedureStatus,
     VersionFlag,
-)
-from .planning import (
-    MANDATORY_TASK_KINDS,
-    ExecutionPlan,
-    PlannerSource,
-    PlanRevision,
-    PlanRevisionTrigger,
-    PlanValidationReport,
-    TaskEdge,
-    TaskKind,
-    TaskNode,
-    ValidationIssue,
 )
 from .registry import (
     BackendStatus,
@@ -63,7 +64,14 @@ from .registry import (
     SkillPin,
     VerticalSkill,
 )
-from .routing import CandidateRoute, ClaimRouting, ClaimRoutingOutcome, RouteSource, RoutingResult
+from .routing import (
+    CandidateRoute,
+    ClaimRouting,
+    ClaimRoutingOutcome,
+    ProcedureCitation,
+    RouteSource,
+    RoutingResult,
+)
 from .selection import PrimarySelection, SelectionStatus
 from .understanding import (
     SOURCE_ORIGIN_PATTERN,
@@ -97,18 +105,6 @@ from .understanding import (
 )
 
 __all__ = [
-    "ProcedureHit",
-    "ProcedureIndex",
-    "ProcedureSearchRequest",
-    "ProcedureSearchResult",
-    "ExtractionQuality",
-    "ProcedureDocument",
-    "ProcedureFailure",
-    "ProcedureSection",
-    "ProcedureSnapshot",
-    "ProcedureSnapshotEntry",
-    "ProcedureStatus",
-    "VersionFlag",
     "MANDATORY_TASK_KINDS",
     "SOURCE_ORIGIN_PATTERN",
     "AccountResolution",
@@ -151,6 +147,7 @@ __all__ = [
     "EvidenceSourceType",
     "ExecutionBudget",
     "ExecutionPlan",
+    "ExtractionQuality",
     "GroundedClaim",
     "GroundingStatus",
     "IngestionRequest",
@@ -167,6 +164,17 @@ __all__ = [
     "PlanValidationReport",
     "PlannerSource",
     "PrimarySelection",
+    "ProcedureCitation",
+    "ProcedureDocument",
+    "ProcedureFailure",
+    "ProcedureHit",
+    "ProcedureIndex",
+    "ProcedureSearchRequest",
+    "ProcedureSearchResult",
+    "ProcedureSection",
+    "ProcedureSnapshot",
+    "ProcedureSnapshotEntry",
+    "ProcedureStatus",
     "ProgramRef",
     "RedactionMap",
     "RedactionSpan",
@@ -188,6 +196,7 @@ __all__ = [
     "TimeQuality",
     "TranscriptInteraction",
     "ValidationIssue",
+    "VersionFlag",
     "VerticalSkill",
     "account_resolution_for",
     "canonical_hash",

@@ -70,6 +70,8 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
         "processed",
         "failed",
         "queued",
+        # C04 routing
+        "sections",
     }
 )
 
