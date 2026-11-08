@@ -41,7 +41,7 @@ DOCUMENT = """## KNOWLEDGE DOCUMENT
 **Op-Risk principle:** RULES-MARKER payments are held only as the procedure says.
 """
 CATALOG = VerticalCatalog.parse(DOCUMENT)
-INDEX = "sha256:" + "a" * 64
+SNAPSHOT = "sha256:" + "a" * 64
 
 
 def _hit(doc: int, section: int, rank: int) -> ProcedureHit:
@@ -55,8 +55,7 @@ def _hit(doc: int, section: int, rank: int) -> ProcedureHit:
         page_start=section,
         page_end=section + 1,
         text=f"SECTION-TEXT {doc}.{section}",
-        score=1 / rank,
-        vector_rank=rank,
+        rank=rank,
     )
 
 
@@ -171,7 +170,7 @@ class Search:
         self.requests.append(request)
         if self.error:
             raise self.error
-        return ProcedureSearchResult(index_ref=INDEX, vector_search=True, hits=tuple(self.hits))
+        return ProcedureSearchResult(procedures_ref=SNAPSHOT, hits=tuple(self.hits))
 
 
 def _router_reply(request):
@@ -235,7 +234,7 @@ async def test_review_files_workbook_and_summary(tmp_path, capsys):
     client = FakeModelClient(responder=_router_reply)
     routed = await trial.route_claim("GC/1", CLAIM, Search([_hit(1, 1, 1)]), Router(CATALOG), gateway_lm(client, "m"))
     failed = trial.Routed("GC-2", ClaimInput("c1", "Other"), error="ModelBlockedError")
-    trial.write_reviews([routed, failed], tmp_path, CATALOG, INDEX)
+    trial.write_reviews([routed, failed], tmp_path, CATALOG, SNAPSHOT)
     review = json.loads((tmp_path / "GC_1.json").read_text())
     [claim] = review["claims"]
     assert (claim["routed_to"], review["verticals_sha256"]) == ("HOLD", CATALOG.sha256)

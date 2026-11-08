@@ -66,7 +66,7 @@ class RoutingResult(Contract):
     program_id: str = Field(min_length=1)
     program_version: str = Field(min_length=1)
     claims: tuple[ClaimRouting, ...]
-    procedure_index_ref: str | None = None  # the passages searched
+    procedures_ref: str | None = None  # the procedure snapshot searched
     verticals_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)  # the vertical definitions used
 
     @model_validator(mode="after")

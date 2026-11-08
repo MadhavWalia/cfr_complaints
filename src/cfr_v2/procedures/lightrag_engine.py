@@ -1,11 +1,11 @@
-"""LightRAG behind ``procedure.search``: the bake-off's challenger (LDR-0019).
+"""LightRAG behind ``procedure.search`` (LDR-0019).
 
-Knowledge graph and vectors, in ``mix`` mode. It indexes the same redacted passages as the hybrid
-baseline, one LightRAG document per passage, with the passage id as its file path. That id comes
-back on every chunk, which gives the section and pages LightRAG doesn't keep itself.
+Knowledge graph and vectors, in ``mix`` mode. It indexes the redacted passages of a snapshot's
+current procedures, one LightRAG document per passage, with the passage id as its file path. That
+id comes back on every chunk, which gives the section and pages LightRAG doesn't keep itself.
 
 Every model call goes through our gateway clients. The store is a local working directory: a
-rebuild is the only update, and a generation artifact comes later if LightRAG wins.
+rebuild is the only update, and a generation artifact comes later.
 ``lightrag-hku`` is an optional dependency, imported only here.
 """
 
@@ -23,9 +23,7 @@ from typing import Any
 import numpy as np
 
 from cfr_v2.contracts import (
-    Classification,
     ProcedureHit,
-    ProcedureIndex,
     ProcedureSearchRequest,
     ProcedureSearchResult,
 )
@@ -34,7 +32,7 @@ from cfr_v2.llm.client import ChatTurn
 from cfr_v2.llm.embeddings import EmbeddingSettings, embed_allowing_blocks
 from cfr_v2.telemetry import get_logger, record_passages, record_stage, set_attributes, span
 
-from .search import _READER, CANDIDATES, Passage, load_passages
+from .search import Passage
 
 logger = get_logger(__name__)
 
@@ -55,6 +53,7 @@ EMBEDDING_BATCH = 64  # as the embedding client's. LightRAG's 10 means several c
 INSERT_BATCH = 32  # two rounds at the default concurrency; a batch ends with its slowest passage
 BUILD_PASSES = 3  # failed passages get this many tries in one build; their extraction is cached
 STUCK_BATCHES = 3  # this many batches in a row adding nothing means something is down: stop spending
+CHUNKS = 50  # chunks LightRAG returns per search, before the per-document cap and the limit
 DEFAULT_INSTRUCTIONS = "Follow the instructions in the message."
 # LightRAG errors known to carry only ids, counts and storage names. Others can quote a model's
 # answer or an entity, so they keep their place in the code and lose their message.
@@ -498,10 +497,10 @@ async def build_lightrag(
 
 
 class LightRagProcedureSearch:
-    def __init__(self, rag: Any, index_ref: str, passages: Sequence[Passage], llm: GatewayLlm) -> None:
+    def __init__(self, rag: Any, procedures_ref: str, passages: Sequence[Passage], llm: GatewayLlm) -> None:
         self.rag = rag
         self.llm = llm
-        self.index_ref = index_ref
+        self.procedures_ref = procedures_ref
         self.passages = {passage_id(p): p for p in passages}
 
     async def search(self, request: ProcedureSearchRequest) -> ProcedureSearchResult:
@@ -509,13 +508,13 @@ class LightRagProcedureSearch:
 
         if not request.redacted:
             raise UnredactedPayloadError(f"{PROGRAM_ID}: payload not marked redacted")
-        param = QueryParam(mode="mix", chunk_top_k=CANDIDATES, enable_rerank=False)
+        param = QueryParam(mode="mix", chunk_top_k=CHUNKS, enable_rerank=False)
         blocked = self.llm.blocked
         try:
             data = (await self.rag.aquery_data(request.query, param)).get("data") or {}
         except ModelBlockedError:  # one blocked claim isn't a failed run; anything else is raised
             logger.warning("lightrag: the gateway blocked a search, so it found nothing")
-            return ProcedureSearchResult(index_ref=self.index_ref, vector_search=False, hits=())
+            return ProcedureSearchResult(procedures_ref=self.procedures_ref, blocked=True, hits=())
         seen: set[str] = set()
         per_document: Counter[str] = Counter()
         hits: list[ProcedureHit] = []
@@ -542,21 +541,14 @@ class LightRagProcedureSearch:
                     page_start=section.page_start,
                     page_end=section.page_end,
                     text=section.text,
-                    score=round(1 / rank, 6),  # LightRAG gives an order, not a score
-                    vector_rank=rank,
+                    rank=rank,
                 )
             )
             if len(hits) == request.limit:
                 break
         return ProcedureSearchResult(
             # A blocked keyword call raises nothing: LightRAG just finds less, or nothing
-            index_ref=self.index_ref,
-            vector_search=self.llm.blocked == blocked,
+            procedures_ref=self.procedures_ref,
+            blocked=self.llm.blocked != blocked,
             hits=tuple(hits),
         )
-
-
-def index_passages(store, index_ref: str) -> list[Passage]:
-    """The same passages as a hybrid index, so both engines search one corpus."""
-    raw = store.get(index_ref, classification=Classification.INTERNAL, authorization=_READER)
-    return load_passages(store, ProcedureIndex.model_validate_json(raw).document_refs)

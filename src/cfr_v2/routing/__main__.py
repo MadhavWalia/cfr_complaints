@@ -1,6 +1,6 @@
 """C04 trial: route the claims of C02 trial review files, outside the workflow.
 
-    python -m cfr_v2.routing sha256:<index> --workdir lightrag_store \\
+    python -m cfr_v2.routing sha256:<snapshot> --workdir lightrag_store \\
         --verticals /path/to/knowledge_document.txt --claims-from c02_trial --out router_trial
 
 Per claim: one LightRAG search (``mix``; one gpt-5 call for its keywords) and one router call.
@@ -188,7 +188,7 @@ def _relied_on(routed: Routed) -> list[str]:
     ]
 
 
-def write_reviews(results: Sequence[Routed], out: Path, catalog: VerticalCatalog, index_ref: str) -> None:
+def write_reviews(results: Sequence[Routed], out: Path, catalog: VerticalCatalog, procedures_ref: str) -> None:
     out.mkdir(parents=True, exist_ok=True)
     by_case: dict[str, list[Routed]] = {}
     for r in results:
@@ -197,7 +197,7 @@ def write_reviews(results: Sequence[Routed], out: Path, catalog: VerticalCatalog
         review = {
             "case_id": case_id,
             "program_version": ROUTE_VERSION,
-            "procedure_index_ref": index_ref,
+            "procedures_ref": procedures_ref,
             "verticals_sha256": catalog.sha256,
             "claims": [
                 {
@@ -305,7 +305,8 @@ def run(args: argparse.Namespace) -> int:
     from cfr_v2.artifacts import S3ArtifactStore, S3Settings
     from cfr_v2.llm import GatewayEmbeddingClient, GatewayModelClient, GatewaySettings, model_loop
     from cfr_v2.llm.dspy_lm import gateway_lm
-    from cfr_v2.procedures.lightrag_engine import GatewayLlm, LightRagProcedureSearch, index_passages, open_rag
+    from cfr_v2.procedures import corpus_passages
+    from cfr_v2.procedures.lightrag_engine import GatewayLlm, LightRagProcedureSearch, open_rag
 
     catalog = VerticalCatalog.load(args.verticals)
     cases = load_cases(args.claims_from, args.cases)
@@ -321,20 +322,20 @@ def run(args: argparse.Namespace) -> int:
     metered = Metered(GatewayModelClient(settings))
     lm = gateway_lm(metered, settings.model_id)
     store = S3ArtifactStore(S3Settings.from_env())
-    passages = index_passages(store, args.index)
+    passages = corpus_passages(store, args.procedures)
     llm = GatewayLlm(GatewayModelClient(settings))
     router = Router(catalog)
 
     async def go() -> list[Routed]:
         async with open_rag(args.workdir, GatewayEmbeddingClient(), llm) as rag:
-            search = LightRagProcedureSearch(rag, args.index, passages, llm)
+            search = LightRagProcedureSearch(rag, args.procedures, passages, llm)
             return await route_all(cases, search, router, lm, args.concurrency)
 
     started = time.monotonic()
     results = model_loop().run(go())
     print_summary(results, metered, llm.calls, time.monotonic() - started)
     if args.out:
-        write_reviews(results, args.out, catalog, args.index)
+        write_reviews(results, args.out, catalog, args.procedures)
         write_workbook(results, args.out / "routing.xlsx", catalog)
         print(f"review files and {args.out / 'routing.xlsx'} written: they hold claim text, so keep them local")
     return 0 if all(r.routing for r in results) else 2
@@ -342,7 +343,7 @@ def run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.routing", description=__doc__.splitlines()[0])
-    parser.add_argument("index", help="procedure index ref (sha256:...) that the LightRAG store was built from")
+    parser.add_argument("procedures", help="the ref the LightRAG store was built from: snapshot, or old index")
     parser.add_argument("--workdir", type=Path, required=True, help="the LightRAG working directory")
     parser.add_argument("--verticals", type=Path, required=True, help="the knowledge document defining the verticals")
     parser.add_argument("--claims-from", type=Path, required=True, help="folder of C02 trial review files")

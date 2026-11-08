@@ -86,17 +86,6 @@ class ProcedureSnapshot(Contract):
     failures: tuple[ProcedureFailure, ...] = ()
 
 
-class ProcedureIndex(Contract):
-    """A searchable set of current procedures. Vector rows follow the documents' sections in order;
-    a zero row is a section the gateway blocked, which stays findable by keyword."""
-
-    snapshot_ref: ArtifactRef
-    embedding_model: str = Field(min_length=1)
-    dimensions: int = Field(ge=1)
-    vectors_ref: ArtifactRef
-    document_refs: tuple[ArtifactRef, ...]
-
-
 class ProcedureSearchRequest(Contract):
     """``procedure.search``. The query must already be redacted."""
 
@@ -120,12 +109,10 @@ class ProcedureHit(Contract):
     page_start: int = Field(ge=1)
     page_end: int = Field(ge=1)
     text: str
-    score: float
-    vector_rank: int | None = Field(default=None, ge=1)
-    keyword_rank: int | None = Field(default=None, ge=1)
+    rank: int = Field(ge=1)  # in the engine's order; LightRAG gives no score
 
 
 class ProcedureSearchResult(Contract):
-    index_ref: ArtifactRef
-    vector_search: bool  # false: the query was blocked, so these are keyword results only
+    procedures_ref: ArtifactRef  # the snapshot searched
+    blocked: bool = False  # the gateway blocked part of the search, so it may have found less or nothing
     hits: tuple[ProcedureHit, ...]

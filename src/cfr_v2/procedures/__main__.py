@@ -5,22 +5,18 @@
     python -m cfr_v2.procedures extract /path/to/pdfs --out extract_trial
     python -m cfr_v2.procedures snapshot /path/to/pdfs [--previous sha256:...]
     python -m cfr_v2.procedures snapshot --confluence
-    python -m cfr_v2.procedures index sha256:<snapshot>
-    python -m cfr_v2.procedures search sha256:<index> "fee charged after the card was cancelled"
-    python -m cfr_v2.procedures lightrag-build sha256:<index> --workdir lightrag_store
-    python -m cfr_v2.procedures bakeoff sha256:<index> --workdir lightrag_store --claims-from c02_trial --out bakeoff
-    python -m cfr_v2.procedures bakeoff-score bakeoff/judgements.xlsx bakeoff/key.json
+    python -m cfr_v2.procedures lightrag-build sha256:<snapshot> --workdir lightrag_store
+    python -m cfr_v2.procedures search sha256:<snapshot> "fee charged after the card was cancelled" \
+        --workdir lightrag_store
 
 ``inspect`` and the printed output of ``extract`` and ``snapshot`` carry file names, dates, counts
 and flags only, never document text, so they can be shared. ``extract`` is a trial: it stores
 nothing, and ``--out`` writes the redacted text for reading locally. **Those files are document
-text: keep them local.** ``snapshot`` stores the originals and the redacted sections. ``index``
-embeds the current sections of a snapshot through the gateway. ``search`` is for trying queries:
-**it prints section titles, and passages with ``--text``, so keep its output local too.**
-``lightrag-build`` builds the challenger from the same passages: two gpt-5 calls per passage, and
-it can resume. ``bakeoff`` searches with both engines and writes a blind workbook and a separate
-key: **the workbook holds claim and procedure text, so keep it local.** ``bakeoff-score`` prints
-numbers only.
+text: keep them local.** ``snapshot`` stores the originals and the redacted sections.
+``lightrag-build`` builds the LightRAG graph and vectors from the snapshot's current procedures:
+about three gpt-5 calls per passage, and it can resume. A ref from the ``index`` command this
+replaced also works. ``search`` is for trying queries against that store: **it prints section
+titles, and passages with ``--text``, so keep its output local too.**
 """
 
 from __future__ import annotations
@@ -291,30 +287,13 @@ def _register(stored: list) -> None:
             register(repo, item)
 
 
-def run_index(args: argparse.Namespace) -> int:
-    from cfr_v2.llm import model_loop
-
-    from .search import build_index
-
-    store = _store()
-    build = model_loop().run(build_index(store, args.snapshot, _embedder()))
-    _register(build.stored)
-    print(f"{build.procedures} procedures, {build.passages} passages")
-    print(f"blocked by the gateway (keyword search only): {build.blocked}")
-    print(f"index: {build.ref}")
-    return 0
-
-
 def print_hits(result, *, show_text: bool) -> None:
-    if not result.vector_search:
-        print("the gateway blocked the query: keyword results only")
-    print(f"{'#':>3} {'score':>8} {'vec':>4} {'key':>4} {'pages':>9}  document / section")
+    if result.blocked:
+        print("the gateway blocked part of the search, so it may have found less")
+    print(f"{'#':>3} {'pages':>9}  document / section")
     for number, hit in enumerate(result.hits, start=1):
         pages = str(hit.page_start) if hit.page_start == hit.page_end else f"{hit.page_start}-{hit.page_end}"
-        print(
-            f"{number:>3} {hit.score:>8.4f} {hit.vector_rank or '-':>4} {hit.keyword_rank or '-':>4} {pages:>9}"
-            f"  {hit.file_name} / {hit.section_title}"
-        )
+        print(f"{number:>3} {pages:>9}  {hit.file_name} / {hit.section_title}")
         if show_text:
             print(f"\n{hit.text}\n")
 
@@ -323,11 +302,18 @@ def run_search(args: argparse.Namespace) -> int:
     from cfr_v2.contracts import ProcedureSearchRequest
     from cfr_v2.llm import model_loop
 
-    from .search import HybridProcedureSearch
+    from .lightrag_engine import GatewayLlm, LightRagProcedureSearch, open_rag
+    from .search import corpus_passages
 
-    search = HybridProcedureSearch.load(_store(), args.index, _embedder())
+    passages = corpus_passages(_store(), args.procedures)
     request = ProcedureSearchRequest(query=_masker().mask(args.query), limit=args.limit, redacted=True)
-    print_hits(model_loop().run(search.search(request)), show_text=args.text)
+
+    async def search():
+        llm = GatewayLlm(_chat_client())
+        async with open_rag(args.workdir, _embedder(), llm) as rag:
+            return await LightRagProcedureSearch(rag, args.procedures, passages, llm).search(request)
+
+    print_hits(model_loop().run(search()), show_text=args.text)
     return 0
 
 
@@ -340,9 +326,10 @@ def _chat_client():
 def run_lightrag_build(args: argparse.Namespace) -> int:
     from cfr_v2.llm import model_loop
 
-    from .lightrag_engine import build_lightrag, index_passages
+    from .lightrag_engine import build_lightrag
+    from .search import corpus_passages
 
-    passages = index_passages(_store(), args.index)
+    passages = corpus_passages(_store(), args.procedures)
     build = model_loop().run(
         build_lightrag(args.workdir, passages, _build_embedder(), _chat_client(), concurrency=args.concurrency)
     )
@@ -356,61 +343,6 @@ def run_lightrag_build(args: argparse.Namespace) -> int:
     if build.stopped:
         print("stopped early: batches in a row added nothing. Check the gateway, then run this again to resume")
     return 1 if build.failed or build.processed < build.passages else 0
-
-
-async def _collect(args: argparse.Namespace, claims: list):
-    from .bakeoff import collect
-    from .lightrag_engine import GatewayLlm, LightRagProcedureSearch, index_passages, open_rag
-    from .search import HybridProcedureSearch
-
-    store, embedder = _store(), _embedder()
-    hybrid = HybridProcedureSearch.load(store, args.index, embedder)
-    llm = GatewayLlm(_chat_client())
-    async with open_rag(args.workdir, embedder, llm) as rag:
-        lightrag = LightRagProcedureSearch(rag, args.index, index_passages(store, args.index), llm)
-        return await collect(claims, {"hybrid": hybrid, "lightrag": lightrag}, top=args.top)
-
-
-def run_bakeoff(args: argparse.Namespace) -> int:
-    from cfr_v2.llm import model_loop
-
-    from .bakeoff import load_claims, write_key, write_workbook
-
-    claims = load_claims(args.claims_from, args.claims)
-    if len(claims) < args.claims:
-        print(f"warning: only {len(claims)} claims in {args.claims_from}", file=sys.stderr)
-    if not claims:
-        return 1
-    items = model_loop().run(_collect(args, claims))
-    args.out.mkdir(parents=True, exist_ok=True)
-    write_workbook(items, args.out / "judgements.xlsx")
-    write_key(items, ("hybrid", "lightrag"), args.top, args.out / "key.json")
-    both = sum(len(i.ranks) == 2 for i in items)
-    print(f"{len(claims)} claims, {len(items)} passages to judge ({both} found by both engines)")
-    print(f"give {args.out / 'judgements.xlsx'} to the judge; keep key.json back. Both stay local")
-    return 0
-
-
-def run_bakeoff_score(args: argparse.Namespace) -> int:
-    from .bakeoff import read_judgements, score
-
-    key = json.loads(args.key.read_text(encoding="utf-8"))
-    report = score(read_judgements(args.workbook), key)
-    print(f"judged {report.judged}; not judged {report.unjudged}; rows not in the key {report.unknown_items}")
-    header = ("claims", "any Yes", "Yes share", "Yes+Partly", "first Yes", "only here", "procedures")
-    print(f"{'engine':<12}" + "".join(f"{h:>12}" for h in header))
-    for s in report.scores:
-        cells = (
-            s.claims,
-            _pct(s.hit_rate),
-            _pct(s.precision),
-            _pct(s.partly_or_better),
-            f"{s.first_relevant:.2f}",
-            s.only_here,
-            f"{s.procedures_per_claim:.1f}",
-        )
-        print(f"{s.engine:<12}" + "".join(f"{c:>12}" for c in cells))
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -427,31 +359,18 @@ def main(argv: list[str] | None = None) -> int:
             step.add_argument("--out", type=Path, help="write the redacted text here, for local reading")
         else:
             step.add_argument("--previous", help="snapshot ref: unchanged PDFs are not read again")
-    step = sub.add_parser("index", help="embed the current sections of a snapshot")
-    step.add_argument("snapshot", help="snapshot ref")
-    step = sub.add_parser("search", help="try a query against an index")
-    step.add_argument("index", help="index ref")
-    step.add_argument("query")
-    step.add_argument("--limit", type=int, default=8)
-    step.add_argument("--text", action="store_true", help="print the passages too")
-    step = sub.add_parser("lightrag-build", help="build the LightRAG graph and vectors from an index's passages")
-    step.add_argument("index", help="index ref")
+    step = sub.add_parser("lightrag-build", help="build the LightRAG graph and vectors from a snapshot's procedures")
+    step.add_argument("procedures", help="snapshot ref (or a ref from the old index command)")
     step.add_argument("--workdir", type=Path, required=True)
     step.add_argument("--concurrency", type=int, default=16, help="passages processed at once (default 16)")
-    step = sub.add_parser("bakeoff", help="search with both engines and write the blind workbook")
-    step.add_argument("index", help="index ref")
+    step = sub.add_parser("search", help="try a query against a LightRAG store")
+    step.add_argument("procedures", help="the ref the store was built from: snapshot, or old index")
+    step.add_argument("query")
     step.add_argument("--workdir", type=Path, required=True, help="the LightRAG working directory")
-    step.add_argument("--claims-from", type=Path, required=True, help="folder of C02 trial review files")
-    step.add_argument("--claims", type=int, default=50, help="claims to use (default 50)")
-    step.add_argument("--top", type=int, default=5, help="passages per engine per claim (default 5)")
-    step.add_argument("--out", type=Path, required=True)
-    step = sub.add_parser("bakeoff-score", help="score a judged workbook")
-    step.add_argument("workbook", type=Path)
-    step.add_argument("key", type=Path)
+    step.add_argument("--limit", type=int, default=8)
+    step.add_argument("--text", action="store_true", help="print the passages too")
     args = parser.parse_args(argv)
-    if args.command == "bakeoff-score":
-        return run_bakeoff_score(args)
-    runners = {"index": run_index, "search": run_search, "lightrag-build": run_lightrag_build, "bakeoff": run_bakeoff}
+    runners = {"search": run_search, "lightrag-build": run_lightrag_build}
     if args.command in runners:
         from cfr_v2.llm import close_model_loop
         from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
