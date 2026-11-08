@@ -78,11 +78,18 @@ def test_unredacted_text_is_refused_before_any_call():
     assert model.batches == []
 
 
-def test_a_transient_failure_is_retried():
+def _retries(points) -> int:
+    want = {"stage": "embedding", "outcome": "transient", "status": "503"}
+    return sum(v for a, v in points.get("cfr.llm.retries", []) if want.items() <= dict(a).items())
+
+
+def test_a_transient_failure_is_retried_and_counted(metric_points):
+    before = _retries(metric_points())
     model = FakeEmbeddings(HttpError(503))
     client, _ = _client(model)
     assert len(_embed(client, ["a"])) == 1
     assert len(model.batches) == 2
+    assert _retries(metric_points()) == before + 1
 
 
 def test_retries_run_out():
@@ -164,6 +171,10 @@ def test_the_sdk_leaves_retries_and_timeouts_to_this_client():
 
 def test_the_attempt_timeout_can_be_set():
     assert EmbeddingSettings.from_env({"CFR_EMBEDDING_ATTEMPT_TIMEOUT_SEC": "45"}).attempt_timeout_sec == 45
+
+
+def test_the_call_deadline_can_be_set():
+    assert EmbeddingSettings.from_env({"CFR_EMBEDDING_CALL_DEADLINE_SEC": "900"}).call_deadline_sec == 900
 
 
 def test_a_call_span_says_how_long_it_queued(spans):

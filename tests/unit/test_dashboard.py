@@ -25,3 +25,16 @@ def test_ids_are_unique_and_panels_stay_on_the_grid():
 
 def test_it_shows_all_three_signals():
     assert {t["datasource"]["type"] for p in PANELS for t in p["targets"]} == {"prometheus", "loki", "tempo"}
+
+
+def test_span_searches_list_spans_so_durations_are_the_spans_own():
+    """As a trace table, a flush search showed each flush's whole batch: 30 minutes, not 30 seconds."""
+    for panel in PANELS:
+        for target in panel["targets"]:
+            if target.get("queryType") == "traceql" and "procedures.lightrag.batch" not in target["query"]:
+                assert target["tableType"] == "spans", panel["title"]
+
+
+def test_retries_come_from_the_metric_not_from_log_text():
+    (panel,) = [p for p in PANELS if p["title"].startswith("Retries")]
+    assert "cfr_llm_retries" in panel["targets"][0]["expr"]

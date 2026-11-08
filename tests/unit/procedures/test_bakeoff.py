@@ -349,7 +349,8 @@ def test_a_failed_vector_flush_is_retried_and_logged_within_the_build(tmp_path, 
     assert re.search(
         r"lost \d passage\(s\) \((halted|timeout) \d.*\d queued; the next pass retries them: p-", caplog.text
     )
-    assert re.search(r"pass 2 of 3: cleared [1-3] failed", caplog.text)
+    assert re.search(r"pass 2 of 3: cleared [1-3] failed in \d+s, finished queued passages in \d+s", caplog.text)
+    assert re.search(r"took \d+s; \d+ new model calls", caplog.text)
     assert "build ended after 0m: 3 of 3 in the graph" in caplog.text
     assert not any(p.section.text in caplog.text for p in passages)
 
@@ -571,10 +572,59 @@ def test_tracing_flushes_is_safe_without_the_private_method():
 def test_lightrag_outlasts_the_gateway_clients_own_retries():
     from cfr_v2.llm import GatewaySettings
     from cfr_v2.llm.embeddings import EmbeddingSettings
-    from cfr_v2.procedures.lightrag_engine import EMBEDDING_TIMEOUT_SEC, LLM_TIMEOUT_SEC
+    from cfr_v2.procedures.lightrag_engine import EMBEDDING_TIMEOUT_SEC, LLM_TIMEOUT_SEC, build_embedding_settings
 
-    assert EMBEDDING_TIMEOUT_SEC >= EmbeddingSettings().call_deadline_sec
+    assert EMBEDDING_TIMEOUT_SEC >= build_embedding_settings(EmbeddingSettings()).call_deadline_sec
     assert LLM_TIMEOUT_SEC >= GatewaySettings().call_deadline_sec
+
+
+def test_a_build_embeds_fewer_at_once_and_waits_longer_unless_told_to_be_stricter():
+    from cfr_v2.llm.embeddings import EmbeddingSettings
+    from cfr_v2.procedures.lightrag_engine import build_embedding_settings
+
+    default = build_embedding_settings(EmbeddingSettings())
+    assert (default.max_concurrency, default.call_deadline_sec) == (3, 1800)
+    set_by_hand = build_embedding_settings(EmbeddingSettings(max_concurrency=1, call_deadline_sec=3600))
+    assert (set_by_hand.max_concurrency, set_by_hand.call_deadline_sec) == (1, 3600)
+
+
+def test_closing_lightrag_stops_its_call_workers(tmp_path):
+    """Left running, they fail at exit with "Task was destroyed but it is pending"."""
+    pytest.importorskip("lightrag")
+    from cfr_v2.procedures.lightrag_engine import build_lightrag
+
+    async def run():
+        await build_lightrag(
+            tmp_path, _passages(), FakeEmbeddingClient(), FakeModelClient(responder=_extraction), concurrency=2
+        )
+        await asyncio.sleep(0)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    assert asyncio.run(run()) == []
+
+
+def test_stopping_workers_survives_a_shutdown_that_fails(caplog):
+    from types import SimpleNamespace
+
+    from cfr_v2.procedures.lightrag_engine import _stop_workers
+
+    async def broken():
+        raise RuntimeError("no")
+
+    stopped = []
+
+    async def fine():
+        stopped.append(1)
+
+    role = SimpleNamespace(shutdown=broken)
+    rag = SimpleNamespace(
+        role_llm_funcs={"extract": role, "query": role},
+        llm_model_func=SimpleNamespace(shutdown=fine),
+        embedding_func=SimpleNamespace(func=None),
+    )
+    asyncio.run(_stop_workers(rag))
+    assert stopped == [1]
+    assert caplog.text.count("could not stop LightRAG's call workers: RuntimeError") == 1
 
 
 def test_passage_ids_are_stable_and_distinct():
@@ -590,7 +640,7 @@ def test_the_whole_bakeoff_from_the_command_line(tmp_path, monkeypatch, capsys):
 
     store, embedder = InMemoryArtifactStore(max_bytes=10**8), FakeEmbeddingClient()
     monkeypatch.setattr(cli, "_store", lambda: store)
-    monkeypatch.setattr(cli, "_embedder", lambda: embedder)
+    monkeypatch.setattr(cli, "_embedder", lambda *_: embedder)
     monkeypatch.setattr(cli, "_chat_client", lambda: FakeModelClient(responder=_extraction))
     monkeypatch.setattr(cli, "_register", lambda stored: None)
     assert cli.main(["index", _snapshot(store, _corpus())]) == 0

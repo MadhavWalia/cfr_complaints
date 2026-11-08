@@ -16,7 +16,7 @@ import time
 from collections import Counter
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,7 @@ from cfr_v2.contracts import (
 )
 from cfr_v2.llm import EmbeddingClient, ModelBlockedError, ModelClient, ModelRequest, UnredactedPayloadError
 from cfr_v2.llm.client import ChatTurn
-from cfr_v2.llm.embeddings import embed_allowing_blocks
+from cfr_v2.llm.embeddings import EmbeddingSettings, embed_allowing_blocks
 from cfr_v2.telemetry import get_logger, record_passages, record_stage, set_attributes, span
 
 from .search import _READER, CANDIDATES, Passage, load_passages
@@ -45,7 +45,12 @@ QUERY_PURPOSE = "procedures.lightrag.query"
 CHUNK_TOKENS = 2048  # above the largest passage, so a passage stays one chunk
 EMBEDDING_TOKEN_LIMIT = 8192
 LLM_TIMEOUT_SEC = 1200  # as the gateway client's deadline: it does the retrying
-EMBEDDING_TIMEOUT_SEC = 600  # likewise. LightRAG's default kills a call at 60 s and halts the pipeline
+BUILD_EMBEDDING_CONCURRENCY = 3  # the gateway answered 429 hundreds of times at 5; embeddings were never the slow part
+BUILD_EMBEDDING_DEADLINE_SEC = 1800.0  # a 429 storm outlasted 600 s and halted a batch; nobody waits on a build
+EMBEDDING_TIMEOUT_SEC = int(
+    BUILD_EMBEDDING_DEADLINE_SEC
+)  # as the client's deadline. LightRAG's default kills a call at
+# 60 s and halts the pipeline
 EMBEDDING_BATCH = 64  # as the embedding client's. LightRAG's 10 means several calls for one flush
 INSERT_BATCH = 32  # two rounds at the default concurrency; a batch ends with its slowest passage
 BUILD_PASSES = 3  # failed passages get this many tries in one build; their extraction is cached
@@ -67,6 +72,16 @@ class NoTextInLightRagLogs(logging.Filter):
         if not record.getMessage().lstrip("[] ").startswith(SAFE_LIGHTRAG_ERRORS):
             record.msg, record.args = "message withheld (%s:%d)", (record.filename, record.lineno)
         return True
+
+
+def build_embedding_settings(settings: EmbeddingSettings) -> EmbeddingSettings:
+    """Embeddings for a build: fewer at once, and a deadline long enough to sit out rate limiting.
+    A lower concurrency or longer deadline set in the environment is kept."""
+    return replace(
+        settings,
+        max_concurrency=min(settings.max_concurrency, BUILD_EMBEDDING_CONCURRENCY),
+        call_deadline_sec=max(settings.call_deadline_sec, BUILD_EMBEDDING_DEADLINE_SEC),
+    )
 
 
 def passage_id(passage: Passage) -> str:
@@ -222,11 +237,28 @@ async def open_rag(
     try:
         yield rag
     finally:
-        await rag.finalize_storages()
-        for func in (rag.llm_model_func, rag.embedding_func.func):  # its queue workers, before the loop closes
-            shutdown = getattr(func, "shutdown", None)
-            if shutdown:
-                await shutdown()
+        try:
+            await rag.finalize_storages()
+        finally:
+            await _stop_workers(rag)
+
+
+async def _stop_workers(rag: Any) -> None:
+    """LightRAG runs each model role (extract, keyword, query) and the embeddings through its own
+    queue workers, and closing the storages leaves them running. Left to the end of the event loop,
+    they fail one by one with "Task was destroyed but it is pending" and "no running event loop"."""
+    roles = getattr(rag, "role_llm_funcs", None) or {}
+    funcs = [*roles.values(), rag.llm_model_func, getattr(rag.embedding_func, "func", None)]
+    seen: set[int] = set()
+    for func in funcs:
+        shutdown = getattr(func, "shutdown", None)
+        if shutdown is None or id(func) in seen:
+            continue
+        seen.add(id(func))
+        try:
+            await shutdown()
+        except Exception as exc:  # noqa: BLE001 - the build is saved by now; a worker that won't stop is only noise
+            logger.warning("lightrag: could not stop LightRAG's call workers: %s", type(exc).__name__)
 
 
 @dataclass
@@ -318,16 +350,26 @@ async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, n
 
     ids = {passage_id(p) for p in passages}
     with span("procedures.lightrag.recover", new_trace=True, pass_no=number):
-        cleared = await _clear_failed(rag)
-        await rag.apipeline_process_enqueue_documents()
+        started = time.monotonic()
+        cleared = await _clear_failed(rag)  # LightRAG rebuilds what they touched in the graph: model calls
+        clearing = time.monotonic() - started
+        if cleared:
+            record_stage("clear", clearing)
+        started = time.monotonic()
+        await rag.apipeline_process_enqueue_documents()  # passages a halt left queued
+        draining = time.monotonic() - started
+        record_stage("drain", draining)
     known = await rag.doc_status.get_docs_by_statuses(list(DocStatus))
     waiting = [p for p in passages if passage_id(p) not in known]
     state = await _progress(rag, ids)
     logger.info(
-        "lightrag: pass %d of %d: cleared %d failed; %d in the graph, %d to insert, %d failed, %d queued",
+        "lightrag: pass %d of %d: cleared %d failed in %.0fs, finished queued passages in %.0fs; "
+        "%d in the graph, %d to insert, %d failed, %d queued",
         number,
         BUILD_PASSES,
         cleared,
+        clearing,
+        draining,
         state.processed,
         len(waiting),
         len(state.failed),
@@ -338,7 +380,7 @@ async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, n
     for batch_no, start in enumerate(range(0, len(waiting), INSERT_BATCH), start=1):
         batch = waiting[start : start + INSERT_BATCH]
         batch_ids = [passage_id(p) for p in batch]
-        batch_started = time.monotonic()
+        batch_started, calls_before = time.monotonic(), llm.calls
         # A trace per batch: a whole build would be thousands of spans, unseen until it ended
         with span(
             "procedures.lightrag.batch", new_trace=True, pass_no=number, batch_no=batch_no, passages=len(batch)
@@ -359,7 +401,7 @@ async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, n
         left = _duration(took / added * (len(passages) - state.processed)) if added else "unknown"  # at this pace
         logger.info(
             "lightrag: [%d/%d] passages in the graph; %d failed, %d queued; batch %d of %d took %.0fs; "
-            "%d model calls, %d blocked; slowest model call %.0fs; %d embedding calls, slowest %.0fs; "
+            "%d new model calls, %d blocked; slowest model call %.0fs; %d embedding calls, slowest %.0fs; "
             "about %s left",
             state.processed,
             len(passages),
@@ -368,7 +410,7 @@ async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, n
             batch_no,
             batches,
             took,
-            llm.calls,
+            llm.calls - calls_before,  # per batch: the masker hides some four-digit totals
             llm.blocked,
             llm.slowest_call,
             llm.embedding_calls,

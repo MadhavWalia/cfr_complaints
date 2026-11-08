@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from cfr_v2.telemetry import get_logger, record_llm_call, set_attributes, span
+from cfr_v2.telemetry import get_logger, record_llm_call, record_retry, set_attributes, span
 
 from .client import (
     ModelBlockedError,
@@ -76,6 +76,7 @@ class EmbeddingSettings:
             batch_size=int(env.get("CFR_EMBEDDING_BATCH_SIZE", d.batch_size)),
             max_concurrency=int(env.get("CFR_EMBEDDING_MAX_CONCURRENCY", d.max_concurrency)),
             attempt_timeout_sec=float(env.get("CFR_EMBEDDING_ATTEMPT_TIMEOUT_SEC", d.attempt_timeout_sec)),
+            call_deadline_sec=float(env.get("CFR_EMBEDDING_CALL_DEADLINE_SEC", d.call_deadline_sec)),
         )
 
 
@@ -172,6 +173,7 @@ class GatewayEmbeddingClient:
                     raise _EXHAUSTED.get(found.failure, RetryableModelError)(
                         f"{purpose}: {found.failure.value} after {tries} tries ({detail})", retry_after_sec=wait
                     ) from exc
+                record_retry("embedding", found.failure.value, found.status)
                 logger.warning("embed: %s try %d %s (%s); retrying", purpose, tries, found.failure.value, detail)
                 if found.failure is not Failure.RATE_LIMITED:
                     await self._sleep(wait)

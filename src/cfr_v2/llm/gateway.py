@@ -42,7 +42,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from cfr_v2.telemetry import elf_headers, get_logger, record_llm_call, set_attributes, span
+from cfr_v2.telemetry import elf_headers, get_logger, record_llm_call, record_retry, set_attributes, span
 
 from .client import (
     ModelBlockedError,
@@ -272,6 +272,7 @@ class GatewayModelClient:
                         f"{request.program_id}: {found.failure.value} after {tries} tries ({detail})",
                         retry_after_sec=wait,
                     ) from exc
+                record_retry("chat", found.failure.value, found.status)
                 logger.warning(
                     "llm: %s case %s try %d %s (%s); retrying in %.1fs",
                     request.program_id,

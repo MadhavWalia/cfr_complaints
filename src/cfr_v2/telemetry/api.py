@@ -278,7 +278,7 @@ def record_llm_call(model_id: str, operation: str = "completion", **extra: Any):
 # Named here rather than taken from ee-logging's instruments, so a dashboard can rely on them.
 
 
-STAGE_BUCKETS_SEC = (0.5, 1, 2, 5, 10, 20, 30, 60, 120, 240, 480, 960, 1800)
+STAGE_BUCKETS_SEC = (0.5, 1, 2, 5, 10, 20, 30, 60, 120, 240, 480, 960, 1800, 3600)
 
 
 @functools.cache
@@ -299,6 +299,22 @@ def record_stage(stage: str, seconds: float, outcome: str = "ok") -> None:
     """Time spent in one stage of a build. Best-effort, like every metric here."""
     try:
         _build_instruments()[0].record(seconds, {"stage": stage, "outcome": outcome})
+    except Exception:  # pragma: no cover - metrics are best-effort
+        pass
+
+
+@functools.cache
+def _retry_counter() -> Any:
+    return get_meter("cfr.llm").create_counter(
+        "cfr.llm.retries", description="Model and embedding attempts that failed and were tried again"
+    )
+
+
+def record_retry(stage: str, outcome: str, status: int | None = None) -> None:
+    """One retried attempt: ``stage`` is chat or embedding, ``outcome`` the failure kind, ``status``
+    the HTTP status if there was one. Counted here so retries show without a log pipeline."""
+    try:
+        _retry_counter().add(1, {"stage": stage, "outcome": outcome, "status": str(status or "none")})
     except Exception:  # pragma: no cover - metrics are best-effort
         pass
 

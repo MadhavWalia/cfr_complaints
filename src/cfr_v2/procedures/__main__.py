@@ -265,10 +265,18 @@ def _store():
     return S3ArtifactStore(S3Settings.from_env(), max_bytes=MAX_PDF_BYTES)
 
 
-def _embedder():
+def _embedder(settings=None):
     from cfr_v2.llm import GatewayEmbeddingClient
 
-    return GatewayEmbeddingClient()
+    return GatewayEmbeddingClient(settings)
+
+
+def _build_embedder():
+    from cfr_v2.llm import EmbeddingSettings
+
+    from .lightrag_engine import build_embedding_settings
+
+    return _embedder(build_embedding_settings(EmbeddingSettings.from_env()))
 
 
 def _register(stored: list) -> None:
@@ -336,7 +344,7 @@ def run_lightrag_build(args: argparse.Namespace) -> int:
 
     passages = index_passages(_store(), args.index)
     build = model_loop().run(
-        build_lightrag(args.workdir, passages, _embedder(), _chat_client(), concurrency=args.concurrency)
+        build_lightrag(args.workdir, passages, _build_embedder(), _chat_client(), concurrency=args.concurrency)
     )
     print(f"{build.processed} of {build.passages} passages in the graph; {build.failed} failed")
     print(

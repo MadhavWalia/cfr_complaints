@@ -180,11 +180,11 @@
     },
     {
       "id": 6,
-      "title": "Retries and gateway errors (per 5m)",
+      "title": "Retries (per 5m)",
       "type": "timeseries",
       "datasource": {
-        "type": "loki",
-        "uid": "loki"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
         "x": 16,
@@ -196,34 +196,14 @@
         {
           "refId": "A",
           "datasource": {
-            "type": "loki",
-            "uid": "loki"
+            "type": "prometheus",
+            "uid": "prometheus"
           },
-          "expr": "sum(count_over_time({service_name=~\"cfr.*\"} |~ \"embed: .* try [0-9]+\" [5m]))",
-          "legendFormat": "embedding retries",
-          "queryType": "range"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "sum(count_over_time({service_name=~\"cfr.*\"} |~ \"llm: .* try [0-9]+\" [5m]))",
-          "legendFormat": "model retries",
-          "queryType": "range"
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "sum(count_over_time({service_name=~\"cfr.*\"} |= \"HTTP 504\" [5m]))",
-          "legendFormat": "HTTP 504",
-          "queryType": "range"
+          "expr": "sum by (stage, outcome, status) (increase({__name__=~\"cfr_llm_retries(_total)?\"}[5m]))",
+          "legendFormat": "{{stage}} {{outcome}} {{status}}"
         }
-      ]
+      ],
+      "description": "Attempts that failed and were tried again, by chat or embedding, failure and HTTP status. From the cfr.llm.retries metric, so it doesn't depend on logs reaching Loki."
     },
     {
       "id": 7,
@@ -370,9 +350,10 @@
           "queryType": "traceql",
           "query": "{ name = \"procedures.lightrag.flush\" && duration > 30s }",
           "limit": 30,
-          "tableType": "traces"
+          "tableType": "spans"
         }
-      ]
+      ],
+      "description": "One row per matching span, with its own duration. Click the trace id to open the batch it belongs to."
     },
     {
       "id": 13,
@@ -398,9 +379,10 @@
           "queryType": "traceql",
           "query": "{ name = \"llm.call\" && (span.cfr.outcome != \"ok\" || duration > 60s || span.cfr.queue_wait_sec > 5) }",
           "limit": 30,
-          "tableType": "traces"
+          "tableType": "spans"
         }
-      ]
+      ],
+      "description": "One row per matching span, with its own duration. Click the trace id to open the batch it belongs to."
     },
     {
       "id": 14,
