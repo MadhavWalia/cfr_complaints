@@ -98,15 +98,18 @@ def make_routing_handler(
     def handle(inp: StageInput) -> StageOutput:
         claim_set = load_claim_set(store, inp.upstream_refs[_CLAIM_SET])
         with span("c04.routing", program=ROUTE_PROGRAM_ID, program_version=ROUTE_VERSION) as routing_span:
-            context = resources(inp.release_manifest_ref)
-            routed = (loop or model_loop()).run(route_set(claim_set, context, lm, trace_id=inp.trace_id))
+            routed: list[RoutedClaim] = []
+            context = None
+            if claim_set.claims:  # no claims (no transcript, say): nothing to route, nothing to pin
+                context = resources(inp.release_manifest_ref)
+                routed = (loop or model_loop()).run(route_set(claim_set, context, lm, trace_id=inp.trace_id))
             result = RoutingResult(
                 claim_set_hash=claim_set.claim_set_hash,
                 program_id=ROUTE_PROGRAM_ID,
                 program_version=ROUTE_VERSION,
                 claims=tuple(r.routing for r in routed),
-                procedures_ref=context.procedures_ref,
-                verticals_sha256=context.catalog.sha256,
+                procedures_ref=context and context.procedures_ref,
+                verticals_sha256=context and context.catalog.sha256,
             )
             outcomes = Counter(r.routing.outcome for r in routed)
             set_attributes(

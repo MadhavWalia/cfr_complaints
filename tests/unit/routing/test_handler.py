@@ -248,3 +248,11 @@ def test_two_cases_routed_over_one_lightrag_store_then_closed(tmp_path, loop):
     for result in results:
         assert result.procedures_ref == snapshot and len(result.claims) == 2
         assert all(c.sections_seen for c in result.claims)  # LightRAG found sections for each claim
+
+
+def test_a_claim_set_without_claims_needs_no_pins_or_store(loop):
+    """A case without a transcript gets no claims: it is routed to nothing, whatever its release pins."""
+    store = InMemoryArtifactStore()
+    ref = _put(store, _claim_set(claims=()).model_dump_json().encode())
+    result = _handle(store, ref, FakeModelClient(), lambda _: pytest.fail("no pins needed"), loop)
+    assert (result.claims, result.procedures_ref, result.verticals_sha256) == ((), None, None)
