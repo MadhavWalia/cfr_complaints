@@ -240,11 +240,18 @@ def test_retry_after_header_is_read():
 # --- retries -------------------------------------------------------------------------
 
 
-async def test_transient_errors_retry():
+def _retries(points, **labels) -> int:
+    want = {k: str(v) for k, v in labels.items()}
+    return sum(v for a, v in points.get("cfr.llm.retries", []) if want.items() <= dict(a).items())
+
+
+async def test_transient_errors_retry(metric_points):
+    before = _retries(metric_points(), stage="chat", outcome="transient", status=503)
     script = Script(HTTPError(503), type("APIConnectionError", (Exception,), {})(), {"allegations": []})
     await _client(script).complete(_req())
     assert script.calls == 3
     assert len(script.builds) == 1
+    assert _retries(metric_points(), stage="chat", outcome="transient", status=503) == before + 1
 
 
 async def test_transient_errors_exhaust_into_a_retryable_error():

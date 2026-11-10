@@ -1,0 +1,9 @@
+# Loads the dashboards in this folder on startup and when they change.
+apiVersion: 1
+
+providers:
+  - name: cfr
+    type: file
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Callable, Mapping
+import math
+import re
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
 from pydantic import JsonValue
 
-from .client import ModelError, ModelRequest, ModelResponse, ModelUsage
+from .client import ModelBlockedError, ModelError, ModelRequest, ModelResponse, ModelUsage, UnredactedPayloadError
 
 FAKE_MODEL_ID = "fake-model"
 
@@ -64,3 +67,32 @@ class FakeModelClient:
             output_tokens=int(len(json.dumps(output, sort_keys=True)) * self.tokens_per_char),
         )
         return ModelResponse(output=output, usage=usage, model_id=FAKE_MODEL_ID)
+
+
+class FakeEmbeddingClient:
+    """Deterministic vectors from hashed words, so texts sharing words are close.
+
+    A text holding a word in ``blocked`` fails its whole call, like a firewall block.
+    """
+
+    model_id = "fake-embedding"
+
+    def __init__(self, *, dimensions: int = 256, blocked: Collection[str] = ()) -> None:
+        self.dimensions = dimensions
+        self.blocked = set(blocked)
+        self.calls: list[list[str]] = []
+
+    def _vector(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimensions
+        for word in re.findall(r"[a-z0-9]+", text.lower()):
+            vector[int(hashlib.sha256(word.encode()).hexdigest(), 16) % self.dimensions] += 1.0
+        norm = math.sqrt(sum(v * v for v in vector)) or 1.0
+        return [v / norm for v in vector]
+
+    async def embed(self, texts: Sequence[str], *, purpose: str, redacted: bool) -> list[list[float]]:
+        if not redacted:
+            raise UnredactedPayloadError(f"{purpose}: payload not marked redacted")
+        self.calls.append(list(texts))
+        if any(word in text for text in texts for word in self.blocked):
+            raise ModelBlockedError(f"{purpose}: blocked")
+        return [self._vector(text) for text in texts]

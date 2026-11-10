@@ -4,6 +4,7 @@ This package preserves the public API previously exposed by ``cfr_v2/telemetry.p
 Call sites import names directly from ``cfr_v2.telemetry``; the implementation is
 split into focused submodules (``bootstrap``, ``logging``, ``http``, ``api``).
 """
+
 from __future__ import annotations
 
 from .api import (
@@ -25,6 +26,9 @@ from .api import (
     link_to_current,
     mark_error,
     record_llm_call,
+    record_passages,
+    record_retry,
+    record_stage,
     safe_traceback,
     set_attributes,
     span,
@@ -70,6 +74,9 @@ __all__ = [
     "link_to_current",
     "mark_error",
     "record_llm_call",
+    "record_passages",
+    "record_retry",
+    "record_stage",
     "safe_traceback",
     "safechain_httpx_kwargs",
     "set_attributes",

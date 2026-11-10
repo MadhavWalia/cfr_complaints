@@ -18,9 +18,16 @@ dependencies = [
     "opentelemetry-instrumentation-httpx==0.60b1",
     # C02+ programs (LDR-0015). Pinned: GatewayEngine uses the 3.4 custom-engine API.
     "dspy==3.4.1",
+    # Procedure PDFs (LDR-0019): python -m cfr_v2.procedures.
+    "pdfplumber>=0.11",
+    # Vector search over the procedure index (LDR-0019).
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
+# LightRAG, the engine behind procedure.search (LDR-0019). Install alongside the pinned opentelemetry-api:
+# on its own it upgrades it past what ee-logging supports.
+lightrag = ["lightrag-hku>=1.5.7"]
 # Hosts without libpq: psycopg2-binary bundles it (select with CFR_DB_DRIVER=psycopg2).
 psycopg2 = ["psycopg2-binary>=2.9"]
 # Private packages from the internal Artifactory; the code degrades gracefully without them.

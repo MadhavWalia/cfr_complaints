@@ -8,6 +8,7 @@ name is a deliberate change: the value must never carry case content.
 Metric labels are separate and narrower: lane, stage, outcome and status only,
 never a case identifier (one series per case would follow).
 """
+
 from __future__ import annotations
 
 PREFIX = "cfr."
@@ -62,6 +63,15 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
         "selection_status",
         "candidates",
         "model_called",
+        # procedure index builds (counts only)
+        "pass_no",
+        "batch_no",
+        "passages",
+        "processed",
+        "failed",
+        "queued",
+        # C04 routing
+        "sections",
     }
 )
 

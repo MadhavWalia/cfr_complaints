@@ -3,6 +3,7 @@
 No I/O and no business logic beyond structural validation.
 See lld/modules/p1-contracts/README.md.
 """
+
 from __future__ import annotations
 
 from ._base import Contract
@@ -35,6 +36,19 @@ from .planning import (
     TaskNode,
     ValidationIssue,
 )
+from .procedures import (
+    ExtractionQuality,
+    ProcedureDocument,
+    ProcedureFailure,
+    ProcedureHit,
+    ProcedureSearchRequest,
+    ProcedureSearchResult,
+    ProcedureSection,
+    ProcedureSnapshot,
+    ProcedureSnapshotEntry,
+    ProcedureStatus,
+    VersionFlag,
+)
 from .registry import (
     BackendStatus,
     CapabilityDescriptor,
@@ -49,7 +63,14 @@ from .registry import (
     SkillPin,
     VerticalSkill,
 )
-from .routing import CandidateRoute, ClaimRouting, ClaimRoutingOutcome, RouteSource, RoutingResult
+from .routing import (
+    CandidateRoute,
+    ClaimRouting,
+    ClaimRoutingOutcome,
+    ProcedureCitation,
+    RouteSource,
+    RoutingResult,
+)
 from .selection import PrimarySelection, SelectionStatus
 from .understanding import (
     SOURCE_ORIGIN_PATTERN,
@@ -125,6 +146,7 @@ __all__ = [
     "EvidenceSourceType",
     "ExecutionBudget",
     "ExecutionPlan",
+    "ExtractionQuality",
     "GroundedClaim",
     "GroundingStatus",
     "IngestionRequest",
@@ -141,6 +163,16 @@ __all__ = [
     "PlanValidationReport",
     "PlannerSource",
     "PrimarySelection",
+    "ProcedureCitation",
+    "ProcedureDocument",
+    "ProcedureFailure",
+    "ProcedureHit",
+    "ProcedureSearchRequest",
+    "ProcedureSearchResult",
+    "ProcedureSection",
+    "ProcedureSnapshot",
+    "ProcedureSnapshotEntry",
+    "ProcedureStatus",
     "ProgramRef",
     "RedactionMap",
     "RedactionSpan",
@@ -162,6 +194,7 @@ __all__ = [
     "TimeQuality",
     "TranscriptInteraction",
     "ValidationIssue",
+    "VersionFlag",
     "VerticalSkill",
     "account_resolution_for",
     "canonical_hash",

@@ -42,7 +42,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from cfr_v2.telemetry import elf_headers, get_logger, record_llm_call, set_attributes, span
+from cfr_v2.telemetry import elf_headers, get_logger, record_llm_call, record_retry, set_attributes, span
 
 from .client import (
     ModelBlockedError,
@@ -272,6 +272,7 @@ class GatewayModelClient:
                         f"{request.program_id}: {found.failure.value} after {tries} tries ({detail})",
                         retry_after_sec=wait,
                     ) from exc
+                record_retry("chat", found.failure.value, found.status)
                 logger.warning(
                     "llm: %s case %s try %d %s (%s); retrying in %.1fs",
                     request.program_id,
@@ -289,7 +290,9 @@ class GatewayModelClient:
 
     async def _attempt(self, request: ModelRequest, deadline: float, tries: int) -> ModelResponse:
         s = self.settings
+        queued = self._clock()
         async with self.gate.slot():
+            queue_wait = self._clock() - queued
             timeout = min(s.attempt_timeout_sec, deadline - self._clock())
             if timeout <= 0:
                 raise TimeoutError("call deadline reached while waiting for a slot")
@@ -300,6 +303,7 @@ class GatewayModelClient:
                     program_version=request.program_version,
                     model=s.model_id,
                     attempt=tries,
+                    queue_wait_sec=round(queue_wait, 3),
                 ) as call_span,
                 record_llm_call(s.model_id, operation=request.program_id),
             ):

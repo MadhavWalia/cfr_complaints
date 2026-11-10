@@ -19,8 +19,8 @@ ingester:
 
 compactor:
   compaction:
-    # Dev retention — keep traces around for an hour, then reclaim disk.
-    block_retention: 1h
+    # Dev retention: long enough to compare the batches of a build that runs for hours.
+    block_retention: 24h
 
 storage:
   trace:

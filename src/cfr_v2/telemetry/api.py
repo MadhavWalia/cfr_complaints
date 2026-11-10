@@ -3,9 +3,9 @@ from __future__ import annotations
 import functools
 import logging
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from typing import Any, Callable, Optional
+from typing import Any
 
 from opentelemetry import context as otel_context
 from opentelemetry import metrics, trace
@@ -110,7 +110,7 @@ def instruments() -> Any:
     return getattr(_state.telemetry, "instruments", None) if _state.enabled else None
 
 
-def elf_headers(existing: Optional[dict[str, str]] = None) -> dict[str, str]:
+def elf_headers(existing: dict[str, str] | None = None) -> dict[str, str]:
     """Return B3 trace-context headers for ELF correlation."""
     if not _state.enabled:
         return dict(existing or {})
@@ -272,3 +272,57 @@ def record_llm_call(model_id: str, operation: str = "completion", **extra: Any):
                 inst.request_duration.record(duration_ms, attrs)
             except Exception:  # pragma: no cover - metrics are best-effort
                 pass
+
+
+# --- procedure index builds ---------------------------------------------------------
+# Named here rather than taken from ee-logging's instruments, so a dashboard can rely on them.
+
+
+STAGE_BUCKETS_SEC = (0.5, 1, 2, 5, 10, 20, 30, 60, 120, 240, 480, 960, 1800, 3600)
+
+
+@functools.cache
+def _build_instruments() -> tuple[Any, Any]:
+    meter = get_meter("cfr.procedures")
+    return (
+        meter.create_histogram(
+            "cfr.procedures.stage.duration",
+            unit="s",
+            description="Time per build stage",
+            explicit_bucket_boundaries_advisory=STAGE_BUCKETS_SEC,
+        ),
+        meter.create_gauge("cfr.procedures.passages", description="Passages by status in the current build"),
+    )
+
+
+def record_stage(stage: str, seconds: float, outcome: str = "ok") -> None:
+    """Time spent in one stage of a build. Best-effort, like every metric here."""
+    try:
+        _build_instruments()[0].record(seconds, {"stage": stage, "outcome": outcome})
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
+        pass
+
+
+@functools.cache
+def _retry_counter() -> Any:
+    return get_meter("cfr.llm").create_counter(
+        "cfr.llm.retries", description="Model and embedding attempts that failed and were tried again"
+    )
+
+
+def record_retry(stage: str, outcome: str, status: int | None = None) -> None:
+    """One retried attempt: ``stage`` is chat or embedding, ``outcome`` the failure kind, ``status``
+    the HTTP status if there was one. Counted here so retries show without a log pipeline."""
+    try:
+        _retry_counter().add(1, {"stage": stage, "outcome": outcome, "status": str(status or "none")})
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
+        pass
+
+
+def record_passages(*, processed: int, failed: int, queued: int) -> None:
+    try:
+        gauge = _build_instruments()[1]
+        for status, count in (("processed", processed), ("failed", failed), ("queued", queued)):
+            gauge.set(count, {"status": status})
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
+        pass
