@@ -164,7 +164,7 @@ def test_the_pinned_document_and_one_store_serve_every_run(loop):
 
 
 def test_no_store_directory_or_a_store_from_another_snapshot_is_refused(tmp_path, loop):
-    from cfr_v2.procedures.lightrag_engine import STORE_MARKER, StoreMismatchError
+    from cfr_v2.procedures.lightrag_engine import STORE_MARKER
 
     store = InMemoryArtifactStore()
     verticals = _verticals(store)
@@ -175,10 +175,10 @@ def test_no_store_directory_or_a_store_from_another_snapshot_is_refused(tmp_path
 
     with pytest.raises(RoutingSetupError, match="CFR_LIGHTRAG_WORKDIR"):
         pinned(None)(MANIFEST_REF)
-    with pytest.raises(StoreMismatchError, match="no cfr_store.json"):
+    with pytest.raises(RoutingSetupError, match="no cfr_store.json"):
         pinned(tmp_path)(MANIFEST_REF)
     (tmp_path / STORE_MARKER).write_text(json.dumps({"procedures_ref": "sha256:" + "d" * 64}))
-    with pytest.raises(StoreMismatchError, match="was built from"):
+    with pytest.raises(RoutingSetupError, match="was built from"):
         pinned(tmp_path)(MANIFEST_REF)
 
 
@@ -256,3 +256,15 @@ def test_a_claim_set_without_claims_needs_no_pins_or_store(loop):
     ref = _put(store, _claim_set(claims=()).model_dump_json().encode())
     result = _handle(store, ref, FakeModelClient(), lambda _: pytest.fail("no pins needed"), loop)
     assert (result.claims, result.procedures_ref, result.verticals_sha256) == ((), None, None)
+
+
+def test_a_setup_error_is_logged_with_what_to_fix(loop, caplog):
+    store = InMemoryArtifactStore()
+    ref = _put(store, _claim_set().model_dump_json().encode())
+
+    def unpinned(_):
+        raise RoutingSetupError("release r@1 pins no routing_verticals or procedure_snapshot: it can't route")
+
+    with pytest.raises(RoutingSetupError):
+        _handle(store, ref, FakeModelClient(), unpinned, loop)
+    assert "run run-1 can't route: release r@1 pins no routing_verticals" in caplog.text

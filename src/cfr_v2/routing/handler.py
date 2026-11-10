@@ -101,7 +101,11 @@ def make_routing_handler(
             routed: list[RoutedClaim] = []
             context = None
             if claim_set.claims:  # no claims (no transcript, say): nothing to route, nothing to pin
-                context = resources(inp.release_manifest_ref)
+                try:
+                    context = resources(inp.release_manifest_ref)
+                except RoutingSetupError as exc:  # the runner logs only the type; this says what to fix
+                    logger.error("routing: run %s can't route: %s", inp.case_run_id, exc)
+                    raise
                 routed = (loop or model_loop()).run(route_set(claim_set, context, lm, trace_id=inp.trace_id))
             result = RoutingResult(
                 claim_set_hash=claim_set.claim_set_hash,
@@ -210,11 +214,20 @@ def lightrag_opener(store: ArtifactStore, workdir: Path | None, embedder: Any, c
 
     async def open_search(procedures_ref: str, stack: AsyncExitStack) -> Any:
         from cfr_v2.procedures import corpus_passages
-        from cfr_v2.procedures.lightrag_engine import GatewayLlm, LightRagProcedureSearch, check_store, open_rag
+        from cfr_v2.procedures.lightrag_engine import (
+            GatewayLlm,
+            LightRagProcedureSearch,
+            StoreMismatchError,
+            check_store,
+            open_rag,
+        )
 
         if workdir is None:
             raise RoutingSetupError("CFR_LIGHTRAG_WORKDIR is not set: no LightRAG store to search")
-        check_store(workdir, procedures_ref)
+        try:
+            check_store(workdir, procedures_ref)
+        except StoreMismatchError as exc:
+            raise RoutingSetupError(str(exc)) from exc
         passages = corpus_passages(store, procedures_ref)
         llm = GatewayLlm(client)
         rag = await stack.enter_async_context(open_rag(workdir, embedder, llm))
