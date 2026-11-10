@@ -2,6 +2,7 @@
 
     python -m cfr_v2.intake --start-date 2026-09-01 --end-date 2026-09-07
     python -m cfr_v2.intake --synthetic 20     # offline: synthetic rows, regex masker
+    python -m cfr_v2.intake --synthetic 3 --seed 7  # new case numbers: seed 0's cases are duplicates now
     python -m cfr_v2.intake --print-sql > q.sql  # the BigQuery job's SQL, e.g. to check its cost
 
 Runs as a submit-only process: it admits and enqueues; worker processes
@@ -31,6 +32,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-date", type=date.fromisoformat)
     parser.add_argument("--end-date", type=date.fromisoformat)
     parser.add_argument("--synthetic", type=int, metavar="N", help="admit N synthetic rows instead of querying BigQuery")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="synthetic rows' seed (default 0). Case numbers come from it, so a new seed admits new cases; "
+        "the same seed again gives duplicates",
+    )
     parser.add_argument("--print-sql", action="store_true", help="print the case query (with the baseline unless CFR_INTAKE_BASELINE=0) and exit")
     args = parser.parse_args(argv)
     if args.print_sql:
@@ -46,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.synthetic is not None:
         from .fakes import RegexMasker, synthetic_names, synthetic_rows
 
-        rows = synthetic_rows(args.synthetic, baseline=settings.baseline)
+        rows = synthetic_rows(args.synthetic, seed=args.seed, baseline=settings.baseline)
         masker, source = RegexMasker(synthetic_names()), RecordsCaseSource(rows)
     else:
         masker, source = EEUtilsMasker(), BigQueryCaseSource(BigQuerySettings.from_env(), with_baseline=settings.baseline)

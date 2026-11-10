@@ -107,3 +107,12 @@ def test_redaction_failure_stores_nothing(store):
     with pytest.raises(RedactionRejectedError):
         _prepare(store, synthetic_row(4, msg_tx2=f"contains {PII_TOKEN} already"))
     assert store.objects == {}
+
+
+def test_a_new_synthetic_seed_gives_new_case_numbers():
+    """Admission is keyed on the case number: the same seed again only gives duplicates."""
+    from cfr_v2.intake.fakes import synthetic_rows
+
+    first, again, fresh = (synthetic_rows(3, seed=s) for s in (0, 0, 7))
+    assert [r["case_no"] for r in first] == [r["case_no"] for r in again]
+    assert not {r["case_no"] for r in first} & {r["case_no"] for r in fresh}
