@@ -299,7 +299,7 @@ def record_stage(stage: str, seconds: float, outcome: str = "ok") -> None:
     """Time spent in one stage of a build. Best-effort, like every metric here."""
     try:
         _build_instruments()[0].record(seconds, {"stage": stage, "outcome": outcome})
-    except Exception:  # pragma: no cover - metrics are best-effort
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
         pass
 
 
@@ -315,7 +315,7 @@ def record_retry(stage: str, outcome: str, status: int | None = None) -> None:
     the HTTP status if there was one. Counted here so retries show without a log pipeline."""
     try:
         _retry_counter().add(1, {"stage": stage, "outcome": outcome, "status": str(status or "none")})
-    except Exception:  # pragma: no cover - metrics are best-effort
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
         pass
 
 
@@ -324,5 +324,5 @@ def record_passages(*, processed: int, failed: int, queued: int) -> None:
         gauge = _build_instruments()[1]
         for status, count in (("processed", processed), ("failed", failed), ("queued", queued)):
             gauge.set(count, {"status": status})
-    except Exception:  # pragma: no cover - metrics are best-effort
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
         pass

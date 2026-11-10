@@ -33,17 +33,16 @@ from .limiter import RateGate
 from .settings import GatewaySettings
 
 __all__ = [
-    "EmbeddingClient",
-    "EmbeddingSettings",
-    "FakeEmbeddingClient",
-    "GatewayEmbeddingClient",
-    "embed_allowing_blocks",
     "FAKE_MODEL_ID",
     "BudgetExhaustedError",
     "BudgetTracker",
     "Classified",
+    "EmbeddingClient",
+    "EmbeddingSettings",
     "Failure",
+    "FakeEmbeddingClient",
     "FakeModelClient",
+    "GatewayEmbeddingClient",
     "GatewayModelClient",
     "GatewaySettings",
     "GuardedModelClient",
@@ -64,6 +63,7 @@ __all__ = [
     "UnredactedPayloadError",
     "classify",
     "close_model_loop",
+    "embed_allowing_blocks",
     "model_loop",
     "safechain_model",
 ]
