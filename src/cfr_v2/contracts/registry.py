@@ -139,6 +139,10 @@ class SkillPin(Contract):
     program_id: str | None = None
 
 
+# Left out of the checksum when unset, so manifests pinned before each existed keep their checksum.
+_OPTIONAL_PINS = ("evidence_sources", "routing_verticals", "procedure_snapshot")
+
+
 class ReleaseManifest(Contract):
     release_id: str = Field(min_length=1)
     programs: tuple[ProgramRef, ...] = ()
@@ -147,15 +151,19 @@ class ReleaseManifest(Contract):
     router_policy_version: str | None = None
     decision_policy_version: str | None = None
     # Evidence source taxonomy version for C02 Pass 2 (registry/evidence_sources/<version>.yaml);
-    # None: the default version. Left out of the checksum when unset, so manifests pinned
-    # before it existed keep their checksum.
+    # None: the default version.
     evidence_sources: str | None = None
+    # C04 (LDR-0021): the knowledge document defining the verticals, stored as an artifact, and
+    # the procedure snapshot the LightRAG store was built from. None: the release can't route.
+    routing_verticals: ArtifactRef | None = None
+    procedure_snapshot: ArtifactRef | None = None
     checksum: str = Field(pattern=SHA256_PATTERN)
 
     def _checksum_body(self) -> dict[str, Any]:
         body = self.model_dump(mode="json", exclude={"checksum"})
-        if body["evidence_sources"] is None:
-            del body["evidence_sources"]
+        for optional in _OPTIONAL_PINS:
+            if body[optional] is None:
+                del body[optional]
         return body
 
     @classmethod

@@ -23,7 +23,7 @@ STAGES: tuple[Stage, ...] = (
     Stage("UNDERSTANDING", "c02.pass1", "pass1-2"),
     Stage("UNDERSTANDING", "c02.pass2", "pass2-1"),
     Stage("SELECTING", "c03.primary_selection", "select-1"),  # cfr_v2.selection.SELECT_VERSION
-    Stage("ROUTING", "c04.routing", "placeholder-0"),
+    Stage("ROUTING", "c04.routing", "route-1"),  # cfr_v2.routing ROUTE_VERSION (LDR-0021)
     Stage("PLANNING", "c05.planning", "placeholder-0"),
 )
 FINAL_STATE = "PLAN_READY"

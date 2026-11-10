@@ -27,6 +27,7 @@ from cfr_v2.contracts import (
     CandidateRoute,
     ClaimRouting,
     ClaimRoutingOutcome,
+    ClaimSetRevision,
     ProcedureCitation,
     ProcedureHit,
     RouteSource,
@@ -69,6 +70,23 @@ class ClaimInput:
     claim_id: str
     statement: str
     complaints: tuple[str, ...] = ()  # the claim's CLAIM allegations' texts
+
+    @classmethod
+    def from_claim_set(cls, claim_set: ClaimSetRevision) -> list[ClaimInput]:
+        """Every claim of a C02 claim set, with its CLAIM allegations' texts only."""
+        allegations = {a.allegation_id: a for a in claim_set.allegations}
+        return [
+            cls(
+                c.claim_id,
+                c.statement,
+                tuple(
+                    allegations[a].text
+                    for a in c.allegation_ids
+                    if a in allegations and allegations[a].kind is StatementKind.CLAIM
+                ),
+            )
+            for c in claim_set.claims
+        ]
 
     @classmethod
     def from_review(cls, claim: Mapping[str, Any], allegations: Mapping[str, Mapping[str, Any]]) -> ClaimInput:

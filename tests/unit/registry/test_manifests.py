@@ -80,18 +80,33 @@ def test_phase_c_release_names_the_c02_programs_and_its_evidence_taxonomy():
     assert manifest.evidence_sources == "evidence-sources-1"
 
 
-def test_manifests_without_an_evidence_taxonomy_keep_their_checksum():
-    """Manifests pinned before the field existed must still validate (their JSON has no key)."""
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("evidence_sources", "evidence-sources-1"),
+        ("routing_verticals", "sha256:" + "a" * 64),
+        ("procedure_snapshot", "sha256:" + "b" * 64),
+    ],
+)
+def test_manifests_without_an_optional_pin_keep_their_checksum(field, value):
+    """Manifests pinned before a field existed must still validate (their JSON has no key)."""
     from cfr_v2.contracts import canonical_hash
 
     manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-b")
-    legacy = manifest.model_dump(mode="json", exclude={"checksum", "evidence_sources"})
+    legacy = manifest.model_dump(
+        mode="json", exclude={"checksum", "evidence_sources", "routing_verticals", "procedure_snapshot"}
+    )
     assert manifest.checksum == canonical_hash(legacy)
     pinned_before = {**legacy, "checksum": manifest.checksum}  # what an older version froze
     assert ReleaseManifest.model_validate(pinned_before) == manifest
 
-    with_taxonomy = ReleaseManifest.build(**legacy, evidence_sources="evidence-sources-1")
-    assert with_taxonomy.checksum != manifest.checksum  # the field counts once it is set
+    pinned = ReleaseManifest.build(**legacy, **{field: value})
+    assert pinned.checksum != manifest.checksum  # the field counts once it is set
+
+
+def test_a_routing_pin_must_be_an_artifact_ref():
+    with pytest.raises(ValueError):
+        ReleaseManifest.build(release_id="r", routing_verticals="config/verticals/knowledge_document.txt")
 
 
 def test_unknown_evidence_taxonomy_is_rejected(tmp_path):
@@ -105,3 +120,15 @@ def test_phase_d_release_adds_the_c03_selector():
     versions = {p.program_id: p.version for p in manifest.programs}
     assert versions["c03.primary_selection"] == "select-1" and versions["c02.pass2"] == "pass2-1"
     assert manifest.evidence_sources == "evidence-sources-1"
+
+
+def test_phase_e_release_routes_with_a_pinned_document_and_snapshot():
+    from cfr_v2.intake.settings import IntakeSettings
+    from cfr_v2.runtime.stages import STAGES
+
+    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-e")
+    versions = {p.program_id: p.version for p in manifest.programs}
+    routing = next(s for s in STAGES if s.logical_task_id == "c04.routing")
+    assert versions["c04.routing"] == routing.program_version == "route-1"
+    assert manifest.routing_verticals and manifest.procedure_snapshot
+    assert IntakeSettings().release_id == "cfr-v2-phase-e"

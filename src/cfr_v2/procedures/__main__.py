@@ -331,7 +331,14 @@ def run_lightrag_build(args: argparse.Namespace) -> int:
 
     passages = corpus_passages(_store(), args.procedures)
     build = model_loop().run(
-        build_lightrag(args.workdir, passages, _build_embedder(), _chat_client(), concurrency=args.concurrency)
+        build_lightrag(
+            args.workdir,
+            passages,
+            _build_embedder(),
+            _chat_client(),
+            concurrency=args.concurrency,
+            procedures_ref=args.procedures,
+        )
     )
     print(f"{build.processed} of {build.passages} passages in the graph; {build.failed} failed")
     print(

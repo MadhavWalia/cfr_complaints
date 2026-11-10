@@ -11,6 +11,7 @@ rebuild is the only update, and a generation artifact comes later.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import Counter
@@ -64,6 +65,43 @@ SAFE_LIGHTRAG_ERRORS = (
     "Merging stage failed",
     "Pipeline halted",
 )
+
+
+STORE_MARKER = "cfr_store.json"  # in the working directory: the snapshot a store was built from (LDR-0021)
+
+
+class StoreMismatchError(RuntimeError):
+    """A LightRAG store used with, or built from, a snapshot other than its own."""
+
+
+def read_store_marker(workdir: Path) -> dict[str, Any] | None:
+    path = workdir / STORE_MARKER
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def check_store(workdir: Path, procedures_ref: str) -> dict[str, Any]:
+    """The store's marker, if it was built from ``procedures_ref``; otherwise ``StoreMismatchError``.
+    A store without a marker predates it: rebuild it from the snapshot (passages already in the
+    graph are skipped), which writes one."""
+    marker = read_store_marker(workdir)
+    if marker is None:
+        raise StoreMismatchError(
+            f"{workdir} has no {STORE_MARKER}: run lightrag-build {procedures_ref} on it to record its snapshot"
+        )
+    if marker.get("procedures_ref") != procedures_ref:
+        raise StoreMismatchError(f"{workdir} was built from {marker.get('procedures_ref')}, not {procedures_ref}")
+    return marker
+
+
+def _write_store_marker(workdir: Path, procedures_ref: str, build: LightRagBuild) -> None:
+    marker = {
+        "procedures_ref": procedures_ref,
+        "program_version": PROGRAM_VERSION,
+        "passages": build.passages,
+        "processed": build.processed,
+        "failed": build.failed,
+    }
+    (workdir / STORE_MARKER).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
 
 
 class NoTextInLightRagLogs(logging.Filter):
@@ -446,12 +484,21 @@ async def build_lightrag(
     client: ModelClient,
     *,
     concurrency: int = 16,
+    procedures_ref: str | None = None,
 ) -> LightRagBuild:
     """Passages already processed are skipped, so an interrupted build can resume. Failed ones are
     tried again, up to ``BUILD_PASSES`` times, and whatever still fails is reported.
 
     Identical passages go in once: LightRAG would fail the second as a duplicate on every try.
+    With ``procedures_ref``, the store records the snapshot it was built from, and a store already
+    built from another one is refused: LightRAG never removes a passage, so the two would mix.
     """
+    if procedures_ref is not None:
+        marker = read_store_marker(workdir)
+        if marker is not None and marker.get("procedures_ref") != procedures_ref:
+            raise StoreMismatchError(
+                f"{workdir} was built from {marker.get('procedures_ref')}: build {procedures_ref} in a new directory"
+            )
     distinct = list({p.text: p for p in reversed(passages)}.values())[::-1]
     ids = {passage_id(p) for p in distinct}
     skipped = {passage_id(p) for p in passages} - ids
@@ -484,7 +531,7 @@ async def build_lightrag(
     )
     if state.failed:
         logger.warning("lightrag: still failing (%s): %s", _reasons(state.failed), _sample(state.failed))
-    return LightRagBuild(
+    build = LightRagBuild(
         len(distinct),
         state.processed,
         len(state.failed),
@@ -494,6 +541,9 @@ async def build_lightrag(
         len(passages) - len(distinct),
         stopped,
     )
+    if procedures_ref is not None:
+        _write_store_marker(workdir, procedures_ref, build)
+    return build
 
 
 class LightRagProcedureSearch:
