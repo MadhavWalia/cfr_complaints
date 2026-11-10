@@ -13,6 +13,8 @@ htmlcov/
 !.env.example
 # ee-config file: environment-specific hosts and IDs; template is config/config_gpt.example.yml
 config/config_gpt.yml
+# Internal vertical definitions (the C04 knowledge document): never committed, the repo is public
+config/verticals/
 
 # Local runtime output
 logs/
