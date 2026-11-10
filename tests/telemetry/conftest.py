@@ -19,6 +19,18 @@ _STATE_FIELDS = (
 
 
 @pytest.fixture(autouse=True)
+def isolated_environment(monkeypatch):
+    """Each test starts with no ee config and no dev endpoint, whatever the machine has.
+
+    Where the real ee-config and ee-logging are installed and a config file loads, or
+    ``CFR_OTLP_ENDPOINT`` is set in the shell, ``init_telemetry`` would otherwise start real
+    telemetry. Tests that need either set it themselves.
+    """
+    monkeypatch.setattr("ee_config.load_config", MagicMock(side_effect=RuntimeError("no ee config in tests")))
+    monkeypatch.delenv("CFR_OTLP_ENDPOINT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def reset_telemetry_state():
     """Telemetry state is module-global and init is idempotent; reset each test."""
     saved = {name: getattr(_state, name) for name in _STATE_FIELDS}
