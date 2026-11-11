@@ -18,13 +18,16 @@ from datetime import date
 from cfr_v2.artifacts import S3ArtifactStore, S3Settings
 from cfr_v2.registry import ReleaseRegistry
 from cfr_v2.runtime import RuntimeSettings, start_runtime, stop_runtime
-from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
+from cfr_v2.runtime.release_check import IncompatibleReleaseError, require_compatible
+from cfr_v2.telemetry import get_logger, init_telemetry, shutdown_telemetry
 
 from .bigquery import BigQueryCaseSource, BigQuerySettings
 from .coordinator import IntakeCoordinator
 from .redaction import EEUtilsMasker, Masker, ProfanityFilter
 from .settings import IntakeSettings
 from .source import CaseSource, RecordsCaseSource, case_query_sql
+
+logger = get_logger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         "the same seed again gives duplicates",
     )
     parser.add_argument("--print-sql", action="store_true", help="print the case query (with the baseline unless CFR_INTAKE_BASELINE=0) and exit")
+    parser.add_argument(
+        "--allow-incompatible",
+        action="store_true",
+        help="admit even though the release's stage versions differ from this code's",
+    )
     args = parser.parse_args(argv)
     if args.print_sql:
         print(case_query_sql(with_baseline=IntakeSettings.from_env().baseline))
@@ -49,6 +57,14 @@ def main(argv: list[str] | None = None) -> int:
 
     init_telemetry(service_name="cfr-v2-intake")  # ee_config resolves its file, as for redaction
     settings = IntakeSettings.from_env()
+    manifest = ReleaseRegistry(settings.registry_dir).load(settings.release_id)
+    try:
+        require_compatible(manifest)  # its runs would call the models, then fail (LDR-0022)
+    except IncompatibleReleaseError as exc:
+        if not args.allow_incompatible:
+            shutdown_telemetry()
+            parser.exit(2, f"error: {exc}. Set CFR_RELEASE_ID to the current release, or pass --allow-incompatible\n")
+        logger.warning("intake: admitting anyway (--allow-incompatible): %s", exc)
     masker: Masker
     source: CaseSource
     if args.synthetic is not None:
@@ -60,7 +76,6 @@ def main(argv: list[str] | None = None) -> int:
         masker, source = EEUtilsMasker(), BigQueryCaseSource(BigQuerySettings.from_env(), with_baseline=settings.baseline)
 
     store = S3ArtifactStore(S3Settings.from_env())
-    manifest = ReleaseRegistry(settings.registry_dir).load(settings.release_id)
     start_runtime(RuntimeSettings.from_env(), store, listen_lanes=())
     try:
         coordinator = IntakeCoordinator.pinned(

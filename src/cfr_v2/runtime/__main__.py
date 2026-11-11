@@ -2,6 +2,11 @@
 
     python -m cfr_v2.runtime                      # serve every lane
     python -m cfr_v2.runtime --lanes realtime     # one lane only
+    python -m cfr_v2.runtime --max-queued 10      # refuse to start if more than 10 jobs wait
+
+Before starting, it lists the queued jobs by release and refuses to start while any belong to a
+release whose stage versions differ from this code's (LDR-0022), or when more are queued than
+``--max-queued``. ``--allow-incompatible`` starts anyway.
 
 Stops on SIGTERM or Ctrl+C: waits up to ``--drain-timeout`` for running jobs, then
 hands the rest back so another worker takes them at once (LDR-0011). Configuration
@@ -27,6 +32,7 @@ from .stages import StageHandler, default_handlers
 
 logger = get_logger(__name__)
 _ROUTING_READER = AuthorizationContext(principal="c04.routing", purpose="release manifest")
+_MANIFEST_READER = AuthorizationContext(principal="worker", purpose="queued releases")
 
 
 def stage_handlers(store: S3ArtifactStore, on_stop: list[Callable[[], None]] | None = None) -> dict[str, StageHandler]:
@@ -69,12 +75,65 @@ def stage_handlers(store: S3ArtifactStore, on_stop: list[Callable[[], None]] | N
     }
 
 
+def queue_is_runnable(
+    settings: RuntimeSettings, store: S3ArtifactStore, *, max_queued: int | None, allow_incompatible: bool
+) -> bool:
+    """What is queued, by release, before any of it runs (LDR-0022). False: don't start."""
+    from cfr_v2.registry import load_pinned
+    from cfr_v2.state import Database
+
+    from .release_check import QUEUE_SQL, assess_queue, over_cap, queue_problems
+
+    db = Database(settings.state_database_url, max_connections=1)
+    try:
+        with db.transaction() as tx:
+            rows = [tuple(r) for r in tx.all(QUEUE_SQL)]
+        releases = assess_queue(rows, lambda ref: load_pinned(ref, store=store, db=db, authorization=_MANIFEST_READER))
+    finally:
+        db.close()
+    for r in releases:
+        logger.info(
+            "worker: %d queued, %d running under %s (%s)",
+            r.queued,
+            r.running,
+            r.manifest_ref,
+            "matches this code" if r.compatible else "doesn't match this code",
+        )
+    if not releases:
+        logger.info("worker: nothing queued")
+    runnable = True
+    problems = queue_problems(releases)
+    for problem in problems:
+        logger.error("worker: %s", problem)
+    if problems and not allow_incompatible:
+        logger.error(
+            "worker: not starting. Those runs would call the models, then fail or run stages their release "
+            "didn't pin. Readmit them under the current release, or start with --allow-incompatible"
+        )
+        runnable = False
+    cap = over_cap(releases, max_queued)
+    if cap:
+        logger.error("worker: not starting: %s", cap)
+        runnable = False
+    return runnable
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.runtime", description=__doc__.splitlines()[0])
     parser.add_argument(
         "--lanes", default="batch,realtime", help="comma-separated lanes to serve (default: batch,realtime)"
     )
     parser.add_argument("--drain-timeout", type=float, default=30.0, help="seconds to wait for running jobs on stop")
+    parser.add_argument(
+        "--max-queued",
+        type=int,
+        help="don't start if more jobs than this are queued (each runs real model calls)",
+    )
+    parser.add_argument(
+        "--allow-incompatible",
+        action="store_true",
+        help="start even though queued jobs belong to a release whose stage versions differ from this code's",
+    )
     args = parser.parse_args(argv)
     try:
         lanes = [Lane(name.strip()) for name in args.lanes.split(",") if name.strip()]
@@ -89,8 +148,12 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(sig, lambda *_: stop.set())
 
     store = S3ArtifactStore(S3Settings.from_env())
+    settings = RuntimeSettings.from_env()
+    if not queue_is_runnable(settings, store, max_queued=args.max_queued, allow_incompatible=args.allow_incompatible):
+        shutdown_telemetry()
+        return 2
     on_stop: list[Callable[[], None]] = []
-    start_runtime(RuntimeSettings.from_env(), store, handlers=stage_handlers(store, on_stop), listen_lanes=lanes)
+    start_runtime(settings, store, handlers=stage_handlers(store, on_stop), listen_lanes=lanes)
     try:
         stop.wait()
         logger.info("worker: stopping (drain timeout %.0fs)", args.drain_timeout)
