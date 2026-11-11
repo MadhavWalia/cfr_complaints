@@ -450,3 +450,45 @@ def test_stopping_workers_survives_a_shutdown_that_fails(caplog):
 def test_passage_ids_are_stable_and_distinct():
     ids = [passage_id(p) for p in _passages()]
     assert len(set(ids)) == 3 and ids == [passage_id(p) for p in _passages()]
+
+
+def test_a_build_records_its_snapshot_and_refuses_another(tmp_path):
+    """LightRAG never removes a passage, so two snapshots in one store would mix (LDR-0021)."""
+    pytest.importorskip("lightrag")
+    from cfr_v2.procedures.lightrag_engine import (
+        StoreMismatchError,
+        build_lightrag,
+        check_store,
+        read_store_marker,
+    )
+
+    client, embedder = FakeModelClient(responder=_extraction), FakeEmbeddingClient()
+    with pytest.raises(StoreMismatchError, match="no cfr_store.json"):
+        check_store(tmp_path, REF)
+    asyncio.run(build_lightrag(tmp_path, _passages(), embedder, client, concurrency=2, procedures_ref=REF))
+    marker = read_store_marker(tmp_path)
+    assert (marker["procedures_ref"], marker["passages"], marker["processed"], marker["failed"]) == (REF, 3, 3, 0)
+    assert check_store(tmp_path, REF) == marker
+    other = "sha256:" + "1" * 64
+    with pytest.raises(StoreMismatchError, match="new directory"):
+        asyncio.run(build_lightrag(tmp_path, _passages(), embedder, client, procedures_ref=other))
+    with pytest.raises(StoreMismatchError, match="was built from"):
+        check_store(tmp_path, other)
+
+
+def test_importing_lightrag_leaves_logging_as_it_was():
+    """nano-vectordb calls logging.basicConfig() on import, which printed every record twice in the
+    worker. A fresh interpreter, as the import happens once per process."""
+    pytest.importorskip("lightrag")
+    import subprocess
+    import sys
+
+    code = (
+        "import logging\n"
+        "from cfr_v2.procedures.lightrag_engine import _import_lightrag\n"
+        "_import_lightrag()\n"
+        "root = logging.getLogger()\n"
+        "print(len(root.handlers), root.level)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    assert out.split() == ["0", str(logging.WARNING)]

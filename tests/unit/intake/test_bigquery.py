@@ -24,6 +24,9 @@ def fake_google(monkeypatch):
         def __init__(self, name, type_, value):
             self.name, self.type_, self.value = name, type_, value
 
+    class ArrayQueryParameter(ScalarQueryParameter):
+        pass
+
     class Client:
         def __init__(self, project, credentials, client_options):
             calls["client"] = (project, credentials, client_options)
@@ -42,7 +45,10 @@ def fake_google(monkeypatch):
         "google": types.ModuleType("google"),
         "google.cloud": types.ModuleType("google.cloud"),
         "google.cloud.bigquery": SimpleNamespace(
-            QueryJobConfig=QueryJobConfig, ScalarQueryParameter=ScalarQueryParameter, Client=Client
+            QueryJobConfig=QueryJobConfig,
+            ScalarQueryParameter=ScalarQueryParameter,
+            ArrayQueryParameter=ArrayQueryParameter,
+            Client=Client,
         ),
         "google.oauth2": types.ModuleType("google.oauth2"),
         "google.oauth2.service_account": SimpleNamespace(Credentials=Credentials),
@@ -123,3 +129,29 @@ def test_fetch_with_baseline_runs_the_combined_query_and_stamps_the_job_start(fa
 def test_observed_at_falls_back_to_submission_time(fake_google):
     rows = list(BigQueryCaseSource(client=_FakeClient([_Row(case_no="1")])).fetch(start_date=date(2026, 9, 1), end_date=date(2026, 9, 1)))
     assert rows[0]["baseline_observed_at"].tzinfo is not None
+
+
+def test_fetch_by_case_numbers_binds_the_list_and_runs_the_same_query(fake_google):
+    client = _FakeClient([_Row(case_no="1234567")])
+    source = BigQueryCaseSource(client=client, case_nos=["1234567", "7654321"])
+    rows = list(source.fetch(start_date=date(2026, 9, 1), end_date=date(2026, 9, 1)))  # dates ignored
+    assert rows[0]["case_no"] == "1234567"
+    sql, job_config = client.queries[0]
+    assert sql == case_query_sql(with_baseline=True, by_case_no=True)
+    assert [(p.name, p.type_, p.value) for p in job_config.query_parameters] == [
+        ("case_nos", "STRING", ["1234567", "7654321"])
+    ]
+
+
+@pytest.mark.parametrize("with_baseline", [False, True])
+def test_the_case_number_query_differs_only_in_how_cases_are_selected(with_baseline):
+    by_date = case_query_sql(with_baseline=with_baseline)
+    by_number = case_query_sql(with_baseline=with_baseline, by_case_no=True)
+    assert "IN UNNEST(@case_nos)" in by_number and "BETWEEN @start_date AND @end_date" not in by_number
+    assert (
+        by_number.replace(
+            "AND CAST(case_no AS STRING) IN UNNEST(@case_nos)",
+            "AND DATE(orig_rslv_ts) BETWEEN @start_date AND @end_date",
+        )
+        == by_date
+    )

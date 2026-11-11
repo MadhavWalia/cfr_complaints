@@ -137,3 +137,32 @@ def test_configure_otlp_returns_none_without_the_exporter(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert dev.configure_otlp("http://localhost:4318", "svc", install=False) is None
+
+
+def test_loggers_created_before_init_get_ee_loggings_handlers(monkeypatch, fake_elf_config):
+    """Module-level loggers exist before init_telemetry(); ee-logging attaches its handlers when a
+    logger is asked for through it, so they are asked for again once it is configured."""
+    import logging
+
+    from cfr_v2.telemetry import get_logger
+
+    early = get_logger("cfr_v2.test.early_module")
+    asked: list[str] = []
+
+    def ee_get_logger(name, *, level=None):
+        asked.append(name)
+        logger = logging.getLogger(name)
+        logger.addHandler(logging.NullHandler())
+        return logger
+
+    monkeypatch.setattr("ee_config.load_config", MagicMock(return_value=fake_elf_config))
+    monkeypatch.setattr("ee_logging.configure_telemetry", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("ee_logging.get_logger", ee_get_logger)
+    monkeypatch.setattr(bootstrap, "_instrument_httpx", MagicMock())
+    monkeypatch.setattr(bootstrap, "_rewire_registered_file_loggers", MagicMock())
+    monkeypatch.setattr("atexit.register", MagicMock())
+    try:
+        init_telemetry()
+        assert "cfr_v2.test.early_module" in asked and early.handlers
+    finally:
+        early.handlers.clear()

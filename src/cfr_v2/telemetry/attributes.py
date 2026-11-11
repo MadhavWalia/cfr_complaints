@@ -70,8 +70,15 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
         "processed",
         "failed",
         "queued",
-        # C04 routing
+        # C04 routing (counts, ids and fixed labels only)
         "sections",
+        "sections_cited",
+        "confidence",
+        "search_blocked",
+        "routed",
+        "unmapped",
+        "no_eligible",
+        "searches_blocked",
     }
 )
 

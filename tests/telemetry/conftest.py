@@ -13,6 +13,7 @@ _STATE_FIELDS = (
     "httpx_instrumented",
     "dev_exporter",
     "file_logger_configs",
+    "early_loggers",
     "httpx2_async_client",
     "httpx2_sync_client",
 )
@@ -40,6 +41,7 @@ def reset_telemetry_state():
     _state.httpx_instrumented = False
     _state.dev_exporter = False
     _state.file_logger_configs = {}
+    _state.early_loggers = {}
     _state.httpx2_async_client = None
     _state.httpx2_sync_client = None
     yield

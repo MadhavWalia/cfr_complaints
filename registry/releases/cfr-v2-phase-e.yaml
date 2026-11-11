@@ -1,0 +1,30 @@
+# Release manifest pinned on every case run admitted under it (P4, ADR-14).
+# Phase E: C02 Pass 1 and Pass 2, C03 primary selection, C04 routing; C05 is still a placeholder.
+# The checksum is computed from the content; add `checksum:` only to assert it.
+release_id: cfr-v2-phase-e
+programs:
+  - program_id: c02.pass1
+    version: pass1-2
+    module: cfr_v2.understanding:Pass1
+  - program_id: c02.pass2
+    version: pass2-1
+    module: cfr_v2.understanding:Pass2
+  - program_id: c03.primary_selection
+    version: select-1
+    module: cfr_v2.selection:Selector
+  - program_id: c04.routing
+    version: route-1
+    module: cfr_v2.routing:Router
+  - program_id: c05.planning
+    version: placeholder-0
+    module: cfr_v2.runtime.stages:placeholder_handler
+skills: []
+capabilities: []
+# Evidence source taxonomy Pass 2 uses for runs admitted under this release.
+evidence_sources: evidence-sources-1
+# C04 (LDR-0021). The knowledge document defining the verticals, as stored by
+# `python -m cfr_v2.routing publish-verticals <path>` (the document itself is never committed).
+routing_verticals: sha256:be1e7ad1946693ff2a0efa1440a9f2d4db0532eb083d5dbca01dd42cb1d60f7b
+# The procedure snapshot searched. The worker's LightRAG store (CFR_LIGHTRAG_WORKDIR) must have
+# been built from it: `python -m cfr_v2.procedures lightrag-build <this ref> --workdir <store>`.
+procedure_snapshot: sha256:6a0cca3f151989fd45643da48f97aa664200a12cc0f79519cf5760251c82ac75

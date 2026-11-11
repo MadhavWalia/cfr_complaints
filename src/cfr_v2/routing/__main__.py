@@ -1,7 +1,12 @@
 """C04 trial: route the claims of C02 trial review files, outside the workflow.
 
     python -m cfr_v2.routing sha256:<snapshot> --workdir lightrag_store \\
-        --verticals /path/to/knowledge_document.txt --claims-from c02_trial --out router_trial
+        --verticals config/verticals/knowledge_document.txt --claims-from c02_trial --out router_trial
+    python -m cfr_v2.routing publish-verticals config/verticals/knowledge_document.txt
+    python -m cfr_v2.routing backfill --from-release cfr-v2-phase-d --count-only   # see backfill.py
+
+``publish-verticals`` stores the knowledge document as an INTERNAL artifact and prints its ref,
+for a release manifest's ``routing_verticals`` (LDR-0021). It prints counts and refs only.
 
 Per claim: one LightRAG search (``mix``; one gpt-5 call for its keywords) and one router call.
 Writes nothing to the state database or the artifact store. Prints counts, time and tokens
@@ -22,26 +27,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cfr_v2.contracts import ClaimRouting, ClaimRoutingOutcome, ProcedureSearchRequest
+from cfr_v2.contracts import ClaimRouting, ClaimRoutingOutcome
 from cfr_v2.llm import ModelError, ModelRequest, ModelResponse
-from cfr_v2.telemetry import get_logger, set_attributes, span
+from cfr_v2.telemetry import get_logger
 
-from .router import (
-    ROUTE_PROGRAM_ID,
-    ROUTE_VERSION,
-    SEARCH_LIMIT,
-    SECTIONS_PER_DOCUMENT,
-    ClaimInput,
-    Router,
-    Section,
-    build_routing,
-    claim_inputs,
-    pick_sections,
-)
+from . import route
+from .router import ROUTE_VERSION, ClaimInput, Router, Section
 from .verticals import VerticalCatalog
 
-logger = get_logger(__name__)
-TASK_ID = "c04.route"
+logger = get_logger("cfr_v2.routing.cli")  # not __name__: run as -m, that is "__main__", outside cfr_v2's logging
 OUTCOMES = (ClaimRoutingOutcome.UNMAPPED.value, ClaimRoutingOutcome.NO_ELIGIBLE_VERTICAL.value)
 REVIEW_HEADERS = (
     "claim_no",
@@ -83,11 +77,7 @@ class Routed:
 
     @property
     def decision(self) -> str:
-        if self.routing is None:
-            return "FAILED"
-        if self.routing.outcome is ClaimRoutingOutcome.ROUTED:
-            return self.routing.candidates[0].vertical_id
-        return self.routing.outcome.value
+        return "FAILED" if self.routing is None else route.decision(self.routing)
 
 
 class Metered:
@@ -120,37 +110,15 @@ def load_cases(folder: Path, limit: int | None = None) -> list[CaseClaims]:
 
 
 async def route_claim(case_id: str, claim: ClaimInput, search, router: Router, lm) -> Routed:
-    from cfr_v2.llm.dspy_lm import ProgramCall, run_program
-
+    """One claim, as the stage routes it; an error is recorded and the run goes on."""
     routed = Routed(case_id, claim)
     started = time.monotonic()
-    with span("c04.route", program=ROUTE_PROGRAM_ID, program_version=ROUTE_VERSION) as route_span:
-        try:
-            found = await search.search(
-                ProcedureSearchRequest(
-                    query=claim.statement, limit=SEARCH_LIMIT, max_per_document=SECTIONS_PER_DOCUMENT, redacted=True
-                )
-            )
-            routed.sections = pick_sections(found.hits)
-            call = ProgramCall(
-                program_id=ROUTE_PROGRAM_ID,
-                program_version=ROUTE_VERSION,
-                case_id=case_id,
-                task_id=TASK_ID,
-                redacted=True,  # claim texts paraphrase redacted text; sections are redacted at snapshot
-            )
-            prediction = await run_program(
-                router,
-                lm=lm,
-                call=call,
-                section_ids=[s.section_id for s in routed.sections],
-                **claim_inputs(claim, routed.sections),
-            )
-            routed.routing = build_routing(claim, routed.sections, prediction.routing, router.catalog)
-        except ModelError as exc:
-            routed.error = type(exc).__name__
-        routed.seconds = time.monotonic() - started
-        set_attributes(route_span, outcome=routed.decision, sections=len(routed.sections))
+    try:
+        done = await route.route_claim(case_id, claim, search, router, lm)
+        routed.sections, routed.routing = list(done.sections), done.routing
+    except ModelError as exc:
+        routed.error = type(exc).__name__
+    routed.seconds = time.monotonic() - started
     procedures = len({s.hit.source_sha256 for s in routed.sections})
     if routed.error:
         logger.warning("route: case %s claim %s failed (%s)", case_id, claim.claim_id, routed.error)
@@ -302,7 +270,6 @@ def print_summary(results: Sequence[Routed], metered: Metered, search_calls: int
 
 
 def run(args: argparse.Namespace) -> int:
-    from cfr_v2.artifacts import S3ArtifactStore, S3Settings
     from cfr_v2.llm import GatewayEmbeddingClient, GatewayModelClient, GatewaySettings, model_loop
     from cfr_v2.llm.dspy_lm import gateway_lm
     from cfr_v2.procedures import corpus_passages
@@ -321,8 +288,7 @@ def run(args: argparse.Namespace) -> int:
     settings = GatewaySettings.from_env()
     metered = Metered(GatewayModelClient(settings))
     lm = gateway_lm(metered, settings.model_id)
-    store = S3ArtifactStore(S3Settings.from_env())
-    passages = corpus_passages(store, args.procedures)
+    passages = corpus_passages(_store(), args.procedures)
     llm = GatewayLlm(GatewayModelClient(settings))
     router = Router(catalog)
 
@@ -341,7 +307,162 @@ def run(args: argparse.Namespace) -> int:
     return 0 if all(r.routing for r in results) else 2
 
 
+def _store():
+    from cfr_v2.artifacts import S3ArtifactStore, S3Settings
+
+    return S3ArtifactStore(S3Settings.from_env())
+
+
+def _register(stored) -> None:
+    from cfr_v2.artifacts import register
+    from cfr_v2.runtime import RuntimeSettings
+    from cfr_v2.state import CaseStateRepository, Database
+
+    db = Database(RuntimeSettings.from_env().state_database_url, max_connections=1)
+    try:
+        with db.transaction() as tx:
+            register(CaseStateRepository(tx), stored)
+    finally:
+        db.close()
+
+
+def publish_verticals(argv: list[str]) -> int:
+    from cfr_v2.contracts import Classification
+
+    parser = argparse.ArgumentParser(
+        prog="python -m cfr_v2.routing publish-verticals",
+        description="store the knowledge document as an artifact, for a release manifest",
+    )
+    parser.add_argument("path", type=Path, help="the knowledge document")
+    args = parser.parse_args(argv)
+    catalog = VerticalCatalog.load(args.path)  # refuses a document without usable verticals
+    stored = _store().put(
+        catalog.text.encode("utf-8"), media_type="text/markdown", classification=Classification.INTERNAL
+    )
+    _register(stored)
+    print(f"{len(catalog.ids)} verticals; stored as {stored.metadata.ref}")
+    print("In the release manifest (registry/releases/<release>.yaml):")
+    print(f"routing_verticals: {stored.metadata.ref}")
+    return 0
+
+
+def run_backfill(argv: list[str]) -> int:
+    """See ``backfill``: route the stored claim sets of runs that failed under an older release."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from cfr_v2.artifacts import register
+    from cfr_v2.intake.settings import IntakeSettings
+    from cfr_v2.llm import GatewayEmbeddingClient, GatewayModelClient, GatewaySettings, model_loop
+    from cfr_v2.llm.dspy_lm import gateway_lm
+    from cfr_v2.registry import ReleaseRegistry
+    from cfr_v2.runtime import RuntimeSettings
+    from cfr_v2.runtime.release_check import require_compatible
+    from cfr_v2.state import CaseStateRepository, Database
+
+    from . import backfill as bf
+    from .handler import PinnedRouting, lightrag_opener, load_claim_set
+
+    parser = argparse.ArgumentParser(prog="python -m cfr_v2.routing backfill", description=bf.__doc__.splitlines()[0])
+    parser.add_argument(
+        "--from-release", required=True, help="release id whose failed runs to route, e.g. cfr-v2-phase-d"
+    )
+    parser.add_argument("--release", help="release whose routing pins to use (default: CFR_RELEASE_ID)")
+    parser.add_argument("--workdir", type=Path, help="LightRAG store (default: CFR_LIGHTRAG_WORKDIR)")
+    parser.add_argument("--limit", type=int, help="route only the first N runs still to do")
+    parser.add_argument("--concurrency", type=int, default=4, help="runs routed at once (default 4)")
+    parser.add_argument("--out", type=Path, help="JSON lines, one per run: ids, refs, counts; resumes from it")
+    parser.add_argument("--count-only", action="store_true", help="count runs and claims; no model calls")
+    args = parser.parse_args(argv)
+
+    store = _store()
+    db = Database(RuntimeSettings.from_env().state_database_url, max_connections=4)
+    try:
+        with db.transaction() as tx:
+            rows = tx.all(bf.PENDING_SQL, {"release": f"{args.from_release}@%"})
+        done = bf.already_done(args.out)
+        runs = [bf.PendingRun(*r) for r in rows if r[0] not in done]
+        if args.limit is not None:
+            runs = runs[: args.limit]
+        print(
+            f"{len(rows)} failed {args.from_release} runs with a claim set and no routing; {len(done)} done in "
+            f"{args.out}; {len(runs)} to route",
+            file=sys.stderr,
+        )
+        if args.count_only:
+            with ThreadPoolExecutor(16) as pool:
+                claims = list(pool.map(lambda r: len(load_claim_set(store, r.claim_set_ref).claims), runs))
+            print(f"{len(runs)} runs, {sum(claims)} claims: {sum(claims)} router calls and {sum(claims)} searches")
+            return 0
+        if not runs:
+            return 0
+
+        settings = IntakeSettings.from_env()
+        manifest = ReleaseRegistry(settings.registry_dir).load(args.release or settings.release_id)
+        require_compatible(manifest)
+        workdir = args.workdir or (
+            Path(os.environ["CFR_LIGHTRAG_WORKDIR"]) if os.environ.get("CFR_LIGHTRAG_WORKDIR") else None
+        )
+        gateway = GatewaySettings.from_env()
+        client = GatewayModelClient(gateway)
+        metered = Metered(client)
+        pinned = PinnedRouting(
+            store, lambda _: manifest, lightrag_opener(store, workdir, GatewayEmbeddingClient(), client)
+        )
+
+        def register_one(stored) -> None:
+            with db.transaction() as tx:
+                register(CaseStateRepository(tx), stored)
+
+        started = time.monotonic()
+        try:
+            context = pinned(manifest.ref)
+            with args.out.open("a", encoding="utf-8") if args.out else open(os.devnull, "w") as out:
+
+                def write(row: dict) -> None:
+                    out.write(json.dumps(row) + "\n")
+                    out.flush()
+
+                outcomes = model_loop().run(
+                    bf.backfill(
+                        runs,
+                        store,
+                        context,
+                        gateway_lm(metered, gateway.model_id),
+                        concurrency=args.concurrency,
+                        register=register_one,
+                        write=write,
+                    )
+                )
+        finally:
+            pinned.close()
+    finally:
+        db.close()
+    print(f"routed with {manifest.ref} in {time.monotonic() - started:.0f}s")
+    for line in bf.summary(outcomes):
+        print(line)
+    if metered.calls:
+        print(
+            f"router calls {metered.calls}: {metered.input_tokens / metered.calls:,.0f} input and "
+            f"{metered.output_tokens / metered.calls:,.0f} output tokens per call"
+        )
+    return 0 if all(o.routing_ref for o in outcomes) else 2
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["publish-verticals"]:
+        return publish_verticals(argv[1:])
+    if argv[:1] == ["backfill"]:
+        from cfr_v2.llm import close_model_loop
+        from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
+
+        init_telemetry(service_name="cfr-v2-routing")
+        try:
+            return run_backfill(argv[1:])
+        finally:
+            close_model_loop()
+            shutdown_telemetry()
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.routing", description=__doc__.splitlines()[0])
     parser.add_argument("procedures", help="the ref the LightRAG store was built from: snapshot, or old index")
     parser.add_argument("--workdir", type=Path, required=True, help="the LightRAG working directory")

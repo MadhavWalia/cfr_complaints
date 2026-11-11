@@ -17,6 +17,11 @@ dev_exporter: bool = False
 # the OTel logger provider once telemetry is initialised.
 file_logger_configs: dict[str, tuple[Path, int | str | None]] = {}
 
+# Loggers asked for before init_telemetry(): module-level loggers, created at import. ee-logging
+# attaches its handlers when a logger is asked for through it, so these are asked for again once
+# it is configured; otherwise their INFO lines are lost and warnings print without a format.
+early_loggers: dict[str, int | str | None] = {}
+
 httpx2_async_client: Any = None
 httpx2_sync_client: Any = None
 httpx2_clients_lock = threading.Lock()

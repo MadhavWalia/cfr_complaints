@@ -45,6 +45,8 @@ def get_logger(name: str, *, level: int | str | None = None) -> logging.Logger:
         logger = _get_logger(name, level=level)
     else:
         logger = logging.getLogger(name)
+        if not _state.initialised:
+            _state.early_loggers[name] = level
     if isinstance(logger, logging.Filterer) and not any(isinstance(f, SafeExceptionFilter) for f in logger.filters):
         logger.addFilter(SafeExceptionFilter())
     return logger
@@ -324,5 +326,20 @@ def record_passages(*, processed: int, failed: int, queued: int) -> None:
         gauge = _build_instruments()[1]
         for status, count in (("processed", processed), ("failed", failed), ("queued", queued)):
             gauge.set(count, {"status": status})
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
+        pass
+
+
+@functools.cache
+def _routing_counter() -> Any:
+    return get_meter("cfr.routing").create_counter(
+        "cfr.routing.decisions", description="Claims routed by the C04 stage, by vertical or outcome"
+    )
+
+
+def record_route(decision: str) -> None:
+    """One claim's routing: ``decision`` is the vertical, or UNMAPPED or NO_ELIGIBLE_VERTICAL."""
+    try:
+        _routing_counter().add(1, {"outcome": decision})
     except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
         pass
