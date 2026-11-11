@@ -45,6 +45,8 @@ def get_logger(name: str, *, level: int | str | None = None) -> logging.Logger:
         logger = _get_logger(name, level=level)
     else:
         logger = logging.getLogger(name)
+        if not _state.initialised:
+            _state.early_loggers[name] = level
     if isinstance(logger, logging.Filterer) and not any(isinstance(f, SafeExceptionFilter) for f in logger.filters):
         logger.addFilter(SafeExceptionFilter())
     return logger

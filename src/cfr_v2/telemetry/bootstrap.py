@@ -32,6 +32,8 @@ def init_telemetry(config_path: Optional[str] = None, *, service_name: str = "cf
 
         _state.telemetry = configure_telemetry(cfg.elf, cfg.redaction)
         _state.enabled = True
+        for name, level in list(_state.early_loggers.items()):  # created at import, before ee-logging
+            get_logger(name, level=level)
         _rewire_registered_file_loggers()
         _instrument_httpx()
 
