@@ -3,6 +3,7 @@
     python -m cfr_v2.routing sha256:<snapshot> --workdir lightrag_store \\
         --verticals config/verticals/knowledge_document.txt --claims-from c02_trial --out router_trial
     python -m cfr_v2.routing publish-verticals config/verticals/knowledge_document.txt
+    python -m cfr_v2.routing backfill --from-release cfr-v2-phase-d --count-only   # see backfill.py
 
 ``publish-verticals`` stores the knowledge document as an INTERNAL artifact and prints its ref,
 for a release manifest's ``routing_verticals`` (LDR-0021). It prints counts and refs only.
@@ -345,10 +346,123 @@ def publish_verticals(argv: list[str]) -> int:
     return 0
 
 
+def run_backfill(argv: list[str]) -> int:
+    """See ``backfill``: route the stored claim sets of runs that failed under an older release."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from cfr_v2.artifacts import register
+    from cfr_v2.intake.settings import IntakeSettings
+    from cfr_v2.llm import GatewayEmbeddingClient, GatewayModelClient, GatewaySettings, model_loop
+    from cfr_v2.llm.dspy_lm import gateway_lm
+    from cfr_v2.registry import ReleaseRegistry
+    from cfr_v2.runtime import RuntimeSettings
+    from cfr_v2.runtime.release_check import require_compatible
+    from cfr_v2.state import CaseStateRepository, Database
+
+    from . import backfill as bf
+    from .handler import PinnedRouting, lightrag_opener, load_claim_set
+
+    parser = argparse.ArgumentParser(prog="python -m cfr_v2.routing backfill", description=bf.__doc__.splitlines()[0])
+    parser.add_argument(
+        "--from-release", required=True, help="release id whose failed runs to route, e.g. cfr-v2-phase-d"
+    )
+    parser.add_argument("--release", help="release whose routing pins to use (default: CFR_RELEASE_ID)")
+    parser.add_argument("--workdir", type=Path, help="LightRAG store (default: CFR_LIGHTRAG_WORKDIR)")
+    parser.add_argument("--limit", type=int, help="route only the first N runs still to do")
+    parser.add_argument("--concurrency", type=int, default=4, help="runs routed at once (default 4)")
+    parser.add_argument("--out", type=Path, help="JSON lines, one per run: ids, refs, counts; resumes from it")
+    parser.add_argument("--count-only", action="store_true", help="count runs and claims; no model calls")
+    args = parser.parse_args(argv)
+
+    store = _store()
+    db = Database(RuntimeSettings.from_env().state_database_url, max_connections=4)
+    try:
+        with db.transaction() as tx:
+            rows = tx.all(bf.PENDING_SQL, {"release": f"{args.from_release}@%"})
+        done = bf.already_done(args.out)
+        runs = [bf.PendingRun(*r) for r in rows if r[0] not in done]
+        if args.limit is not None:
+            runs = runs[: args.limit]
+        print(
+            f"{len(rows)} failed {args.from_release} runs with a claim set and no routing; {len(done)} done in "
+            f"{args.out}; {len(runs)} to route",
+            file=sys.stderr,
+        )
+        if args.count_only:
+            with ThreadPoolExecutor(16) as pool:
+                claims = list(pool.map(lambda r: len(load_claim_set(store, r.claim_set_ref).claims), runs))
+            print(f"{len(runs)} runs, {sum(claims)} claims: {sum(claims)} router calls and {sum(claims)} searches")
+            return 0
+        if not runs:
+            return 0
+
+        settings = IntakeSettings.from_env()
+        manifest = ReleaseRegistry(settings.registry_dir).load(args.release or settings.release_id)
+        require_compatible(manifest)
+        workdir = args.workdir or (
+            Path(os.environ["CFR_LIGHTRAG_WORKDIR"]) if os.environ.get("CFR_LIGHTRAG_WORKDIR") else None
+        )
+        gateway = GatewaySettings.from_env()
+        client = GatewayModelClient(gateway)
+        metered = Metered(client)
+        pinned = PinnedRouting(
+            store, lambda _: manifest, lightrag_opener(store, workdir, GatewayEmbeddingClient(), client)
+        )
+
+        def register_one(stored) -> None:
+            with db.transaction() as tx:
+                register(CaseStateRepository(tx), stored)
+
+        started = time.monotonic()
+        try:
+            context = pinned(manifest.ref)
+            with args.out.open("a", encoding="utf-8") if args.out else open(os.devnull, "w") as out:
+
+                def write(row: dict) -> None:
+                    out.write(json.dumps(row) + "\n")
+                    out.flush()
+
+                outcomes = model_loop().run(
+                    bf.backfill(
+                        runs,
+                        store,
+                        context,
+                        gateway_lm(metered, gateway.model_id),
+                        concurrency=args.concurrency,
+                        register=register_one,
+                        write=write,
+                    )
+                )
+        finally:
+            pinned.close()
+    finally:
+        db.close()
+    print(f"routed with {manifest.ref} in {time.monotonic() - started:.0f}s")
+    for line in bf.summary(outcomes):
+        print(line)
+    if metered.calls:
+        print(
+            f"router calls {metered.calls}: {metered.input_tokens / metered.calls:,.0f} input and "
+            f"{metered.output_tokens / metered.calls:,.0f} output tokens per call"
+        )
+    return 0 if all(o.routing_ref for o in outcomes) else 2
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["publish-verticals"]:
         return publish_verticals(argv[1:])
+    if argv[:1] == ["backfill"]:
+        from cfr_v2.llm import close_model_loop
+        from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
+
+        init_telemetry(service_name="cfr-v2-routing")
+        try:
+            return run_backfill(argv[1:])
+        finally:
+            close_model_loop()
+            shutdown_telemetry()
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.routing", description=__doc__.splitlines()[0])
     parser.add_argument("procedures", help="the ref the LightRAG store was built from: snapshot, or old index")
     parser.add_argument("--workdir", type=Path, required=True, help="the LightRAG working directory")
