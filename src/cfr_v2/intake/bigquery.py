@@ -3,11 +3,12 @@
 ``google-cloud-bigquery`` is an enterprise-only dependency, imported lazily so
 the rest of C01 runs and tests without it.
 """
+
 from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -53,7 +54,8 @@ def make_client(settings: BigQuerySettings) -> Any:
 
 
 class BigQueryCaseSource:
-    """Runs the packaged case query for a resolution-date window.
+    """Runs the packaged case query for a resolution-date window, or for a list of case
+    numbers (``case_nos``: the same query, selecting by number instead of date).
 
     With ``with_baseline`` (the default, LDR-0014) the LUMI baseline comes from the same
     job, and every row is stamped with the job's start time as ``baseline_observed_at``.
@@ -66,13 +68,15 @@ class BigQueryCaseSource:
         client: Any = None,
         sql: str | None = None,
         with_baseline: bool = True,
+        case_nos: Sequence[str] | None = None,
     ) -> None:
         if client is None and settings is None:
             raise ValueError("BigQueryCaseSource needs settings or a client")
         self._settings = settings
         self._client = client
         self.with_baseline = with_baseline
-        self.sql = sql or case_query_sql(with_baseline=with_baseline)
+        self.case_nos = None if case_nos is None else list(case_nos)
+        self.sql = sql or case_query_sql(with_baseline=with_baseline, by_case_no=self.case_nos is not None)
 
     @property
     def client(self) -> Any:
@@ -84,16 +88,23 @@ class BigQueryCaseSource:
     def fetch(self, *, start_date: date, end_date: date) -> Iterator[Mapping[str, Any]]:
         from google.cloud import bigquery
 
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
+        if self.case_nos is not None:  # the dates are ignored: the list selects the cases
+            parameters = [bigquery.ArrayQueryParameter("case_nos", "STRING", self.case_nos)]
+            logger.info("bigquery_fetch case_nos=%d baseline=%s", len(self.case_nos), self.with_baseline)
+            attributes = {"rows": len(self.case_nos)}
+        else:
+            parameters = [
                 bigquery.ScalarQueryParameter("start_date", "DATE", start_date),
                 bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
             ]
-        )
-        logger.info("bigquery_fetch start_date=%s end_date=%s baseline=%s", start_date, end_date, self.with_baseline)
+            logger.info(
+                "bigquery_fetch start_date=%s end_date=%s baseline=%s", start_date, end_date, self.with_baseline
+            )
+            attributes = {"window_start": start_date.isoformat(), "window_end": end_date.isoformat()}
+        job_config = bigquery.QueryJobConfig(query_parameters=parameters)
         # Row iteration uses the REST API, like V1's create_bqstorage_client=False: the
         # gRPC storage API ignores the corporate trust store.
-        with span("intake.fetch", window_start=start_date.isoformat(), window_end=end_date.isoformat()):
+        with span("intake.fetch", **attributes):
             submitted = datetime.now(UTC)
             job = self.client.query(self.sql, job_config=job_config)
             result = job.result()

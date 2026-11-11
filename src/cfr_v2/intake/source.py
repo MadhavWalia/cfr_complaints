@@ -11,10 +11,12 @@ are split off before the source record is built (see ``intake/baseline.py``).
 
 from __future__ import annotations
 
+import csv
 import math
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import date, datetime
 from importlib import resources
+from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import JsonValue
@@ -105,15 +107,28 @@ def _packaged_sql(name: str) -> str:
     return resources.files("cfr_v2.intake").joinpath(f"sql/{name}").read_text(encoding="utf-8").strip().rstrip(";")
 
 
-def case_query_sql(*, with_baseline: bool = False) -> str:
+# The only place the case query selects cases by date. ``by_case_no`` swaps it for a list, so the
+# rest (US current records, excluded groups, transcript matching, baseline) stays as in production.
+_DATE_FILTER = "AND DATE(orig_rslv_ts) BETWEEN @start_date AND @end_date"
+_CASE_NO_FILTER = "AND CAST(case_no AS STRING) IN UNNEST(@case_nos)"
+
+
+def case_query_sql(*, with_baseline: bool = False, by_case_no: bool = False) -> str:
     """The packaged V2 case query, ready for parameter binding.
 
     ``with_baseline`` appends the LUMI baseline (LDR-0014) to the same WITH clause, so
     cases and baseline come from one BigQuery job: the case query's final SELECT becomes
     the ``cases`` CTE, the baseline reads its ``base_cases`` CTE, and the result is
     ``cases`` left-joined to ``baseline`` (a case without a match gets NULL columns).
+
+    ``by_case_no`` selects cases by ``@case_nos`` (an ARRAY<STRING>) instead of the
+    resolution-date window; everything else is the same query.
     """
     sql = _packaged_sql("current_cases.sql")
+    if by_case_no:
+        if sql.count(_DATE_FILTER) != 1:
+            raise RuntimeError("current_cases.sql: the date filter is not where expected")
+        sql = sql.replace(_DATE_FILTER, _CASE_NO_FILTER)
     if not with_baseline:
         return sql
     cut = sql.rindex("\nSELECT\n")
@@ -121,6 +136,52 @@ def case_query_sql(*, with_baseline: bool = False) -> str:
     if not final.startswith("SELECT\ncase_no"):
         raise RuntimeError("current_cases.sql: final SELECT not found where expected")
     return f"{ctes},\n\ncases AS (\n{final}\n),\n\n{_packaged_sql('lumi_baseline.sql')}\n\n{_BASELINE_FINAL_SELECT}"
+
+
+def case_number(value: Any) -> str | None:
+    """A case number as the query compares it (a string), from a spreadsheet or CSV cell.
+    Excel stores numbers as floats, so ``1234567.0`` becomes ``"1234567"``. Blank is None."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    text = str(value).strip()
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    return text or None
+
+
+def read_case_numbers(path: Path, *, column: str = CASE_ID_COLUMN, sheet: str | None = None) -> list[str]:
+    """Case numbers from a column of an .xlsx or .csv file, blanks skipped, each once, in order.
+    The column is found by its header, ignoring case and surrounding spaces."""
+    if path.suffix.lower() in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+
+        book = load_workbook(path, read_only=True, data_only=True)
+        try:
+            rows = iter((book[sheet] if sheet else book.active).iter_rows(values_only=True))
+            header = next(rows, ())
+            cells = _column(header, column, path)
+            values = [row[cells] if cells < len(row) else None for row in rows]
+        finally:
+            book.close()
+    elif path.suffix.lower() == ".csv":
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, [])
+            cells = _column(header, column, path)
+            values = [row[cells] if cells < len(row) else None for row in reader]
+    else:
+        raise ValueError(f"{path.name}: expected an .xlsx or .csv file")
+    numbers = [n for n in (case_number(v) for v in values) if n is not None]
+    return list(dict.fromkeys(numbers))
+
+
+def _column(header: Iterable[Any], column: str, path: Path) -> int:
+    names = [str(h).strip().lower() if h is not None else "" for h in header]
+    if column.strip().lower() not in names:
+        raise ValueError(f"{path.name}: no {column!r} column in the first row")
+    return names.index(column.strip().lower())
 
 
 def baseline_columns(row: Mapping[str, Any]) -> dict[str, Any] | None:
