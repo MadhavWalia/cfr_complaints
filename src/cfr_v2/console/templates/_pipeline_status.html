@@ -1,0 +1,46 @@
+<section class="panel" id="pipeline-status" aria-labelledby="line-h" hx-get="/partials/pipeline-status" hx-trigger="every 5s" hx-swap="outerHTML">
+  <h2 id="line-h" class="visually-hidden">Cases by stage</h2>
+  {% if status.error %}
+  <div class="error-box" role="status">
+    <strong>Can't read the state database ({{ status.error }}).</strong>
+    <p class="muted">Is Postgres running? Start it with <span class="mono">docker compose up -d</span>. This panel tries again every 5 seconds.</p>
+  </div>
+  {% else %}
+  <ol class="line">
+    {% for stop in status.line %}
+    <li class="{% if stop.count and stop.state not in ('ADMITTED', 'PLAN_READY') %}busy{% endif %}">
+      <span class="n">{{ "{:,}".format(stop.count) }}</span>
+      <span class="dot" aria-hidden="true"></span>
+      <span class="label">{{ stop.label }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  <div class="queue">
+    {% if status.releases %}
+    <table class="compact stack">
+      <caption class="visually-hidden">Queued and running case runs by release</caption>
+      <thead><tr><th scope="col">Release</th><th scope="col" class="num">Queued</th><th scope="col" class="num">Running</th><th scope="col">Can a worker run it?</th></tr></thead>
+      <tbody>
+      {% for r in status.releases %}
+      <tr>
+        <td data-label="Release"><span class="mono">{{ r.manifest_ref }}</span></td>
+        <td class="num" data-label="Queued"><span>{{ "{:,}".format(r.queued) }}</span></td>
+        <td class="num" data-label="Running"><span>{{ "{:,}".format(r.running) }}</span></td>
+        <td data-label="Can a worker run it?"><span>{% if r.compatible %}Yes, it matches this code
+          {% elif r.unknown %}<span class="pill failed">no</span> the release was never pinned
+          {% else %}<span class="pill failed">no</span> it doesn't match this code<span class="detail">{{ r.mismatches | map('string') | join('; ') }}</span>{% endif %}</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Nothing is queued or running.</p>
+    {% endif %}
+    <p class="facts">
+      {% if status.workers %}{% for owner, held in status.workers %}<span><span class="pill running">worker</span> <span class="mono">{{ owner }}</span> is running {{ held }} case{{ "" if held == 1 else "s" }}</span>{% endfor %}
+      {% else %}<span class="muted">No worker is running a case right now.</span>{% endif %}
+      {% if status.failed %}<span><span class="pill failed">failed</span> {{ "{:,}".format(status.failed) }} case runs failed or were cancelled</span>{% endif %}
+    </p>
+  </div>
+  {% endif %}
+</section>

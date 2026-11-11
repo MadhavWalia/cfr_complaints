@@ -36,3 +36,6 @@ PRODUCT.md
 
 # CFR console workspace: job logs, uploads and outputs (may hold case content)
 var/
+
+# Playwright MCP session files
+.playwright-mcp/

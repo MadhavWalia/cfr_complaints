@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ title or "Pipeline" }}{% endblock %} · CFR console</title>
+  <meta name="csrf-token" content="{{ csrf }}">
+  <meta name="theme-color" content="#00175A">
+  <link rel="icon" href="{{ url_for('static', path='favicon.svg') }}" type="image/svg+xml">
+  <script>
+    try { const t = localStorage.getItem("cfr-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="{{ url_for('static', path='console.css') }}">
+  <script src="{{ url_for('static', path='htmx.min.js') }}" defer></script>
+  <script src="{{ url_for('static', path='console.js') }}" defer></script>
+</head>
+<body hx-headers='{"X-CSRF-Token": "{{ csrf }}"}'>
+  <a class="skip" href="#main">Skip to content</a>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-external" viewBox="0 0 16 16"><path d="M9 3h4v4M13 3 7.5 8.5M11 9.5V13H3V5h3.5"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></symbol>
+  </svg>
+  <div class="shell">
+    <header class="rail" id="rail">
+      <a class="name" href="/">CFR console</a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="rail-nav" data-menu>
+        <svg class="icon" aria-hidden="true"><use href="#i-menu"/></svg><span class="visually-hidden">Menu</span>
+      </button>
+      <nav id="rail-nav" aria-label="Areas">
+        <ul>
+          {% for path, label in areas %}
+          <li><a class="area" href="{{ path }}"{% if current == path %} aria-current="page"{% endif %}>{{ label }}</a></li>
+          {% endfor %}
+        </ul>
+      </nav>
+      <div class="foot">
+        <p class="release">New cases use<b class="mono">{{ release_id }}</b></p>
+        <a href="{{ grafana_url }}" target="_blank" rel="noopener">Grafana <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden">(opens a new tab)</span></a>
+        <button type="button" data-theme-toggle aria-label="Switch theme"><svg class="icon" aria-hidden="true"><use href="#i-theme"/></svg><span data-theme-label>Theme</span></button>
+      </div>
+    </header>
+    <main id="main" tabindex="-1">
+      {% block main %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Pipeline{% endblock %}
+{% block main %}
+<div class="head">
+  <h1>Pipeline</h1>
+  <div class="actions">
+    <a class="btn secondary" href="/intake">Admit cases</a>
+    <a class="btn primary" href="/system">Start worker</a>
+  </div>
+</div>
+{% include "_pipeline_status.html" %}
+<section class="section" aria-labelledby="journal-h">
+  <h2 id="journal-h">Journal</h2>
+  {% if jobs %}
+  {# rows arrive in step 2 #}
+  {% else %}
+  <div class="empty">
+    <h3>No jobs yet</h3>
+    <p>Everything you start here, from admitting cases to a LightRAG build, appears in this journal, newest first, with its live log and its files.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
