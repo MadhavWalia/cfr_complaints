@@ -238,11 +238,27 @@ def _trace_flushes(rag: Any) -> None:
     rag._insert_done = traced
 
 
+def _import_lightrag() -> Any:
+    """LightRAG's class, imported without its side effect on logging. nano-vectordb, which LightRAG
+    loads, calls ``logging.basicConfig(level=INFO)`` on import: on a root logger without handlers that
+    adds one, and every record after it is printed a second time, outside our formatter and masker."""
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    try:
+        import nano_vectordb  # noqa: F401 - imported here so its basicConfig runs inside this guard
+        from lightrag import LightRAG
+    finally:
+        for handler in [h for h in root.handlers if h not in handlers]:
+            root.removeHandler(handler)
+        root.setLevel(level)
+    return LightRAG
+
+
 @asynccontextmanager
 async def open_rag(
     workdir: Path, embedder: EmbeddingClient, llm: GatewayLlm, *, concurrency: int = 16
 ) -> AsyncIterator[Any]:
-    from lightrag import LightRAG
+    LightRAG = _import_lightrag()
 
     # A plain function on purpose: LightRAG deep-copies its configuration on every extraction, which
     # would reach the gateway client's locks through an object. Functions are copied by reference.
@@ -295,7 +311,8 @@ async def _stop_workers(rag: Any) -> None:
         try:
             await shutdown()
         except Exception as exc:  # noqa: BLE001 - the build is saved by now; a worker that won't stop is only noise
-            logger.warning("lightrag: could not stop LightRAG's call workers: %s", type(exc).__name__)
+            # LightRAG's shutdown errors name its queues, not documents: the message says which
+            logger.warning("lightrag: could not stop LightRAG's call workers: %s: %.200s", type(exc).__name__, exc)
 
 
 @dataclass
