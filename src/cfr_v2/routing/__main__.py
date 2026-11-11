@@ -35,7 +35,7 @@ from . import route
 from .router import ROUTE_VERSION, ClaimInput, Router, Section
 from .verticals import VerticalCatalog
 
-logger = get_logger(__name__)
+logger = get_logger("cfr_v2.routing.cli")  # not __name__: run as -m, that is "__main__", outside cfr_v2's logging
 OUTCOMES = (ClaimRoutingOutcome.UNMAPPED.value, ClaimRoutingOutcome.NO_ELIGIBLE_VERTICAL.value)
 REVIEW_HEADERS = (
     "claim_no",

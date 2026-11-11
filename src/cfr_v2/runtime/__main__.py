@@ -30,7 +30,7 @@ from .app import start_runtime, stop_runtime
 from .settings import RuntimeSettings
 from .stages import StageHandler, default_handlers
 
-logger = get_logger(__name__)
+logger = get_logger("cfr_v2.runtime.worker")  # not __name__: run as -m, that is "__main__", outside cfr_v2's logging
 _ROUTING_READER = AuthorizationContext(principal="c04.routing", purpose="release manifest")
 _MANIFEST_READER = AuthorizationContext(principal="worker", purpose="queued releases")
 

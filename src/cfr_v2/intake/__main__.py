@@ -27,7 +27,7 @@ from .redaction import EEUtilsMasker, Masker, ProfanityFilter
 from .settings import IntakeSettings
 from .source import CaseSource, RecordsCaseSource, case_query_sql
 
-logger = get_logger(__name__)
+logger = get_logger("cfr_v2.intake.cli")  # not __name__: run as -m, that is "__main__", outside cfr_v2's logging
 
 
 def main(argv: list[str] | None = None) -> int:
