@@ -7,7 +7,8 @@ Design material is kept alongside the checkout but outside version control
 decision records `LDR-NNNN`, roadmap) and `cfr-v1/` (V1 source, reference only).
 Code comments cite those documents by path or LDR number.
 
-Current milestone: **Phase 2 (roadmap Phase B) — C01 intake**, complete. Stages C02–C05 are still placeholders.
+Current milestone: **Phase 5 (roadmap Phase E) — C04 router**. Intake (C01), understanding (C02),
+primary selection (C03) and routing (C04) run in the worker; planning (C05) is still a placeholder.
 
 ## Layout
 
@@ -23,9 +24,10 @@ src/cfr_v2/
   intake/       C01 BigQuery case source, normalization, redaction, admission
   understanding/ C02 (DSPy): Pass 1 allegations, requests, agent statements; Pass 2 claims, accounts, evidence needs
   selection/    C03 (DSPy): the customer's main complaint (primary claim), bound to the claim-set hash
-  procedures/   Operating procedure PDFs for routing; so far a numbers-only inspection (LDR-0019)
+  procedures/   Operating procedure PDFs: inspect, extract, redact, snapshot; LightRAG store and procedure.search
+  routing/      C04 (DSPy): one vertical per claim from LightRAG sections and the vertical definitions
 registry/       release manifests (releases/<id>.yaml), evidence source taxonomy (evidence_sources/<version>.yaml)
-config/         ee-config template (config_gpt.example.yml); your config_gpt.yml is gitignored
+config/         ee-config template (config_gpt.example.yml); your config_gpt.yml and config/verticals/ are gitignored
 tests/
   unit/         offline, no network
   telemetry/    ported V1 telemetry suite
@@ -97,10 +99,23 @@ at startup and refuse to run with `pending migrations: ...` until it is current.
 
 ```bash
 set -a; source .env; set +a
-.venv/bin/python -m cfr_v2.intake --synthetic 20                          # offline, synthetic rows
+.venv/bin/python -m cfr_v2.intake --synthetic 20 --seed 1                 # offline, synthetic rows
 .venv/bin/python -m cfr_v2.intake --start-date 2026-09-01 --end-date 2026-09-07   # BigQuery (enterprise extra)
+.venv/bin/python -m cfr_v2.intake --case-nos-from cases.xlsx --missing-out missing.txt   # BigQuery, listed cases
 .venv/bin/python -m cfr_v2.intake --print-sql > intake.sql                # the BigQuery job's SQL, e.g. to check its cost
 ```
+
+- **One way of choosing cases per run:** a resolution-date window, a list of case numbers, or
+  synthetic rows.
+- **`--case-nos-from`** reads a `case_no` column (`--column` for another header, `--sheet` for
+  another worksheet) from an `.xlsx` or `.csv`. It runs the same query as a date window, with the
+  date condition replaced by the list (one `ARRAY<STRING>` parameter), so filters, transcript
+  matching and the baseline are the same as in production. The summary adds `requested` and
+  `not_returned`; the numbers not returned go only to `--missing-out`.
+- **`--seed`** picks synthetic case numbers. A case already admitted comes back `DUPLICATE` and
+  nothing new is queued, so a second synthetic batch needs a new seed.
+- **Release check:** intake refuses (exit 2) a release whose stage versions differ from the
+  code's, before it touches anything (LDR-0022). `--allow-incompatible` overrides it.
 
 One BigQuery job returns the cases and each customer's LUMI baseline (approved account facts,
 `new_demographics.sql`). The baseline is stored per case: the model-visible profile as INTERNAL,
@@ -112,13 +127,23 @@ Intake is submit-only: it admits and enqueues. Workflows run in worker processes
 ```bash
 .venv/bin/python -m cfr_v2.runtime                    # serve every lane until SIGTERM / Ctrl+C
 .venv/bin/python -m cfr_v2.runtime --lanes realtime   # one lane only
+.venv/bin/python -m cfr_v2.runtime --max-queued 10    # refuse to start if more than 10 jobs wait
 ```
 
 Run as many workers as needed; any worker picks up jobs whose previous worker died.
 
-Workers run C02 and C03 for real (Pass 1, Pass 2, then primary selection: two or three gpt-5 calls
-per case through the gateway; selection needs no call for 0 or 1 claim) and placeholders for
-C04–C05, so **starting a worker sends every queued case to the model.** Try them on a few cases first:
+Workers run C02, C03 and C04 for real (Pass 1, Pass 2, primary selection, then routing: about two
+gpt-5 calls per case for C02, one for C03 with two or more claims, and two per claim for C04) and a
+placeholder for C05, so **starting a worker sends every queued case to the model.**
+
+- **Before claiming anything, a worker logs the queued and running jobs by release** and refuses
+  to start (exit 2) while any belong to a release whose stage versions differ from the code's, or
+  that was never pinned, or when more than `--max-queued` are waiting (LDR-0022). Jobs are left
+  untouched. `--allow-incompatible` overrides the release check.
+- **Check the queue before starting a worker,** and use `--max-queued` when testing: queued runs
+  from earlier batches run too.
+
+Try the stages on a few cases first:
 
 ```bash
 python -m cfr_v2.understanding --sample 5 --out c02_trial   # counts, latency, tokens, cost projection per step
@@ -126,7 +151,7 @@ python -m cfr_v2.understanding --sample 5 --out c02_trial   # counts, latency, t
 
 Pass 2 tags each evidence need with a source type from `registry/evidence_sources/`, in the
 version the run's release manifest names (`evidence_sources:`; `evidence-sources-1` if none). New
-intake uses `cfr-v2-phase-d` (`CFR_RELEASE_ID`). The business team maintains where
+intake uses `cfr-v2-phase-e` (`CFR_RELEASE_ID`). The business team maintains where
 each source type's evidence lives through a workbook: `python -m cfr_v2.registry.evidence_sources
 export|import|check` ([guide](lld/guides/evidence-sources.md); `lld/` is local).
 
@@ -139,6 +164,45 @@ To score Pass 1 against the business team's gold-set workbooks (recall, precisio
 python -m cfr_v2.understanding.score template --cases-file cases.txt gold_template.xlsx   # blank workbook
 python -m cfr_v2.understanding.score run gold_*.xlsx --out pass1_score.json               # needs RESTRICTED access
 ```
+
+## Procedures and routing (C04)
+
+Routing sends each claim to one vertical, or `UNMAPPED` / `NO_ELIGIBLE_VERTICAL`, from the claim,
+sections of the business's operating procedures found with LightRAG (`mix` mode), and the vertical
+definitions (LDR-0019, LDR-0020, LDR-0021). Prepare once per update, in this order:
+
+```bash
+python -m cfr_v2.procedures snapshot /path/to/pdfs                         # extract, redact, store; prints the snapshot ref
+python -m cfr_v2.procedures lightrag-build sha256:<snapshot> --workdir lightrag_store   # ~3 gpt-5 calls per section; resumable
+python -m cfr_v2.routing publish-verticals config/verticals/knowledge_document.txt      # prints the document's ref
+```
+
+- **The release pins both inputs:** `routing_verticals` (the document's ref) and
+  `procedure_snapshot` in `registry/releases/<release>.yaml`. A run is routed with what its release
+  names, so updating either means a new release.
+- **The knowledge document is internal:** keep it in `config/verticals/` (gitignored), never in git.
+- **The worker searches the store in `CFR_LIGHTRAG_WORKDIR`.** `lightrag-build` writes
+  `cfr_store.json` there, naming the snapshot it was built from, and the worker refuses a store
+  whose marker doesn't match the release. A build into a store made from another snapshot is
+  refused too.
+- **A claim set with no claims is routed without any of this.** Any failed claim fails the stage,
+  and the worker retries it. A search the gateway blocks routes that claim without sections.
+
+Outside the workflow:
+
+```bash
+python -m cfr_v2.procedures search sha256:<snapshot> "a query" --workdir lightrag_store   # try searches
+python -m cfr_v2.routing sha256:<snapshot> --workdir lightrag_store \
+  --verticals config/verticals/knowledge_document.txt --claims-from c02_trial --out router_trial   # trial + routing.xlsx
+python -m cfr_v2.routing backfill --from-release <old release> --count-only               # route stored claim sets of failed runs
+```
+
+Trial, review and backfill files can hold claim or procedure text: keep them local and delete them
+after review.
+
+**Changing a stage's version** (any `STAGES` entry): add a release pinning the new version and make
+it the default (`IntakeSettings.release_id`, `.env.example`). A unit test fails until you do, and
+workers refuse to start while runs of the old release are queued (LDR-0022).
 
 ## Model gateway (P5)
 
