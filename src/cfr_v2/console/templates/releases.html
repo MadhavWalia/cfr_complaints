@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block main %}
 <div class="head"><h1>Releases</h1></div>
-<p class="lede muted">Releases are files in <span class="mono">registry/releases/</span>, changed through git. A release is pinned when the first case is admitted under it; each case run keeps the version it was admitted with.</p>
+<p class="lede muted">Releases are files in <span class="mono">registry/releases/</span>, changed through git. A release is pinned when the first case is admitted under it; each case run keeps the version it was admitted with. Making one current sets <span class="mono">CFR_RELEASE_ID</span> in <span class="mono">.env</span>: new cases are admitted under it, and the next jobs use it. A running worker keeps the procedure snapshot it opened, so if the snapshot changes, restart it once the old release's runs are done.</p>
 {% if error %}
 <div class="panel error-box" role="status">
   <strong>Can't read the state database ({{ error }}).</strong>
@@ -18,6 +18,17 @@
     {% elif r.mismatches %}<span class="pill waiting">doesn't match this code</span>
     {% else %}<span class="muted">Matches this code</span>{% endif %}
   </header>
+  {% if r.release_id != release_id and r.manifest %}
+  {% if r.blockers %}
+  <p class="muted blocked">Can't be made current: {{ r.blockers | join("; ") }}.</p>
+  {% else %}
+  <form method="post" action="/releases/{{ r.release_id }}/current" class="actions">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="btn secondary" type="submit">Make current</button>
+    <span class="muted">New cases are then admitted under <span class="mono">{{ r.release_id }}</span>, instead of <span class="mono">{{ release_id }}</span>.</span>
+  </form>
+  {% endif %}
+  {% endif %}
   {% if r.problem %}<p class="last-error mono">{{ r.problem }}</p>{% endif %}
   {% if not r.manifest and not r.problem %}<p class="muted">Pinned in the database, but its file is no longer in the registry.</p>{% endif %}
   {% if r.manifest %}

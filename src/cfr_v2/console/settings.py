@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -34,6 +34,29 @@ def read_env_file(path: Path) -> dict[str, str]:
             value = value.split(" #", 1)[0].rstrip()
         values[key] = value
     return values
+
+
+def write_env_value(path: Path, key: str, value: str) -> None:
+    """Sets one ``KEY=VALUE`` line in an env file, leaving every other line as it was: the last
+    active line for the key is replaced (keeping an ``export`` prefix), else one is added. The file
+    is replaced in one step, so a reader never sees half of it."""
+    if not re.fullmatch(r"[A-Za-z0-9._:/@-]+", value):
+        raise ValueError(f"{key}: not a plain value")
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    at = next(
+        (i for i in reversed(range(len(lines))) if (m := _LINE.match(lines[i])) and m.group(1) == key),
+        None,
+    )
+    if at is None:
+        lines.append(f"{key}={value}")
+    else:
+        prefix = "export " if lines[at].lstrip().startswith("export ") else ""
+        lines[at] = f"{prefix}{key}={value}"
+    temporary = path.with_name(path.name + ".console")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if path.is_file():
+        temporary.chmod(path.stat().st_mode & 0o777)
+    temporary.replace(path)
 
 
 def is_secret(key: str) -> bool:
@@ -70,6 +93,15 @@ class ConsoleSettings:
             env_file_keys=tuple(sorted(from_file)),
             port=port,
         )
+
+    def set_in_env_file(self, key: str, value: str) -> None:
+        """Writes ``key`` to .env and to the environment jobs start with, so the next job sees it
+        without a restart. The only setting the console changes is the current release."""
+        write_env_value(self.repo_root / ".env", key, value)
+        assert isinstance(self.env, MutableMapping)  # shared with the job runner and the forms
+        self.env[key] = value
+        if key not in self.env_file_keys:
+            object.__setattr__(self, "env_file_keys", tuple(sorted((*self.env_file_keys, key))))
 
     @property
     def grafana_url(self) -> str:

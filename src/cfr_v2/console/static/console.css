@@ -211,6 +211,8 @@ tr.lit td, tr.lit a, tr.lit .muted, tr.lit td::before { color: var(--on-lit); }
 .release-card header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); margin-bottom: var(--s4); }
 .release-card h3 { font-size: 15px; margin: var(--s5) 0 var(--s2); }
 .release-card > p.muted { margin-top: var(--s4); }
+.release-card .actions { align-items: center; margin-bottom: var(--s4); }
+.release-card > p.blocked { margin: 0 0 var(--s4); }
 .pins { display: grid; grid-template-columns: 11em 1fr; gap: var(--s2) var(--s4); margin: 0; }
 .pins > div { display: contents; }
 .pins dt { color: var(--text-2); font-size: 13px; padding-top: 2px; }

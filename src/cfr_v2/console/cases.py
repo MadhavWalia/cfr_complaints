@@ -8,7 +8,7 @@ it is asked for. Each case links to its trace and logs in Grafana.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote
 
 from cfr_v2.contracts import AuthorizationContext, Classification, ReleaseManifest
+from cfr_v2.procedures import stores
 from cfr_v2.runtime.release_check import Mismatch, stage_mismatches
 from cfr_v2.runtime.stages import STAGES
 
@@ -282,6 +283,7 @@ class Release:
     problem: str | None = None  # why the file couldn't be read
     mismatches: list[Mismatch] = field(default_factory=list)
     pinned: list[Pinned] = field(default_factory=list)  # every version pinned in the database, newest first
+    blockers: list[str] = field(default_factory=list)  # why new cases can't be admitted under it
 
     @property
     def current_ref(self) -> str | None:
@@ -290,6 +292,25 @@ class Release:
     @property
     def runs(self) -> int:
         return sum(p.runs for p in self.pinned)
+
+
+def blockers(release: Release, root: Path, env: Mapping[str, str]) -> list[str]:
+    """Why new cases shouldn't be admitted under ``release``; empty when it can be made current.
+    The same checks intake and the worker make, and the C04 stage's: a release that fails one
+    would admit cases certain to fail."""
+    if release.problem or release.manifest is None:
+        return ["its file can't be read" if release.problem else "its file is no longer in the registry"]
+    found = []
+    if release.mismatches:
+        found.append("its stage versions don't match this code, so intake refuses it")
+    manifest = release.manifest
+    if not manifest.routing_verticals or not manifest.procedure_snapshot:
+        found.append("it pins no knowledge document or procedure snapshot, so routing would fail")
+    elif stores.built_from(stores.store_dir(manifest.procedure_snapshot, root=root, env=env)) != (
+        manifest.procedure_snapshot
+    ):
+        found.append("its procedure snapshot has no LightRAG store here: build it under Procedures")
+    return found
 
 
 def read_releases(registry: Path, db_rows: Callable[[], list[tuple]] | None) -> tuple[list[Release], str | None]:
@@ -325,6 +346,7 @@ __all__ = [
     "NotShown",
     "Release",
     "Withheld",
+    "blockers",
     "list_cases",
     "logs_url",
     "parse_result",

@@ -403,7 +403,24 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         found, error = cases.read_releases(settings.repo_root / "registry", rows)
         if error:
             logger.warning("console: state database unavailable: %s", error)
+        for release in found:
+            release.blockers = cases.blockers(release, settings.repo_root, settings.env)
         return page(request, "releases.html", title="Releases", releases=found, error=error)
+
+    @app.post("/releases/{release_id}/current", dependencies=[Depends(require_csrf)])
+    def make_current(release_id: str):
+        """Sets CFR_RELEASE_ID in .env: the release intake admits new cases under."""
+        found, _ = cases.read_releases(settings.repo_root / "registry", None)
+        release = next((r for r in found if r.release_id == release_id), None)
+        if release is None:
+            raise HTTPException(status_code=404, detail="No such release in the registry.")
+        problems = cases.blockers(release, settings.repo_root, settings.env)
+        if problems:
+            raise HTTPException(status_code=409, detail=f"{release_id} can't be made current: {'; '.join(problems)}.")
+        previous = settings.release_id
+        settings.set_in_env_file("CFR_RELEASE_ID", release_id)
+        logger.info("console: current release %s -> %s", previous, release_id)
+        return RedirectResponse(f"/releases#{release_id}", status_code=303)
 
     # --- areas and their commands --------------------------------------------------------
 

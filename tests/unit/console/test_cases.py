@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,8 +20,10 @@ from fastapi.testclient import TestClient
 from cfr_v2.artifacts import InMemoryArtifactStore
 from cfr_v2.console import cases
 from cfr_v2.console.app import create_app
-from cfr_v2.console.settings import ConsoleSettings
+from cfr_v2.console.settings import ConsoleSettings, write_env_value
 from cfr_v2.contracts import Classification
+from cfr_v2.procedures import stores
+from cfr_v2.registry import ReleaseRegistry
 
 REPO = Path(__file__).resolve().parents[3]
 AT = datetime(2026, 11, 12, 9, 0, tzinfo=UTC)
@@ -247,3 +250,64 @@ def test_stage_statuses_use_the_one_vocabulary():
         ("failed", "failed, to retry"),
         ("waiting", "cancelled"),
     ]
+
+
+# --- making a release current --------------------------------------------------------------------
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """A copy of the registry, with a .env and the phase-e snapshot's store, so .env can be written."""
+    root = tmp_path / "repo"
+    shutil.copytree(REPO / "registry", root / "registry")
+    (root / ".env").write_text("# settings\nexport CFR_RELEASE_ID=cfr-v2-phase-b  # old\nCFR_OTHER=1\n")
+    snapshot = ReleaseRegistry(root / "registry").load("cfr-v2-phase-e").procedure_snapshot
+    store = root / stores.store_name(snapshot)
+    store.mkdir()
+    (store / stores.STORE_MARKER).write_text(json.dumps({"procedures_ref": snapshot}))
+    return root
+
+
+def test_a_ready_release_can_be_made_current(repo, monkeypatch):
+    monkeypatch.delenv("CFR_LIGHTRAG_WORKDIR", raising=False)
+    settings = ConsoleSettings.load(repo, workspace=repo / "var")
+    app = create_app(settings)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    page = client.get("/releases").text
+    assert '<form method="post" action="/releases/cfr-v2-phase-e/current"' in page
+    assert "Can't be made current: its stage versions don&#39;t match this code" in page  # phase-b
+    assert 'action="/releases/cfr-v2-phase-b/current"' not in page
+
+    assert client.post("/releases/cfr-v2-phase-e/current").status_code == 403  # no CSRF token
+    sent = client.post("/releases/cfr-v2-phase-e/current", data={"csrf": app.state.csrf}, follow_redirects=False)
+    assert sent.status_code == 303 and sent.headers["location"] == "/releases#cfr-v2-phase-e"
+    assert (repo / ".env").read_text() == "# settings\nexport CFR_RELEASE_ID=cfr-v2-phase-e\nCFR_OTHER=1\n"
+    assert settings.release_id == "cfr-v2-phase-e" and app.state.runner.env["CFR_RELEASE_ID"] == "cfr-v2-phase-e"
+    assert "New cases use it" in client.get("/releases").text
+
+    refused = client.post("/releases/cfr-v2-phase-b/current", data={"csrf": app.state.csrf})
+    assert refused.status_code == 409 and "don't match this code" in refused.json()["detail"]
+    assert client.post("/releases/nope/current", data={"csrf": app.state.csrf}).status_code == 404
+    assert "CFR_RELEASE_ID=cfr-v2-phase-e" in (repo / ".env").read_text()  # unchanged by the refusals
+
+
+def test_a_release_whose_snapshot_has_no_store_is_not_made_current(repo, monkeypatch):
+    monkeypatch.delenv("CFR_LIGHTRAG_WORKDIR", raising=False)
+    releases, _ = cases.read_releases(repo / "registry", None)
+    phase_e = next(r for r in releases if r.release_id == "cfr-v2-phase-e")
+    assert cases.blockers(phase_e, repo, {}) == []
+    assert cases.blockers(phase_e, repo, {"CFR_LIGHTRAG_WORKDIR": "elsewhere"}) == [
+        "its procedure snapshot has no LightRAG store here: build it under Procedures"
+    ]
+
+
+def test_the_env_file_keeps_every_other_line(tmp_path):
+    path = tmp_path / ".env"
+    write_env_value(path, "CFR_RELEASE_ID", "a")  # no file yet
+    assert path.read_text() == "CFR_RELEASE_ID=a\n"
+    path.write_text("A=1\n# CFR_RELEASE_ID=commented\nCFR_RELEASE_ID=b\nB='x y'\n")
+    write_env_value(path, "CFR_RELEASE_ID", "c")
+    assert path.read_text() == "A=1\n# CFR_RELEASE_ID=commented\nCFR_RELEASE_ID=c\nB='x y'\n"
+    for bad in ("a b", "a\nB=1", "$(x)", ""):
+        with pytest.raises(ValueError, match="not a plain value"):
+            write_env_value(path, "CFR_RELEASE_ID", bad)
