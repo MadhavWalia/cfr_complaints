@@ -122,7 +122,7 @@ a.btn, a.btn:hover, .caption a, .more a, .pager a { text-decoration: none; }
   background: var(--muted); border-right: 1px solid var(--line); display: flex; flex-direction: column;
   padding: var(--s4) var(--s3); position: sticky; top: 0; height: 100vh;
 }
-.rail .name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--title); padding: var(--s1) var(--s3) var(--s5); }
+.rail .name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; color: var(--title); padding: var(--s1) var(--s3) var(--s5); }
 .rail .name:hover { text-decoration: none; }
 .rail ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
 .rail a.area {
@@ -242,7 +242,7 @@ td time { white-space: nowrap; }
 .outcome.reason { color: var(--text-2); }
 /* A row that changed since you last saw it: a small tag, not a fill. */
 tr.lit td:first-child > span::after, tr.lit td:first-child > time::after {
-  content: "new"; margin-left: var(--s2); padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  content: "new"; margin-left: var(--s2); padding: 0 6px; border-radius: 999px; font-size: 12px; font-weight: 600;
   line-height: 18px; display: inline-block; background: var(--lit); color: var(--on-lit);
 }
 
@@ -369,7 +369,7 @@ pre.log::selection { background: var(--light-blue); color: var(--deep); }
 .stage { max-width: 860px; padding: var(--s5) 0; border-top: 1px solid var(--line); }
 .stage:first-of-type { border-top: 0; padding-top: var(--s2); }
 .stage header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); margin-bottom: var(--s3); }
-.stage h3 { font-size: 15px; }
+.stage h3 { font-size: 16px; }
 .stage h4 { font-size: 13px; font-weight: 500; color: var(--text-2); margin: var(--s4) 0 var(--s2); }
 .stage h4:first-of-type { margin-top: 0; }
 .count { font-weight: 400; margin-left: var(--s1); color: var(--text-2); }
@@ -391,7 +391,7 @@ pre.log::selection { background: var(--light-blue); color: var(--deep); }
 .current { font-size: 13px; font-weight: 500; color: var(--accent); }
 .release-card header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); margin-bottom: var(--s4); }
 .release-card header .muted { font-size: 13px; }
-.release-card header h2 { font-size: 15px; }
+.release-card header h2 { font-size: 16px; }
 .release-card h3 { margin: var(--s5) 0 var(--s2); }
 .release-card > p.muted { margin-top: var(--s4); }
 .release-card .actions { margin-bottom: var(--s4); }
