@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -26,7 +26,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from cfr_v2.telemetry import get_logger
 
-from . import commands, formats
+from . import cases, commands, formats
 from . import status as pipeline
 from .jobs import Job, JobRunner, JobStatus
 from .settings import ConsoleSettings
@@ -46,6 +46,7 @@ AREAS = (
     ("/", "Pipeline"),
     ("/jobs", "Jobs"),
     ("/cases", "Cases"),
+    ("/releases", "Releases"),
     ("/intake", "Intake"),
     ("/routing", "Routing"),
     ("/procedures", "Procedures"),
@@ -55,6 +56,7 @@ AREAS = (
 PLANNED = {
     "/jobs": "Every job started here: its live log, status and outputs to download, and a way to stop it.",
     "/cases": "Case runs by state and release, and each case's timeline and stage results, with links to its trace.",
+    "/releases": "Each release in the registry, what it pins, whether it matches this code, and its case runs.",
     "/intake": "Admit a date window, a spreadsheet of case numbers, or synthetic cases; show the query.",
     "/routing": "The router trial and routing.xlsx, publishing the vertical definitions, and the backfill.",
     "/procedures": "Inspect, extract and snapshot procedure PDFs; build and search the LightRAG store.",
@@ -96,6 +98,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     app.state.settings = settings
     app.state.csrf = secrets.token_urlsafe(32)
     app.state.db = None
+    app.state.store = None  # set by tests to an in-memory store
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.globals.update(areas=AREAS, catalogue=commands.BY_ID)
     templates.env.filters.update(when=formats.when, took=formats.took, size=formats.size, shell=formats.shell)
@@ -118,20 +121,20 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             app.state.db = Database(url, max_connections=4, acquire_timeout_sec=5)
         return app.state.db
 
+    def artifact_store():
+        """Created when first needed: the S3 settings are read only then."""
+        if app.state.store is None:
+            from cfr_v2.artifacts import S3ArtifactStore, S3Settings
+
+            app.state.store = S3ArtifactStore(S3Settings.from_env(settings.env))
+        return app.state.store
+
     def resolver(db):
-        from cfr_v2.artifacts import S3ArtifactStore, S3Settings
         from cfr_v2.contracts import AuthorizationContext
         from cfr_v2.registry import load_pinned
 
         reader = AuthorizationContext(principal="console", purpose="queued releases")
-        stores: list = []  # the artifact store is needed only when something is queued
-
-        def resolve(ref: str):
-            if not stores:
-                stores.append(S3ArtifactStore(S3Settings.from_env(settings.env)))
-            return load_pinned(ref, store=stores[0], db=db, authorization=reader)
-
-        return resolve
+        return lambda ref: load_pinned(ref, store=artifact_store(), db=db, authorization=reader)
 
     def read_status() -> pipeline.PipelineStatus:
         try:
@@ -274,6 +277,105 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             raise HTTPException(status_code=404, detail="No such file.") from None
         return FileResponse(path, filename=path.name)
 
+    # --- cases and releases (decisions 7 and 8) -------------------------------------------
+
+    def _unavailable(exc: Exception) -> str:
+        logger.warning("console: state database unavailable: %s", type(exc).__name__)
+        return type(exc).__name__
+
+    @app.get("/cases", response_class=HTMLResponse)
+    def case_list(
+        request: Request, state: str | None = None, release: str | None = None, q: str | None = None, offset: int = 0
+    ):
+        rows, error = [], None
+        try:
+            rows = cases.list_cases(database(), state=state, release=release, q=q, offset=offset)
+        except Exception as exc:  # noqa: BLE001 - the page says the database is down
+            error = _unavailable(exc)
+        filters = {
+            "state": state if state in cases.STATES else None,
+            "release": release or None,
+            "q": (q or "").strip(),
+        }
+        return page(
+            request,
+            "cases.html",
+            title="Cases",
+            rows=rows[: cases.PAGE_ROWS],
+            more=len(rows) > cases.PAGE_ROWS,
+            offset=max(0, offset),
+            page_rows=cases.PAGE_ROWS,
+            filters=filters,
+            states=[(s, cases.STATE_LABELS[s]) for s in cases.STATES],
+            releases=[path.stem for path in sorted((settings.repo_root / "registry" / "releases").glob("*.yaml"))],
+            error=error,
+        )
+
+    def _case(case_run_id: str):
+        try:
+            run = cases.read_case(database(), case_run_id)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=503, detail=f"Can't read the state database ({_unavailable(exc)})."
+            ) from None
+        if run is None:
+            raise HTTPException(status_code=404, detail="No such case run.")
+        return run
+
+    @app.get("/cases/{case_run_id}", response_class=HTMLResponse)
+    def case_page(request: Request, case_run_id: str):
+        run = _case(case_run_id)
+        results: dict[str, Any] = {}  # stage → parsed result, or the reason it isn't shown
+        for stage in run.stages:
+            if not stage.refs:
+                continue
+            try:
+                parsed = cases.parse_result(cases.read_result(database(), artifact_store(), run, stage.refs[0]))
+                results[stage.task] = "" if parsed is None else parsed  # "": not JSON, offered as a download
+            except cases.NotShown:
+                results[stage.task] = cases.Withheld("It isn't INTERNAL, so the console doesn't show it.")
+            except Exception as exc:  # noqa: BLE001 - one unreadable result mustn't hide the case
+                logger.warning("console: stage result unreadable: %s", type(exc).__name__)
+                results[stage.task] = cases.Withheld(f"Can't read it from the artifact store ({type(exc).__name__}).")
+        claims = {}
+        pass2 = results.get("c02.pass2")
+        if isinstance(pass2, dict):
+            claims = {c.get("claim_id"): c for c in pass2.get("claims", []) if isinstance(c, dict)}
+        return page(
+            request,
+            "case.html",
+            title=f"Case {run.row.case_no}",
+            run=run,
+            results=results,
+            claims=claims,
+            trace_url=cases.trace_url(settings.grafana_url, run),
+            logs_url=cases.logs_url(settings.grafana_url, run),
+        )
+
+    @app.get("/cases/{case_run_id}/results/{ref}")
+    def case_result(case_run_id: str, ref: str):
+        run = _case(case_run_id)
+        try:
+            data = cases.read_result(database(), artifact_store(), run, ref)
+        except cases.NotShown:
+            raise HTTPException(status_code=404, detail="Not a stage result of this case run.") from None
+        stage = next(s.task for s in run.stages if ref in s.refs)
+        name = f"{run.row.case_no}-{stage}.json"
+        return Response(
+            data, media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{name}"'}
+        )
+
+    @app.get("/releases", response_class=HTMLResponse)
+    def releases(request: Request):
+        def rows():
+            with database().transaction() as tx:
+                return tx.all(cases.RELEASES_SQL)
+
+        found, error = cases.read_releases(settings.repo_root / "registry", rows)
+        if error:
+            logger.warning("console: state database unavailable: %s", error)
+        return page(request, "releases.html", title="Releases", releases=found, error=error)
+
     # --- areas and their commands --------------------------------------------------------
 
     def area_page(
@@ -307,7 +409,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         return response
 
     for path, label in AREAS[1:]:
-        if path in ("/jobs",):
+        if path in ("/jobs", "/cases", "/releases"):
             continue
 
         def show(request: Request, area: str = path[1:], label: str = label):

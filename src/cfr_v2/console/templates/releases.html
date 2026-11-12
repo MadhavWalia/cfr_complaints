@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="head"><h1>Releases</h1></div>
+<p class="lede muted">Releases are files in <span class="mono">registry/releases/</span>, changed through git. A release is pinned when the first case is admitted under it; each case run keeps the version it was admitted with.</p>
+{% if error %}
+<div class="panel error-box" role="status">
+  <strong>Can't read the state database ({{ error }}).</strong>
+  <p class="muted">The pins and case counts need Postgres. Start it with <span class="mono">docker compose up -d</span>, then reload.</p>
+</div>
+{% endif %}
+{% for r in releases %}
+<section class="release-card panel" id="{{ r.release_id }}" aria-labelledby="{{ r.release_id }}-h">
+  <header>
+    <h2 id="{{ r.release_id }}-h" class="mono-h">{{ r.release_id }}</h2>
+    {% if r.release_id == release_id %}<span class="pill running">new cases use it</span>{% endif %}
+    {% if r.problem %}<span class="pill failed">can't read the file</span>
+    {% elif not r.manifest %}<span class="pill waiting">no file</span>
+    {% elif r.mismatches %}<span class="pill failed">doesn't match this code</span>
+    {% else %}<span class="pill done">matches this code</span>{% endif %}
+  </header>
+  {% if r.problem %}<p class="last-error mono">{{ r.problem }}</p>{% endif %}
+  {% if not r.manifest and not r.problem %}<p class="muted">Pinned in the database, but its file is no longer in the registry.</p>{% endif %}
+  {% if r.manifest %}
+  {% set m = r.manifest %}
+  <dl class="pins">
+    <div><dt>Stages</dt><dd>
+      <ul class="plain">
+      {% for p in m.programs %}{% set miss = r.mismatches | selectattr("stage", "equalto", p.program_id) | first %}
+        <li><span class="mono">{{ p.program_id }}</span> {{ p.version }}{% if miss %} <span class="flag">this code runs {{ miss.code_version }}</span>{% endif %}</li>
+      {% endfor %}
+      {% for miss in r.mismatches if miss.release_version is none %}<li><span class="mono">{{ miss.stage }}</span> <span class="flag">not pinned; this code runs {{ miss.code_version }}</span></li>{% endfor %}
+      </ul>
+    </dd></div>
+    <div><dt>Evidence sources</dt><dd class="mono">{{ m.evidence_sources or "—" }}</dd></div>
+    <div><dt>Verticals document</dt><dd class="mono ref">{{ m.routing_verticals or "—" }}</dd></div>
+    <div><dt>Procedure snapshot</dt><dd class="mono ref">{{ m.procedure_snapshot or "—" }}</dd></div>
+    <div><dt>This file's ref</dt><dd class="mono ref">{{ m.ref }}</dd></div>
+  </dl>
+  {% endif %}
+  {% if r.pinned %}
+  <h3>Pinned versions</h3>
+  <table class="compact stack">
+    <caption class="visually-hidden">Versions of {{ r.release_id }} pinned in the database</caption>
+    <thead><tr><th scope="col">Ref</th><th scope="col">Pinned</th><th scope="col" class="num">Case runs</th></tr></thead>
+    <tbody>
+    {% for p in r.pinned %}
+    <tr>
+      <td data-label="Ref"><span class="mono ref">{{ p.manifest_ref }}</span>{% if p.manifest_ref == r.current_ref %} <span class="muted">the file as it is now</span>{% elif r.manifest %} <span class="muted">an earlier version of the file</span>{% endif %}</td>
+      <td data-label="Pinned"><span>{{ p.pinned_at.isoformat() | when }}</span></td>
+      <td data-label="Case runs" class="num"><span>{% if p.runs %}<a href="/cases?release={{ r.release_id }}">{{ "{:,}".format(p.runs) }}</a>{% else %}0{% endif %}</span></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% elif not error %}
+  <p class="muted">Not pinned yet: no case has been admitted under it.</p>
+  {% endif %}
+</section>
+{% else %}
+<div class="empty"><h3>No releases</h3><p>Add a manifest to <span class="mono">registry/releases/</span>.</p></div>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="head"><h1>Cases</h1></div>
+<form class="find" method="get" action="/cases" role="search">
+  <div class="field">
+    <label for="q">Case number or run id</label>
+    <input id="q" name="q" type="search" value="{{ filters.q }}" class="mono" spellcheck="false" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="state">Stage</label>
+    <select id="state" name="state">
+      <option value="">Any</option>
+      {% for value, label in states %}<option value="{{ value }}"{% if filters.state == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="release">Release</label>
+    <select id="release" name="release">
+      <option value="">Any</option>
+      {% for r in releases %}<option value="{{ r }}"{% if filters.release == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
+    </select>
+  </div>
+  <button class="btn secondary" type="submit">Show</button>
+</form>
+
+{% if error %}
+<div class="panel error-box" role="status">
+  <strong>Can't read the state database ({{ error }}).</strong>
+  <p class="muted">Is Postgres running? Start it with <span class="mono">docker compose up -d</span>, then reload.</p>
+</div>
+{% elif rows %}
+<div class="table-wrap">
+  <table class="stack">
+    <caption class="visually-hidden">Case runs, newest first</caption>
+    <thead><tr><th scope="col">Case</th><th scope="col">Stage</th><th scope="col">Release</th><th scope="col">Admitted</th><th scope="col">Last change</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr>
+      <td data-label="Case"><span><a class="mono" href="/cases/{{ r.case_run_id }}">{{ r.case_no }}</a></span></td>
+      <td data-label="Stage"><span><span class="pill {{ r.pill }}">{{ r.state_label }}</span></span></td>
+      <td data-label="Release"><span class="mono">{{ r.release_id or "not pinned" }}</span></td>
+      <td data-label="Admitted"><span>{{ r.admitted_at.isoformat() | when }}</span></td>
+      <td data-label="Last change"><span>{{ r.updated_at.isoformat() | when if r.updated_at else "—" }}</span></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% set query = "&q=" ~ (filters.q | urlencode) ~ "&state=" ~ (filters.state or "") ~ "&release=" ~ (filters.release or "") %}
+<nav class="pager" aria-label="Pages">
+  {% if offset > 0 %}<a href="/cases?offset={{ [offset - page_rows, 0] | max }}{{ query }}">Newer</a>{% endif %}
+  <span class="muted">{{ offset + 1 }}–{{ offset + rows | length }}</span>
+  {% if more %}<a href="/cases?offset={{ offset + page_rows }}{{ query }}">Older</a>{% endif %}
+</nav>
+{% elif filters.q or filters.state or filters.release or offset %}
+<div class="empty"><h3>No case runs match</h3><p>Try part of a case number, or clear a filter. <a href="/cases">Show all</a></p></div>
+{% else %}
+<div class="empty"><h3>No case runs yet</h3><p>Cases appear here once they are admitted. <a href="/intake">Admit cases</a> from a date window, a list of case numbers, or synthetic ones.</p></div>
+{% endif %}
+{% endblock %}
