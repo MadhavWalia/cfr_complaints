@@ -30,7 +30,7 @@ from cfr_v2.telemetry import get_logger
 from . import cases, commands, formats, release_files
 from . import status as pipeline
 from .diagnosis import diagnose
-from .jobs import Job, JobRunner, JobStatus
+from .jobs import Job, JobRunner, JobStatus, read_progress
 from .settings import ConsoleSettings, display_value
 
 logger = get_logger("cfr_v2.console")
@@ -112,6 +112,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     )
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
+        context.setdefault("running", sum(1 for j in runner.list() if j.status is JobStatus.RUNNING))
         context.update(
             csrf=app.state.csrf,
             current=request.url.path,
@@ -155,6 +156,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
 
     runner = JobRunner(settings.workspace / "jobs", cwd=settings.repo_root, env=settings.env)
     app.state.runner = runner
+    templates.env.globals["progress_of"] = lambda job: (
+        read_progress(runner.log_path(job.id)) if job.status is JobStatus.RUNNING else None
+    )
     form_context = commands.Context(
         root=settings.repo_root,
         env=settings.env,

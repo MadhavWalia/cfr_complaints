@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ title or "Pipeline" }}{% endblock %} · CFR console</title>
+  <title>{% if running %}({{ running }} running) {% endif %}{% block title %}{{ title or "Pipeline" }}{% endblock %} · CFR console</title>
   <meta name="csrf-token" content="{{ csrf }}">
   <meta name="theme-color" content="#00175A">
   <link rel="icon" href="{{ url_for('static', path='favicon.svg') }}" type="image/svg+xml">
@@ -35,6 +35,7 @@
         </ul>
       </nav>
       <div class="foot">
+        {% if running %}<a class="running" href="/jobs?status=running"><span class="pill running">{{ running }}</span> running</a>{% endif %}
         <p class="release">New cases use<b class="mono">{{ release_id }}</b></p>
         <a href="{{ grafana_url }}" target="_blank" rel="noopener">Grafana <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden">(opens a new tab)</span></a>
         <button type="button" data-theme-toggle aria-label="Switch theme"><svg class="icon" aria-hidden="true"><use href="#i-theme"/></svg><span data-theme-label>Theme</span></button>

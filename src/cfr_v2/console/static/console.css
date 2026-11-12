@@ -193,6 +193,16 @@ tr.lit td:first-child > span::after, tr.lit td:first-child > time::after { conte
 .copyable > .mono { overflow-wrap: anywhere; }
 button.copy { font: 600 12px/1 var(--sans); color: var(--accent); background: transparent; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; min-height: 24px; cursor: pointer; }
 button.copy:hover { background: var(--hover); }
+/* Step 5: progress of a long job. */
+progress { appearance: none; width: 9em; height: 8px; border: 0; border-radius: 999px; background: var(--line); vertical-align: middle; }
+progress::-webkit-progress-bar { background: var(--line); border-radius: 999px; }
+progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+.progress-cell { display: grid; gap: var(--s1); }
+.progress-fact dd { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.notify { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); margin-top: var(--s4); }
+.rail .running { display: inline-flex; align-items: center; gap: var(--s2); }
+
 /* Step 4: what a command does, as tags, and its model calls. */
 .badges { list-style: none; margin: var(--s1) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
 .badge { font-size: 12px; font-weight: 600; color: var(--text-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }

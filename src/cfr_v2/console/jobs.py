@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -82,6 +83,38 @@ class Job:
     def from_json(cls, text: str) -> Job:
         body = json.loads(text)
         return cls(**(body | {"argv": tuple(body["argv"]), "status": JobStatus(body["status"])}))
+
+
+PROGRESS_TAIL = 16_000
+_PROGRESS = re.compile(r"\[(\d+)/(\d+)\]")  # "[12/35] Fees.pdf" (snapshot), "lightrag: [480/1844] passages …" (build)
+_LEFT = re.compile(r"about (\d[\w ]*?) left")
+
+
+@dataclass(frozen=True)
+class Progress:
+    done: int
+    total: int
+    left: str | None = None  # "2 h 10 min", as the command estimates it
+
+    @property
+    def percent(self) -> int:
+        return min(100, round(100 * self.done / self.total)) if self.total else 0
+
+
+def read_progress(log: Path) -> Progress | None:
+    """The last ``[n/N]`` a running command printed (and its "about … left"), if it prints any."""
+    try:
+        with log.open("rb") as f:
+            f.seek(max(0, f.seek(0, 2) - PROGRESS_TAIL))
+            lines = f.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if match := _PROGRESS.search(line):
+            done, total = int(match.group(1)), int(match.group(2))
+            left = _LEFT.search(line)
+            return Progress(done, total, left.group(1) if left else None) if total else None
+    return None
 
 
 def _now() -> str:

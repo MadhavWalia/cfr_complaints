@@ -202,3 +202,50 @@ def test_a_form_starts_a_real_job_whose_log_streams_and_whose_output_downloads(t
 def test_stamps_carry_the_full_time():
     stamp = formats.stamp("2026-11-12T09:00:00+00:00")
     assert stamp.startswith("<time datetime=") and "2026" in stamp and stamp.endswith("</time>")
+
+
+@pytest.mark.parametrize(
+    ("log", "expected"),
+    [
+        ("[1/35] a.pdf\n[12/35] Fees.pdf\n", (12, 35, None, 34)),
+        (
+            (
+                "12:00:01 INFO     cfr_v2.procedures - lightrag: [480/1844] passages in the graph; 0 failed, 0 queued; "
+                "batch 3 of 12 took 900s; about 2 h 10 min left\n"
+            ),
+            (480, 1844, "2 h 10 min", 26),
+        ),
+        ("starting\n", None),
+        ("[0/0] nothing\n", None),
+    ],
+)
+def test_progress_is_the_last_count_a_job_printed(tmp_path, log, expected):
+    from cfr_v2.console.jobs import read_progress
+
+    path = tmp_path / "log.txt"
+    path.write_text(log)
+    found = read_progress(path)
+    assert (found and (found.done, found.total, found.left, found.percent)) == (expected or None)
+
+
+def test_a_running_job_shows_its_progress_and_the_count_of_running_jobs(tmp_path):
+    root = __import__("pathlib").Path(__file__).resolve().parents[3]
+    app = create_app(ConsoleSettings(repo_root=root, workspace=tmp_path, env=dict(os.environ)))
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    runner = app.state.runner
+    code = "import time; print('[3/10] Fees.pdf', flush=True); time.sleep(30)"
+    job = runner.start("procedures.snapshot", "Snapshot · pdfs", _python(code))
+    try:
+        deadline = time.monotonic() + 10
+        while "[3/10]" not in runner.log_path(job.id).read_text() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        journal = client.get("/partials/journal").text
+        assert '<progress max="10" value="3"' in journal and "3 of 10" in journal
+        page = client.get(f"/jobs/{job.id}").text
+        assert "<title>(1 running) Snapshot · pdfs · CFR console</title>" in page
+        assert 'href="/jobs?status=running"' in page and "30%" in page and "every 5s" in page
+        assert "Tell me when it ends" in page
+    finally:
+        runner.stop(job.id, force=True)
+        _wait(runner, job.id)
+    assert "running)" not in client.get("/").text

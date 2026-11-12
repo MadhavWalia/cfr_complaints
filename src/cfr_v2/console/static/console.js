@@ -132,3 +132,34 @@
     input.addEventListener("input", update);
   });
 })();
+
+// A running job's page: when it ends, the tab title says so, and (if asked) a notification.
+(() => {
+  const head = () => document.getElementById("job-head");
+  const first = head();
+  if (!first || first.dataset.status !== "running") return;
+  const key = `cfr-notify-${location.pathname}`;
+  const wanted = () => { try { return sessionStorage.getItem(key) === "1"; } catch (e) { return false; } };
+  const offer = () => {
+    const box = head()?.querySelector(".notify");
+    if (!box || !("Notification" in window) || Notification.permission === "denied") return;
+    box.hidden = false;
+    const button = box.querySelector("[data-notify]");
+    const note = box.querySelector("[data-notify-note]");
+    if (wanted()) { button.hidden = true; note.textContent = "You'll get a notification when it ends."; return; }
+    button.addEventListener("click", async () => {
+      if ((await Notification.requestPermission()) !== "granted") { note.textContent = "Notifications are blocked for this site."; return; }
+      try { sessionStorage.setItem(key, "1"); } catch (e) {}
+      button.hidden = true; note.textContent = "You'll get a notification when it ends.";
+    });
+  };
+  offer();
+  document.body.addEventListener("htmx:afterSwap", () => {
+    const now = head();
+    if (!now || now.dataset.status === "running") { offer(); return; }
+    const status = now.dataset.status;
+    document.title = `${status[0].toUpperCase()}${status.slice(1)} · ${now.dataset.title} · CFR console`;
+    if (wanted() && Notification.permission === "granted") new Notification(`${now.dataset.title}: ${status}`);
+    try { sessionStorage.removeItem(key); } catch (e) {}
+  });
+})();

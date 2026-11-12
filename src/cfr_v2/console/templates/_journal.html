@@ -16,6 +16,7 @@
           {% elif job.summary %}<span class="outcome">{{ job.summary }}</span>
           {% elif job.reason %}<span class="outcome reason" title="{{ job.reason }}">{{ job.reason | truncate(110) }}</span>
           {% elif job.status.value == "lost" %}<span class="muted">outcome unknown</span>
+          {% elif job.status.value == "running" and progress_of(job) %}{% set pr = progress_of(job) %}<span class="progress-cell"><progress max="{{ pr.total }}" value="{{ pr.done }}" aria-label="{{ job.title }}: {{ pr.done }} of {{ pr.total }}"></progress><span>{{ "{:,}".format(pr.done) }} of {{ "{:,}".format(pr.total) }}{% if pr.left %} · about {{ pr.left }} left{% endif %}</span></span>
           {% else %}<span class="muted">{{ "exit " ~ job.exit_code if job.exit_code not in (None, 0) else "—" if job.finished else "" }}</span>{% endif %}</td>
       </tr>
       {% endfor %}

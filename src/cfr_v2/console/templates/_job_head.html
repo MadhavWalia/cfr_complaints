@@ -1,11 +1,12 @@
 {% import "_fields.html" as fields %}
-<section id="job-head" class="panel" hx-get="/jobs/{{ job.id }}/head" hx-trigger="job-ended from:body" hx-swap="outerHTML">
+<section id="job-head" class="panel" hx-get="/jobs/{{ job.id }}/head" hx-trigger="job-ended from:body{% if job.status.value == 'running' %}, every 5s{% endif %}" hx-swap="outerHTML" data-status="{{ job.status.value }}" data-title="{{ job.title }}">
   <div class="job-facts">
     <p><span class="pill {{ job.status.pill }}">{{ job.status.value }}</span>
       {% if job.status.value == "running" and job.stop_requested %}<span class="muted">stopping…</span>{% endif %}</p>
     <dl>
       <div><dt>Started</dt><dd>{{ job.created_at | stamp }}</dd></div>
-      <div><dt>Took</dt><dd>{{ job.seconds | took }}</dd></div>
+      <div><dt>{{ "Running for" if job.status.value == "running" else "Took" }}</dt><dd>{{ job.seconds | took }}</dd></div>
+      {% if job.status.value == "running" %}{% set pr = progress_of(job) %}{% if pr %}<div class="progress-fact"><dt>Progress</dt><dd><progress max="{{ pr.total }}" value="{{ pr.done }}" aria-label="{{ pr.done }} of {{ pr.total }}"></progress> {{ "{:,}".format(pr.done) }} of {{ "{:,}".format(pr.total) }} ({{ pr.percent }}%){% if pr.left %} · about {{ pr.left }} left{% endif %}</dd></div>{% endif %}{% endif %}
       {% if job.exit_code is not none %}<div><dt>Exit code</dt><dd>{{ job.exit_code }}</dd></div>{% endif %}
       {% if job.summary %}<div><dt>Outcome</dt><dd>{% if job.summary.startswith("sha256:") %}{{ fields.copy(job.summary, short=false) }}{% else %}{{ job.summary }}{% endif %}</dd></div>{% endif %}
     </dl>
@@ -37,6 +38,7 @@
   {% endif %}
   <details class="cmdline"><summary>Command</summary><p class="mono">{{ job.argv | shell }}</p></details>
   {% if job.status.value == "running" %}
+  <p class="notify" hidden><button type="button" class="btn secondary" data-notify>Tell me when it ends</button><span class="muted" data-notify-note>A browser notification, while this tab stays open.</span></p>
   <form method="post" action="/jobs/{{ job.id }}/stop" class="actions">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {% if job.stop_requested %}
