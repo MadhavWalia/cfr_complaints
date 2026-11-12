@@ -115,6 +115,22 @@ class StageResult:
     def label(self) -> str:
         return STAGE_LABELS.get(self.task, self.task)
 
+    @property
+    def pill(self) -> str:
+        """In the console's one status vocabulary: running, done, failed, waiting."""
+        return {"SUCCEEDED": "done", "FAILED_RETRYABLE": "failed", "FAILED_PERMANENT": "failed"}.get(
+            self.status, "waiting"
+        )
+
+    @property
+    def status_label(self) -> str:
+        return {
+            "SUCCEEDED": "done",
+            "FAILED_RETRYABLE": "failed, to retry",
+            "FAILED_PERMANENT": "failed",
+            "CANCELLED": "cancelled",
+        }.get(self.status, self.status.replace("_", " ").lower())
+
 
 @dataclass(frozen=True)
 class WorkflowJob:

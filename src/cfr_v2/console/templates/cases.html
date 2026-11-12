@@ -35,12 +35,12 @@
     <thead><tr><th scope="col">Case</th><th scope="col">Stage</th><th scope="col">Release</th><th scope="col">Admitted</th><th scope="col">Last change</th></tr></thead>
     <tbody>
     {% for r in rows %}
-    <tr>
+    <tr data-job="run:{{ r.case_run_id }}" data-status="{{ r.state or '' }}">
       <td data-label="Case"><span><a class="mono" href="/cases/{{ r.case_run_id }}">{{ r.case_no }}</a></span></td>
       <td data-label="Stage"><span><span class="pill {{ r.pill }}">{{ r.state_label }}</span></span></td>
       <td data-label="Release"><span class="mono">{{ r.release_id or "not pinned" }}</span></td>
-      <td data-label="Admitted"><span>{{ r.admitted_at.isoformat() | when }}</span></td>
-      <td data-label="Last change"><span>{{ r.updated_at.isoformat() | when if r.updated_at else "—" }}</span></td>
+      <td data-label="Admitted"><span>{{ r.admitted_at.isoformat() | stamp }}</span></td>
+      <td data-label="Last change"><span>{{ r.updated_at.isoformat() | stamp if r.updated_at else "—" }}</span></td>
     </tr>
     {% endfor %}
     </tbody>

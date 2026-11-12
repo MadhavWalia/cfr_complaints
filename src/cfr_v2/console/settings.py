@@ -7,6 +7,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_PORT = 8765
 # Shown on the System page without values: anything that looks like a secret.
@@ -37,6 +38,17 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 def is_secret(key: str) -> bool:
     return bool(_SECRET.search(key))
+
+
+def display_value(key: str, value: str) -> str:
+    """A setting as the console shows it: secrets hidden, a URL's password replaced."""
+    if is_secret(key):
+        return "set, hidden" if value else "empty"
+    parts = urlsplit(value)
+    if parts.scheme and parts.password:
+        host = parts.netloc.rsplit("@", 1)[-1]
+        return urlunsplit(parts._replace(netloc=f"{parts.username}:***@{host}"))
+    return value
 
 
 @dataclass(frozen=True)

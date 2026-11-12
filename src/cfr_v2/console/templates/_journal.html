@@ -7,7 +7,7 @@
       <tbody>
       {% for job in jobs %}
       <tr data-job="{{ job.id }}" data-status="{{ job.status.value }}">
-        <td data-label="When"><span>{{ job.created_at | when }}</span></td>
+        <td data-label="When"><span>{{ job.created_at | stamp }}</span></td>
         <td data-label="Job"><span><a href="/jobs/{{ job.id }}">{{ job.title }}</a></span></td>
         <td data-label="Status"><span><span class="pill {{ job.status.pill }}">{{ job.status.value }}</span></span></td>
         <td data-label="Took" class="num"><span>{{ job.seconds | took }}</span></td>

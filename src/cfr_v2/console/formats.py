@@ -7,12 +7,22 @@ import sys
 from collections.abc import Sequence
 from datetime import datetime
 
+from markupsafe import Markup
+
 
 def when(iso: str, now: datetime | None = None) -> str:
     """Local time: ``16:50`` today, ``11 Nov 16:50`` before."""
     moment = datetime.fromisoformat(iso).astimezone()
     today = (now or datetime.now().astimezone()).date()
     return f"{moment:%H:%M}" if moment.date() == today else f"{moment:%-d %b %H:%M}"
+
+
+def stamp(iso: str) -> Markup:
+    """``when`` as a ``<time>``, with the full local date and time on hover."""
+    moment = datetime.fromisoformat(iso).astimezone()
+    return Markup('<time datetime="{}" title="{}">{}</time>').format(
+        moment.isoformat(timespec="seconds"), f"{moment:%-d %B %Y, %H:%M:%S %Z}", when(iso)
+    )
 
 
 def took(seconds: float) -> str:

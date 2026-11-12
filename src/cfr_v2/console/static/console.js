@@ -39,13 +39,14 @@
   });
 })();
 
-// Journal rows whose status changed since you last saw them stay highlighted until they
-// have been on screen for two seconds (the gate board's changed row). Per browser.
+// Rows whose status changed since you last saw them (jobs and case runs) stay highlighted
+// until they have been on screen for two seconds (the gate board's changed row). On a first
+// visit only what needs attention is highlighted: running, failed, lost. Per browser.
 (() => {
   const KEY = "cfr-seen";
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { return {}; } };
   const save = (seen) => { try { localStorage.setItem(KEY, JSON.stringify(seen)); } catch (e) {} };
-  const first = !localStorage.getItem(KEY);
+  let first = (() => { try { return !localStorage.getItem(KEY); } catch (e) { return false; } })();
   const watch = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       const row = entry.target;
@@ -55,14 +56,15 @@
       }, 2000);
     }
   });
+  const NEWS = new Set(["running", "failed", "lost", "FAILED"]);
   const mark = (scope) => {
     const seen = load();
     scope.querySelectorAll("tr[data-job]").forEach((row) => {
-      if (first) { seen[row.dataset.job] = row.dataset.status; return; }  // nothing is news on a first visit
+      if (first && !NEWS.has(row.dataset.status)) { seen[row.dataset.job] = row.dataset.status; return; }  // first visit: only what needs attention
       row.classList.toggle("lit", seen[row.dataset.job] !== row.dataset.status);
       if (row.classList.contains("lit")) watch.observe(row);
     });
-    if (first) save(seen);
+    if (first) { save(seen); first = false; }  // later refreshes compare against it
   };
   mark(document);
   document.body.addEventListener("htmx:afterSwap", () => mark(document));

@@ -110,3 +110,49 @@ def test_every_area_has_a_page(tmp_path, monkeypatch):
     for path, label in AREAS:
         response = client.get(path)
         assert response.status_code == 200 and f"<h1>{label}</h1>" in response.text, path
+
+
+def test_errors_are_pages_for_people_and_json_for_scripts(tmp_path):
+    _, client = _client(tmp_path)
+    page = client.get("/jobs/no-such-job", headers={"Accept": "text/html"})
+    assert page.status_code == 404 and "<h1>Not found</h1>" in page.text and "No such job." in page.text
+    expired = client.post("/commands/system.migrate", headers={"Accept": "text/html"})
+    assert expired.status_code == 403 and "This page has expired" in expired.text and "Reload the page" in expired.text
+    assert client.get("/jobs/no-such-job").json() == {"detail": "No such job."}
+    partial = client.get("/jobs/no-such-job/head", headers={"Accept": "text/html", "HX-Request": "true"})
+    assert partial.status_code == 404 and partial.json() == {"detail": "No such job."}
+
+
+def test_the_system_page_shows_the_settings_in_use_without_secrets(tmp_path, monkeypatch):
+    settings = ConsoleSettings(
+        repo_root=tmp_path,
+        workspace=tmp_path / "ws",
+        env={
+            "CFR_RELEASE_ID": "cfr-v2-phase-e",
+            "CFR_GATEWAY_API_KEY": "sk-live-123",
+            "CFR_STATE_DATABASE_URL": "postgresql://cfr:hunter2@db.example:5432/cfr_state",
+        },
+        env_file_keys=("CFR_GATEWAY_API_KEY", "CFR_RELEASE_ID", "CFR_STATE_DATABASE_URL"),
+    )
+    monkeypatch.setattr(pipeline, "read_status", lambda db, resolve: _status())
+    app = create_app(settings)
+    app.state.db = SimpleNamespace(close=lambda: None)
+    page = TestClient(app, base_url="http://127.0.0.1:8765").get("/system").text
+    assert "Settings in use" in page and "cfr-v2-phase-e" in page
+    assert "sk-live-123" not in page and "hunter2" not in page
+    assert "set, hidden" in page and "postgresql://cfr:***@db.example:5432/cfr_state" in page
+
+
+def test_display_values_hide_secrets_and_url_passwords():
+    from cfr_v2.console.settings import display_value
+
+    assert display_value("CFR_S3_SECRET", "x") == "set, hidden" and display_value("CFR_S3_SECRET", "") == "empty"
+    assert display_value("CFR_STATE_DATABASE_URL", "postgresql://u:p@h/db") == "postgresql://u:***@h/db"
+    assert display_value("CFR_STATE_DATABASE_URL", "postgresql://h/db") == "postgresql://h/db"
+    assert display_value("CFR_RELEASE_ID", "cfr-v2-phase-e") == "cfr-v2-phase-e"
+
+
+def test_the_lines_counts_open_those_cases(tmp_path, monkeypatch):
+    _, client = _client(tmp_path, _status(failed=7), monkeypatch)
+    page = client.get("/").text
+    assert 'href="/cases?state=PLAN_READY"' in page and 'href="/cases?state=FAILED"' in page

@@ -171,3 +171,8 @@ def test_a_form_starts_a_real_job_whose_log_streams_and_whose_output_downloads(t
     assert job.title in client.get("/partials/journal").text and job.title in client.get("/jobs?status=done").text
     assert job.title not in client.get("/jobs?status=failed").text
     assert "Intake query" in client.get("/intake").text  # recent jobs under the area's commands
+
+
+def test_stamps_carry_the_full_time():
+    stamp = formats.stamp("2026-11-12T09:00:00+00:00")
+    assert stamp.startswith("<time datetime=") and "2026" in stamp and stamp.endswith("</time>")

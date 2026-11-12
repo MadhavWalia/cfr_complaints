@@ -125,8 +125,8 @@ def test_the_pages_say_when_the_database_is_down(client):
     assert 'value="SYN"' in page.text and '<option value="ROUTING" selected>' in page.text
     releases = client.get("/releases")
     assert releases.status_code == 200 and "Can't read the state database" in releases.text
-    assert 'id="cfr-v2-phase-e"' in releases.text and "new cases use it" in releases.text
-    assert "matches this code" in releases.text and "this code runs pass1-2" in releases.text  # an older release
+    assert 'id="cfr-v2-phase-e"' in releases.text and "New cases use it" in releases.text
+    assert "Matches this code" in releases.text and "this code runs pass1-2" in releases.text  # an older release
     assert client.get("/cases/run-1").status_code == 503
 
 
@@ -236,3 +236,14 @@ def test_a_withheld_result_says_why_and_a_run_without_a_trace_has_no_links(clien
     assert "It isn&#39;t INTERNAL, so the console doesn&#39;t show it." in page
     assert "No trace was recorded" in page and "/explore?" not in page
     assert client.get("/cases/other").status_code == 404
+
+
+def test_stage_statuses_use_the_one_vocabulary():
+    def stage(status):
+        return cases.StageResult("c02.pass1", "v", status, None, (), AT)
+
+    assert [(stage(s).pill, stage(s).status_label) for s in ("SUCCEEDED", "FAILED_RETRYABLE", "CANCELLED")] == [
+        ("done", "done"),
+        ("failed", "failed, to retry"),
+        ("waiting", "cancelled"),
+    ]

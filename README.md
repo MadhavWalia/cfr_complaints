@@ -26,6 +26,7 @@ src/cfr_v2/
   selection/    C03 (DSPy): the customer's main complaint (primary claim), bound to the claim-set hash
   procedures/   Operating procedure PDFs: inspect, extract, redact, snapshot; LightRAG store and procedure.search
   routing/      C04 (DSPy): one vertical per claim from LightRAG sections and the vertical definitions
+  console/      the CFR console: a localhost website that runs every command below as a job (LDR-0023)
 registry/       release manifests (releases/<id>.yaml), evidence source taxonomy (evidence_sources/<version>.yaml)
 config/         ee-config template (config_gpt.example.yml); your config_gpt.yml and config/verticals/ are gitignored
 tests/
@@ -94,6 +95,35 @@ set -a; source .env; set +a
 
 Run this after every pull that adds a migration. Intake and workers check the schema
 at startup and refuse to run with `pending migrations: ...` until it is current.
+
+## The console
+
+Everything below can also be done from a website on your machine: admit cases, start and stop
+the worker, run the trials, snapshots and LightRAG builds, score, route, check the gateway,
+migrate and run the tests, then read each job's live log and download its files. It also shows
+the pipeline by stage, each case run with its timeline and stage results, and the releases.
+
+```bash
+.venv/bin/python -m pip install -e ".[console]" "opentelemetry-api==1.39.1" "opentelemetry-sdk==1.39.1"
+.venv/bin/python -m cfr_v2.console          # http://127.0.0.1:8765  (--port to change it)
+```
+
+- **Localhost only.** It listens on 127.0.0.1, refuses other host names, and every action
+  carries a token from the page, so another website can't start jobs.
+- **Settings come from `.env`,** read once at start and passed to every job; restart the
+  console after editing it. The System page lists them, secrets hidden.
+- **Each action is the terminal command,** run as a job under `var/console/jobs/<id>/`: its
+  `log.txt`, `inputs/` (uploads) and `outputs/` (files it wrote). The job page shows the exact
+  command line. Jobs run in their own process session, so restarting the console doesn't stop
+  a worker or a build; a restarted console picks them up again.
+- **Stop** sends SIGTERM (a worker finishes the cases it holds); **Force stop** sends SIGKILL.
+- **The worker form needs a cap** on queued runs and shows the queue first, so a worker can't
+  start over a backlog by accident.
+- **Case pages show INTERNAL stage results only** (claims, the selection, routing decisions).
+  RESTRICTED artifacts (transcripts, source records) are never read. Trace and log links open
+  Grafana (`CFR_GRAFANA_URL`, default `http://localhost:3000`).
+- **Trial review files hold case or procedure text.** They stay in the job's `outputs/`
+  (gitignored `var/`); delete the job from its page once reviewed.
 
 ## Running intake
 

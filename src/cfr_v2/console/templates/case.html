@@ -18,7 +18,7 @@
     <dl>
       <div><dt>Release</dt><dd>{% if run.row.release_id %}<a class="mono" href="/releases#{{ run.row.release_id }}">{{ run.row.release_id }}</a>{% else %}<span class="muted">not pinned</span>{% endif %}</dd></div>
       <div><dt>Lane</dt><dd>{{ run.row.lane }}</dd></div>
-      <div><dt>Admitted</dt><dd>{{ run.row.admitted_at.isoformat() | when }}</dd></div>
+      <div><dt>Admitted</dt><dd>{{ run.row.admitted_at.isoformat() | stamp }}</dd></div>
       {% if run.job %}<div><dt>Attempts</dt><dd>{{ run.job.attempts }} of {{ run.job.max_attempts }}</dd></div>{% endif %}
       {% if run.job and run.job.lease_owner %}<div><dt>Worker</dt><dd class="mono">{{ run.job.lease_owner }}</dd></div>{% endif %}
     </dl>
@@ -34,7 +34,7 @@
   <ol class="timeline">
     {% for e in run.events %}
     <li class="{{ 'failed' if e.state in ('FAILED', 'CANCELLED') else '' }}">
-      <span class="t">{{ e.at.isoformat() | when }}</span>
+      <span class="t">{{ e.at.isoformat() | stamp }}</span>
       <span class="s">{{ e.label }}</span>
       {% if e.detail %}<span class="d mono">{% for k, v in e.detail.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}
     </li>
@@ -51,7 +51,7 @@
   <article class="stage" id="{{ stage.task }}">
     <header>
       <h3>{{ stage.label }}</h3>
-      <span class="pill {{ 'done' if stage.status == 'SUCCEEDED' else 'failed' }}">{{ words(stage.status) }}</span>
+      <span class="pill {{ stage.pill }}">{{ stage.status_label }}</span>
       <span class="muted mono">{{ stage.version }}</span>
       {% if stage.error_code %}<span class="mono">{{ stage.error_code }}</span>{% endif %}
     </header>
@@ -72,7 +72,7 @@
       <h4>Claims <span class="count">{{ data.claims | length }}</span></h4>
       <ul class="items">{% for c in data.claims %}<li>
         <p>{{ c.statement }}</p>
-        <p class="tags">{{ words(c.grounding_status) }} · account {{ (c.account_resolution or "") | replace("_", " ") | lower }}{% if c.event_window_start %} · {{ c.event_window_start }} to {{ c.event_window_end or "?" }}{% endif %}</p>
+        <p class="tags">{{ words(c.grounding_status) }} · account {{ (c.account_resolution or "") | replace("_", " ") | lower }}{% if c.event_window_start %} · <span class="nowrap">{{ c.event_window_start }}</span> to <span class="nowrap">{{ c.event_window_end or "?" }}</span>{% endif %}</p>
         {% if c.evidence_needs %}<ul class="needs">{% for n in c.evidence_needs %}<li>{{ n.description }} <span class="mono muted">{{ n.source_type }}</span></li>{% endfor %}</ul>{% endif %}
       </li>{% endfor %}</ul>
       {% if data.other_checks %}<h4>Other checks <span class="count">{{ data.other_checks | length }}</span></h4>

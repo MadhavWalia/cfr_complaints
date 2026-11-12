@@ -9,7 +9,7 @@
   <ol class="line">
     {% for stop in status.line %}
     <li class="{% if stop.count and stop.state not in ('ADMITTED', 'PLAN_READY') %}busy{% endif %}">
-      <span class="n">{{ "{:,}".format(stop.count) }}</span>
+      <a class="n" href="/cases?state={{ stop.state }}" aria-label="{{ '{:,}'.format(stop.count) }} {{ stop.label }}: show these cases">{{ "{:,}".format(stop.count) }}</a>
       <span class="dot" aria-hidden="true"></span>
       <span class="label">{{ stop.label }}</span>
     </li>
@@ -27,8 +27,8 @@
         <td class="num" data-label="Queued"><span>{{ "{:,}".format(r.queued) }}</span></td>
         <td class="num" data-label="Running"><span>{{ "{:,}".format(r.running) }}</span></td>
         <td data-label="Can a worker run it?"><span>{% if r.compatible %}Yes, it matches this code
-          {% elif r.unknown %}<span class="pill failed">no</span> the release was never pinned
-          {% else %}<span class="pill failed">no</span> it doesn't match this code<span class="detail">{{ r.mismatches | map('string') | join('; ') }}</span>{% endif %}</span></td>
+          {% elif r.unknown %}<strong>No:</strong> the release was never pinned
+          {% else %}<strong>No:</strong> it doesn't match this code<span class="detail">{{ r.mismatches | map('string') | join('; ') }}</span>{% endif %}</span></td>
       </tr>
       {% endfor %}
       </tbody>
@@ -37,9 +37,9 @@
     <p class="muted">Nothing is queued or running.</p>
     {% endif %}
     <p class="facts">
-      {% if status.workers %}{% for owner, held in status.workers %}<span><span class="pill running">worker</span> <span class="mono">{{ owner }}</span> is running {{ held }} case{{ "" if held == 1 else "s" }}</span>{% endfor %}
+      {% if status.workers %}{% for owner, held in status.workers %}<span>Worker <span class="mono">{{ owner }}</span> is running {{ held }} case{{ "" if held == 1 else "s" }}</span>{% endfor %}
       {% else %}<span class="muted">No worker is running a case right now.</span>{% endif %}
-      {% if status.failed %}<span><span class="pill failed">failed</span> {{ "{:,}".format(status.failed) }} case runs failed or were cancelled</span>{% endif %}
+      {% if status.failed %}<span><span class="pill failed">failed</span> <a href="/cases?state=FAILED">{{ "{:,}".format(status.failed) }} case runs failed</a> or were cancelled</span>{% endif %}
     </p>
   </div>
   {% endif %}

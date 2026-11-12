@@ -67,6 +67,27 @@
 </details>
 {% endfor %}
 </div>
+{% if environment is not none %}
+<section class="section" aria-labelledby="env-h">
+  <h2 id="env-h">Settings in use</h2>
+  {% if environment %}
+  <p class="muted lede-sm">Read from <span class="mono">.env</span> when the console started, and passed to every job. After editing <span class="mono">.env</span>, restart the console.</p>
+  <div class="table-wrap">
+    <table class="compact stack env">
+      <caption class="visually-hidden">Settings from .env</caption>
+      <thead><tr><th scope="col">Setting</th><th scope="col">Value</th></tr></thead>
+      <tbody>
+      {% for key, value in environment %}
+      <tr><td data-label="Setting"><span class="mono">{{ key }}</span></td><td data-label="Value"><span class="mono{% if value in ('set, hidden', 'empty') %} muted{% endif %}">{{ value }}</span></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No <span class="mono">.env</span> file: the console uses the environment it was started in. Copy <span class="mono">.env.example</span> to <span class="mono">.env</span> to set them here.</p>
+  {% endif %}
+</section>
+{% endif %}
 {% if recent %}
 <section class="section" aria-labelledby="recent-h">
   <h2 id="recent-h">Recent {{ title | lower }} jobs</h2>

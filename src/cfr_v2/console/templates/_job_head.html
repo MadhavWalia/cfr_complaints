@@ -3,7 +3,7 @@
     <p><span class="pill {{ job.status.pill }}">{{ job.status.value }}</span>
       {% if job.status.value == "running" and job.stop_requested %}<span class="muted">stopping…</span>{% endif %}</p>
     <dl>
-      <div><dt>Started</dt><dd>{{ job.created_at | when }}</dd></div>
+      <div><dt>Started</dt><dd>{{ job.created_at | stamp }}</dd></div>
       <div><dt>Took</dt><dd>{{ job.seconds | took }}</dd></div>
       {% if job.exit_code is not none %}<div><dt>Exit code</dt><dd>{{ job.exit_code }}</dd></div>{% endif %}
       {% if job.summary %}<div><dt>Outcome</dt><dd>{{ job.summary }}</dd></div>{% endif %}

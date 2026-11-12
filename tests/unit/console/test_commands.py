@@ -245,7 +245,11 @@ def test_offline_commands_run_for_real_and_their_files_download(console):
     assert run("evaluation.sources_check", {}).status is JobStatus.DONE
 
     bad = client.post("/commands/evaluation.gold_template", data={"csrf": csrf})
-    assert bad.status_code == 422 and "Cases: type case numbers or choose a file, not both." in bad.text and "open" in bad.text
+    assert (
+        bad.status_code == 422
+        and "Cases: type case numbers or choose a file, not both." in bad.text
+        and "open" in bad.text
+    )
 
     # the review files of a trial are deleted once reviewed
     assert client.post(f"/jobs/{gold.id}/delete", data={"csrf": csrf}, follow_redirects=False).status_code == 303

@@ -18,10 +18,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from cfr_v2.telemetry import get_logger
@@ -29,7 +30,7 @@ from cfr_v2.telemetry import get_logger
 from . import cases, commands, formats
 from . import status as pipeline
 from .jobs import Job, JobRunner, JobStatus
-from .settings import ConsoleSettings
+from .settings import ConsoleSettings, display_value
 
 logger = get_logger("cfr_v2.console")
 HERE = Path(__file__).parent
@@ -53,15 +54,19 @@ AREAS = (
     ("/evaluation", "Evaluation"),
     ("/system", "System"),
 )
-PLANNED = {
-    "/jobs": "Every job started here: its live log, status and outputs to download, and a way to stop it.",
-    "/cases": "Case runs by state and release, and each case's timeline and stage results, with links to its trace.",
-    "/releases": "Each release in the registry, what it pins, whether it matches this code, and its case runs.",
+LEDES = {  # one line under an area's title: what it's for
     "/intake": "Admit a date window, a spreadsheet of case numbers, or synthetic cases; show the query.",
     "/routing": "The router trial and routing.xlsx, publishing the vertical definitions, and the backfill.",
     "/procedures": "Inspect, extract and snapshot procedure PDFs; build and search the LightRAG store.",
     "/evaluation": "The C02 and C03 trial, gold-set templates and scoring, and the evidence-source workbook.",
-    "/system": "Start and stop the worker, releases and their pins, gateway checks, migrations, tests, environment.",
+    "/system": "Start and stop the worker, check the gateway, run migrations and tests, and see the settings in use.",
+}
+ERROR_TITLES = {
+    403: "This page has expired",
+    404: "Not found",
+    409: "Not now",
+    422: "Can't use that",
+    503: "Can't reach the state database",
 }
 
 
@@ -101,7 +106,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     app.state.store = None  # set by tests to an in-memory store
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.globals.update(areas=AREAS, catalogue=commands.BY_ID)
-    templates.env.filters.update(when=formats.when, took=formats.took, size=formats.size, shell=formats.shell)
+    templates.env.filters.update(
+        when=formats.when, stamp=formats.stamp, took=formats.took, size=formats.size, shell=formats.shell
+    )
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
         context.update(
@@ -157,7 +164,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request):
-        return page(request, "pipeline.html", status=read_status(), jobs=runner.list(JOURNAL_ROWS))
+        jobs = runner.list()
+        worker = next((j for j in jobs if j.command == "system.worker" and j.status is JobStatus.RUNNING), None)
+        return page(request, "pipeline.html", status=read_status(), jobs=jobs[:JOURNAL_ROWS], worker=worker)
 
     @app.get("/partials/pipeline-status", response_class=HTMLResponse)
     def pipeline_status(request: Request):
@@ -277,6 +286,26 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             raise HTTPException(status_code=404, detail="No such file.") from None
         return FileResponse(path, filename=path.name)
 
+    def environment() -> list[tuple[str, str]]:
+        """The settings read from .env, secrets hidden, passwords taken out of URLs."""
+        return [(key, display_value(key, settings.env.get(key, ""))) for key in settings.env_file_keys]
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException):
+        """A page for people, JSON for anything else (htmx partials included)."""
+        wants_page = "text/html" in request.headers.get("accept", "") and "hx-request" not in request.headers
+        if not wants_page:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+        response = page(
+            request,
+            "error.html",
+            title=ERROR_TITLES.get(exc.status_code, "Something went wrong"),
+            code=exc.status_code,
+            detail=exc.detail if isinstance(exc.detail, str) else None,
+        )
+        response.status_code = exc.status_code
+        return response
+
     # --- cases and releases (decisions 7 and 8) -------------------------------------------
 
     def _unavailable(exc: Exception) -> str:
@@ -389,21 +418,20 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         status_code: int = 200,
     ):
         found = commands.for_area(area)
-        if not found:
-            return page(request, "planned.html", title=label, plan=PLANNED["/" + area])
         response = page(
             request,
             "area.html",
             title=label,
             area=area,
             commands=found,
-            plan=PLANNED["/" + area],
+            plan=LEDES["/" + area],
             error=error,
             failed=failed,
             values=values or {},
             ctx=form_context,
             recent=listed(area=area),
             status=read_status() if area == "system" else None,  # the queue, before starting a worker
+            environment=environment() if area == "system" else None,
         )
         response.status_code = status_code
         return response
