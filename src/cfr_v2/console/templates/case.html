@@ -35,7 +35,7 @@
   <ol class="timeline">
     {% for e in run.events %}
     <li class="{{ 'failed' if e.state in ('FAILED', 'CANCELLED') else '' }}">
-      <span class="t">{{ e.at.isoformat() | stamp }}</span>
+      <span class="t">{{ e.at.isoformat() | stamp }}{% if loop.previtem %} <span class="gap muted">+{{ (e.at - loop.previtem.at).total_seconds() | took }}</span>{% endif %}</span>
       <span class="s">{{ e.label }}</span>
       {% if e.detail %}<span class="d mono">{% for k, v in e.detail.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}
     </li>
@@ -89,7 +89,7 @@
         <p>{{ claim_text(c.claim_id) }}</p>
         {% if c.outcome == "ROUTED" %}
           {% for v in c.candidates %}
-          <p class="route"><span class="vertical">{{ v.vertical_id }}</span> <span class="muted">{{ "%.0f" | format(v.confidence * 100) }}% · {{ words(v.source) }}</span></p>
+          <p class="route"><span class="vertical">{{ v.vertical_id }}</span> <span class="muted">{{ "%.0f" | format(v.confidence * 100) }}% · source: {{ (v.source or "") | lower }}</span></p>
           {% if v.rationale %}<p class="why">{{ v.rationale }}</p>{% endif %}
           {% if v.procedures %}<ul class="needs">{% for p in v.procedures %}<li>{{ p.file_name }} · {{ p.section_title }} <span class="muted">p. {{ p.page_start }}{% if p.page_end != p.page_start %}–{{ p.page_end }}{% endif %}</span></li>{% endfor %}</ul>{% endif %}
           {% endfor %}

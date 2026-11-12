@@ -128,6 +128,7 @@ main { padding: var(--s6) var(--s7) var(--s7); max-width: 1280px; width: 100%; }
 .line li.busy .dot { background: var(--accent); }
 .line .label { font-size: 13px; color: var(--text-2); }
 .queue { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--line-soft); display: grid; gap: var(--s2); }
+.queue.alone { margin-top: 0; padding-top: 0; border-top: 0; }
 .queue .facts { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s5); }
 .queue .facts > span { display: block; }
 .queue .facts .pill { margin-right: var(--s1); }
@@ -217,7 +218,7 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 .last-error strong { color: var(--heading); margin-right: var(--s2); }
 
 .timeline { list-style: none; margin: 0; padding: 0 0 0 8px; display: grid; gap: 0; max-width: 760px; }
-.timeline li { display: grid; grid-template-columns: 7.5em 12em 1fr; gap: var(--s3); padding: var(--s2) 0 var(--s2) var(--s5); position: relative; }
+.timeline li { display: grid; grid-template-columns: 11em 12em 1fr; gap: var(--s3); padding: var(--s2) 0 var(--s2) var(--s5); position: relative; }
 /* The spine joining the stops, as on the pipeline line. */
 .timeline li::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
 .timeline li:first-child::after { top: 14px; }
@@ -341,13 +342,13 @@ pre.log::selection { background: var(--light-blue); color: var(--deep); }
 .section + .commands { margin-top: var(--s5); }
 .commands { max-width: 760px; margin-bottom: var(--s7); border-bottom: 1px solid var(--line-soft); }
 .command { border-top: 1px solid var(--line-soft); scroll-margin-top: var(--s4); }
-.command > summary { list-style: none; cursor: pointer; position: relative; padding: var(--s4) var(--s7) var(--s4) 0; }
+.command > summary { list-style: none; cursor: pointer; padding: var(--s4) 0; }
 .command > summary::-webkit-details-marker { display: none; }
-.command > summary::after {
-  content: ""; position: absolute; right: var(--s3); top: calc(var(--s4) + 8px); width: 8px; height: 8px;
+.command > summary h2::after {  /* the open/closed chevron, beside the title it belongs to */
+  content: ""; display: inline-block; width: 8px; height: 8px; margin-left: var(--s3); vertical-align: 4px;
   border-right: 2px solid var(--text-2); border-bottom: 2px solid var(--text-2); transform: rotate(45deg);
 }
-.command[open] > summary::after { transform: rotate(-135deg); top: calc(var(--s4) + 12px); }
+.command[open] > summary h2::after { transform: rotate(-135deg); vertical-align: 0; }
 .command > summary h2 { margin: 0; }
 .command > summary:hover h2 { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 .command > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -377,3 +378,14 @@ pre.log::selection { background: var(--light-blue); color: var(--deep); }
 .form-error:focus { outline: none; }
 :root[data-theme="dark"] .form-error { color: var(--white); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .form-error { color: var(--white); } }
+
+/* Help: how-tos and the glossary (LDR-0025 step 6). */
+.toc { margin: 0 0 var(--s5); }
+.toc ul { display: grid; gap: var(--s1); }
+.howto ol { margin: 0; padding-left: var(--s5); display: grid; gap: var(--s2); max-width: var(--measure); }
+.glossary { margin: 0; display: grid; gap: var(--s3); max-width: var(--measure); }
+.glossary dt { font-weight: 600; color: var(--heading); }
+.glossary dd { margin: 2px 0 0; }
+.section[id] { scroll-margin-top: var(--s4); }
+.timeline .gap { font-size: 12px; margin-left: var(--s1); }
+.howto li, .glossary dd, .attention .text { text-wrap: pretty; }

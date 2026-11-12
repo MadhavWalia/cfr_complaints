@@ -36,7 +36,7 @@
 <section class="section" aria-labelledby="env-h">
   <h2 id="env-h">Settings in use</h2>
   {% if environment %}
-  <p class="muted lede-sm">Read from <span class="mono">.env</span> when the console started, and passed to every job. After editing <span class="mono">.env</span>, restart the console.</p>
+  <p class="muted lede-sm">Read from <span class="mono">.env</span> when the console started, and passed to every job. Making a release current (on Releases) writes <span class="mono">CFR_RELEASE_ID</span> there and takes effect at once; after editing <span class="mono">.env</span> by hand, restart the console.</p>
   <div class="table-wrap">
     <table class="compact stack env">
       <caption class="visually-hidden">Settings from .env</caption>

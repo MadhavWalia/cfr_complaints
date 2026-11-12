@@ -54,6 +54,7 @@ AREAS = (
     ("/procedures", "Procedures"),
     ("/evaluation", "Evaluation"),
     ("/system", "System"),
+    ("/help", "Help"),
 )
 LEDES = {  # one line under an area's title: what it's for
     "/intake": "Admit a date window, a spreadsheet of case numbers, or synthetic cases; show the query.",
@@ -180,18 +181,21 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             "pipeline.html",
             status=status,
             attention=pipeline.attention(status, jobs, worker_job=worker),
+            view="home",
             jobs=jobs[:JOURNAL_ROWS],
             worker=worker,
         )
 
     @app.get("/partials/pipeline-status", response_class=HTMLResponse)
-    def pipeline_status(request: Request, attention: bool = False):
+    def pipeline_status(request: Request, view: str = "home"):
+        """The panel, refreshed: the home page's (what needs attention, the stage line and the
+        queue), or System's (the queue only)."""
         status = read_status()
-        found = None
-        if attention:  # the home page's copy also lists what needs attention
-            jobs = runner.list()
-            found = pipeline.attention(status, jobs, worker_job=console_worker(jobs))
-        return page(request, "_pipeline_status.html", status=status, attention=found)
+        if view == "queue":
+            return page(request, "_pipeline_status.html", status=status, view="queue")
+        jobs = runner.list()
+        found = pipeline.attention(status, jobs, worker_job=console_worker(jobs))
+        return page(request, "_pipeline_status.html", status=status, attention=found, view="home")
 
     def listed(*, area: str | None = None, status: str | None = None, everything: bool = False) -> list[Job]:
         jobs = runner.list(None if everything or area else JOURNAL_ROWS)
@@ -417,6 +421,10 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             data, media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{name}"'}
         )
 
+    @app.get("/help", response_class=HTMLResponse)
+    def help_page(request: Request):
+        return page(request, "help.html", title="Help")
+
     @app.get("/releases", response_class=HTMLResponse)
     def releases(request: Request):
         def rows():
@@ -534,13 +542,14 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             ctx=form_context,
             recent=listed(area=area),
             status=read_status() if area == "system" else None,  # the queue, before starting a worker
+            view="queue",
             environment=environment() if area == "system" else None,
         )
         response.status_code = status_code
         return response
 
     for path, label in AREAS[1:]:
-        if path in ("/jobs", "/cases", "/releases"):
+        if path in ("/jobs", "/cases", "/releases", "/help"):
             continue
 
         def show(

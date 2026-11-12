@@ -111,12 +111,25 @@ the pipeline by stage, each case run with its timeline and stage results, and th
 - **Localhost only.** It listens on 127.0.0.1, refuses other host names, and every action
   carries a token from the page, so another website can't start jobs.
 - **Settings come from `.env`,** read once at start and passed to every job; restart the
-  console after editing it. The System page lists them, secrets hidden.
+  console after editing it. The System page lists them, secrets hidden. **Make current** on
+  Releases is the one setting the console writes (`CFR_RELEASE_ID`); it applies at once.
+- **Releases:** **New release** copies a release's file with a new snapshot or knowledge
+  document (stage versions stay as they are) and writes it to `registry/releases/` for you to
+  commit; Make current is offered once its snapshot's LightRAG store is built.
 - **Each action is the terminal command,** run as a job under `var/console/jobs/<id>/`: its
   `log.txt`, `inputs/` (uploads) and `outputs/` (files it wrote). The job page shows the exact
   command line. Jobs run in their own process session, so restarting the console doesn't stop
   a worker or a build; a restarted console picks them up again.
 - **Stop** sends SIGTERM (a worker finishes the cases it holds); **Force stop** sends SIGKILL.
+- **A failed job says why:** the error line from its log, what it usually means and what to do,
+  and **Run again** reopens its form. A finished job links to its usual next step (a snapshot to
+  its build, a build to a release, a trial to routing its claims), filled in.
+- **Before a job starts,** each command shows what it does as tags (calls gpt-5, writes the
+  database, keep output local …) and, where it can, how many model calls it will make. Long jobs
+  show their progress (`n of N`, time left) and can send a browser notification when they end.
+- **The Pipeline page opens with what needs attention** (failed jobs and runs, blocked
+  releases, runs waiting with no worker), each with its action. **Help** has the recurring tasks
+  step by step and the glossary.
 - **The worker form needs a cap** on queued runs and shows the queue first, so a worker can't
   start over a backlog by accident.
 - **Case pages show INTERNAL stage results only** (claims, the selection, routing decisions).

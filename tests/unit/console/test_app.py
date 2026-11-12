@@ -239,11 +239,14 @@ def test_what_needs_attention_comes_first_with_its_action(tmp_path, monkeypatch)
     _, client = _client(tmp_path, _status(failed=8602, releases=(ready, blocked)), monkeypatch)
     page = client.get("/").text
     assert "Needs attention" in page and 'href="/releases#cfr-v2-phase-d">See the release' in page
-    assert 'hx-get="/partials/pipeline-status?attention=true"' in page and "Updated " in page
-    partial = client.get("/partials/pipeline-status?attention=true").text
-    assert "Needs attention" in partial and "Needs attention" not in client.get("/partials/pipeline-status").text
+    assert 'hx-get="/partials/pipeline-status?view=home"' in page and "Updated " in page
+    partial = client.get("/partials/pipeline-status?view=home").text
+    assert "Needs attention" in partial and 'class="line"' in partial
+    # System: the queue only, with the failed count (no attention list there)
     system = client.get("/system").text
-    assert "Needs attention" not in system and 'hx-get="/partials/pipeline-status"' in system
+    assert "Needs attention" not in system and 'hx-get="/partials/pipeline-status?view=queue"' in system
+    assert 'class="line"' not in system and "8,602 case runs failed" in system
+    assert 'class="line"' not in client.get("/partials/pipeline-status?view=queue").text
 
 
 def test_area_pages_show_what_each_command_does(tmp_path, monkeypatch):
@@ -252,3 +255,18 @@ def test_area_pages_show_what_each_command_does(tmp_path, monkeypatch):
     assert '<li class="badge cost" title="Spends model calls on the gateway">calls gpt-5</li>' in page
     assert 'data-field="evaluation.trial-sample"' in page and "Up to 15 gpt-5 calls" in page
     assert ">changes nothing</li>" in page
+
+
+def test_the_help_page_covers_the_recurring_tasks_and_the_words(tmp_path, monkeypatch):
+    _, client = _client(tmp_path, _status(), monkeypatch)
+    page = client.get("/help").text
+    for anchor in ("new-procedures", "run-cases", "trial", "failed", "stages", "words"):
+        assert f'id="{anchor}"' in page, anchor
+    for link in (
+        "/procedures#procedures.snapshot",
+        "/releases#new-release",
+        "/system#system.worker",
+        "/evaluation#evaluation.trial",
+    ):
+        assert f'href="{link}"' in page, link
+    assert '<a class="area" href="/help"' in page and 'href="/help#stages"' in client.get("/").text
