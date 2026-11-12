@@ -249,13 +249,39 @@ def _workdir(ctx: Context) -> str:
     return ctx.env.get("CFR_LIGHTRAG_WORKDIR") or "lightrag_store"
 
 
-def _store_ref(ctx: Context) -> str | None:
-    """The snapshot the LightRAG store was built from (its ``cfr_store.json``)."""
+def _built_from(workdir: Path) -> str | None:
+    """The snapshot a LightRAG store was built from (its ``cfr_store.json``), if it records one."""
     try:
-        marker = json.loads((ctx.root / _workdir(ctx) / "cfr_store.json").read_text(encoding="utf-8"))
+        marker = json.loads((workdir / "cfr_store.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return marker.get("procedures_ref") if isinstance(marker, dict) else None
+
+
+def _store_ref(ctx: Context) -> str | None:
+    """The snapshot the configured LightRAG store was built from."""
+    return _built_from(ctx.root / _workdir(ctx))
+
+
+def _new_store(snapshot: str) -> str:
+    """A folder for a store built from ``snapshot``: the start of its hash names it."""
+    return f"lightrag_store_{snapshot.removeprefix('sha256:')[:12]}"
+
+
+def _build_workdir(ctx: Context) -> str:
+    """For a build: the configured store, unless it was built from another snapshot than the one
+    the form offers; a store never takes a second snapshot, so that one gets a new folder."""
+    snapshot, built = _latest_snapshot(ctx), _store_ref(ctx)
+    return _new_store(snapshot) if snapshot and built and built != snapshot else _workdir(ctx)
+
+
+def _store_takes(values: Values) -> None:
+    built = _built_from(values["workdir"])
+    if built and built != values["procedures"]:
+        raise FormError(
+            f"LightRAG store: {values['workdir'].name} was built from {built[:19]}…, and a store never takes "
+            f"a second snapshot. Type a new folder, such as {_new_store(values['procedures'])}."
+        )
 
 
 def _latest_snapshot(ctx: Context) -> str | None:
@@ -538,9 +564,17 @@ CATALOGUE: tuple[Command, ...] = (
         module="cfr_v2.procedures",
         fields=(
             Field("procedures", "Snapshot", required=True, default=_latest_snapshot),
-            Field("workdir", "LightRAG store", "path", required=True, default=_workdir, help="Created if missing."),
+            Field(
+                "workdir",
+                "LightRAG store",
+                "path",
+                required=True,
+                default=_build_workdir,
+                help="Created if missing. A store holds one snapshot: a new snapshot needs a new folder.",
+            ),
             Field("concurrency", "Passages at once", "int", required=True, default=16, minimum=1, maximum=64),
         ),
+        check=_store_takes,
         args=lambda v, folder: [
             "lightrag-build",
             v["procedures"],

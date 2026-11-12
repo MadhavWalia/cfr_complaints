@@ -110,10 +110,15 @@ def test_procedures_commands_take_paths_and_default_to_the_store(ctx, tmp_path):
     assert _args("procedures.snapshot", {"folder": pdfs, "previous": "sha256:old"}, ctx, tmp_path) == [
         "snapshot", pdfs, "--previous", "sha256:old",
     ]  # fmt: skip
-    # a build defaults to the newest snapshot made here; a search to the one the store was built from
+    # a build defaults to the newest snapshot made here; the store holds another, so a new folder
     assert _args("procedures.build", {}, ctx, tmp_path) == [
-        "lightrag-build", "sha256:new", "--workdir", store, "--concurrency", "16",
+        "lightrag-build", "sha256:new", "--workdir", str(tmp_path / "lightrag_store_new"), "--concurrency", "16",
     ]  # fmt: skip
+    with pytest.raises(FormError, match="store was built from sha256:built…, .* such as lightrag_store_new"):
+        BY_ID["procedures.build"].parse({"workdir": store}, ctx)
+    resume = {"procedures": "sha256:built", "workdir": store}
+    assert _args("procedures.build", resume, ctx, tmp_path)[3] == store  # resumes its own
+    # a search defaults to the one the store was built from
     assert _args("procedures.search", {"query": "fee after cancel", "text": "on"}, ctx, tmp_path) == [
         "search", "sha256:built", "fee after cancel", "--workdir", store, "--limit", "8", "--text",
     ]  # fmt: skip
