@@ -10,15 +10,18 @@ A DSPy call carries no case identity, so programs run through ``run_program``, w
 sets the program and case for the engine's ``ModelRequest`` and maps DSPy's errors
 back to ``ModelError``. A call made outside ``run_program`` is refused.
 
-Only the async path is supported: stage handlers submit ``run_program`` to the
-process's ``ModelLoop`` (``bridge.py``).
+Stage handlers use the async path only: they submit ``run_program`` to the process's
+``ModelLoop`` (``bridge.py``). Prompt optimization (LDR-0027) is the one synchronous user:
+DSPy's optimizers call programs from threads, so ``optimization_lm`` runs each call on the
+same loop, through the same client, under one fixed identity and a call cap.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import dspy
@@ -114,6 +117,77 @@ class _NoSyncEngine(_Capabilities):
 
     def close(self) -> None:
         return None
+
+
+class CallCapReached(PermanentModelError):
+    """An optimization run spent its model calls."""
+
+    error_code = "MODEL_CALL_CAP"
+
+
+@dataclass
+class CallBudget:
+    """Model calls an optimization run may make; ``take`` refuses the one past ``cap``."""
+
+    cap: int
+    used: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def take(self) -> int:
+        with self._lock:
+            if self.used >= self.cap:
+                raise CallCapReached(f"the run's cap of {self.cap} model calls is spent")
+            self.used += 1
+            return self.used
+
+
+class _OptimizationEngine(_Capabilities):
+    """Sync DSPy engine for optimizers: each call runs ``GatewayEngine`` on the model loop as ``call``."""
+
+    def __init__(self, client: ModelClient, call: ProgramCall, budget: CallBudget, on_call=None) -> None:
+        self.inner = GatewayEngine(client)
+        self.call = call
+        self.budget = budget
+        self.on_call = on_call
+
+    def complete(self, request: Request) -> Response:
+        from .bridge import model_loop
+
+        used = self.budget.take()
+
+        async def as_call() -> Response:
+            token = _current_call.set(self.call)
+            try:
+                return await self.inner.complete(request)
+            finally:
+                _current_call.reset(token)
+
+        response = model_loop().run(as_call())
+        if self.on_call is not None:
+            self.on_call(used)
+        return response
+
+    def stream(self, request: Request):
+        raise NotImplementedError("GatewayEngine does not stream")
+
+    def close(self) -> None:
+        return None
+
+
+def optimization_lm(
+    client: ModelClient, model_id: str, *, call: ProgramCall, budget: CallBudget, on_call=None
+) -> dspy.LM:
+    """A synchronous DSPy LM for prompt optimization: every call goes through ``client`` on the
+    model loop, identified as ``call`` (which must be marked redacted), and counts against
+    ``budget``. ``on_call(used)`` runs after each call, for progress."""
+    if not call.redacted:
+        raise UnredactedPayloadError(f"{call.program_id}: optimization inputs must be redacted")
+    return dspy.LM(
+        f"cfr-gateway/{model_id}",
+        engine=_OptimizationEngine(client, call, budget, on_call),
+        cache=False,
+        num_retries=0,  # the client retries
+    )
 
 
 def gateway_lm(client: ModelClient, model_id: str) -> dspy.LM:

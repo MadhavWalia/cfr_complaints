@@ -86,8 +86,9 @@ def selector_inputs(claim_set: ClaimSetRevision) -> dict[str, str]:
     }
 
 
-def make_signature(claim_ids: Sequence[str]) -> type[dspy.Signature]:
-    """Per case: the claim ids become an enum in the output schema."""
+def make_signature(claim_ids: Sequence[str], instructions: str = INSTRUCTIONS) -> type[dspy.Signature]:
+    """Per case: the claim ids become an enum in the output schema. ``instructions`` is the part
+    an optimizer may rewrite (LDR-0027)."""
     claim_id = Literal[tuple(claim_ids)]
     answer = create_model(
         "SelectionOut",
@@ -108,13 +109,25 @@ def make_signature(claim_ids: Sequence[str]) -> type[dspy.Signature]:
             ),
             "selection": (answer, dspy.OutputField(desc="The main complaint.")),
         },
-        INSTRUCTIONS,
+        instructions,
     )
 
 
 class Selector(dspy.Module):
+    """``select`` holds the instructions; each case's claim ids make its own signature per call."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.select = dspy.Predict(make_signature(["claim"]))
+
+    def signature(self, claim_ids: Sequence[str]) -> type[dspy.Signature]:
+        return make_signature(claim_ids, self.select.signature.instructions)
+
     async def aforward(self, claims: str, requests: str, claim_ids: Sequence[str]) -> dspy.Prediction:
-        return await dspy.Predict(make_signature(claim_ids)).acall(claims=claims, requests=requests)
+        return await self.select.acall(signature=self.signature(claim_ids), claims=claims, requests=requests)
+
+    def forward(self, claims: str, requests: str, claim_ids: Sequence[str]) -> dspy.Prediction:
+        return self.select(signature=self.signature(claim_ids), claims=claims, requests=requests)
 
 
 def supporting_spans(claim_set: ClaimSetRevision, claim_id: str) -> tuple[SpanRef, ...]:

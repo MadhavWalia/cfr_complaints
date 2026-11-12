@@ -122,7 +122,8 @@ def _output_models(taxonomy: EvidenceSourceTaxonomy) -> tuple[type[BaseModel], t
     return claim, other
 
 
-def make_signature(taxonomy: EvidenceSourceTaxonomy) -> type[dspy.Signature]:
+def make_signature(taxonomy: EvidenceSourceTaxonomy, instructions: str = INSTRUCTIONS) -> type[dspy.Signature]:
+    """The signature for a taxonomy; ``instructions`` is the part an optimizer may rewrite (LDR-0027)."""
     claim, other = _output_models(taxonomy)
     return dspy.Signature(
         {
@@ -137,18 +138,26 @@ def make_signature(taxonomy: EvidenceSourceTaxonomy) -> type[dspy.Signature]:
             "claims": (list[claim], dspy.OutputField(desc="The claims, in the order of their first allegation.")),
             "other_checks": (list[other], dspy.OutputField(desc="Statements and requests linked to no claim.")),
         },
-        f"{INSTRUCTIONS}\n\n{render_source_types(taxonomy)}",
+        f"{instructions}\n\n{render_source_types(taxonomy)}",
     )
 
 
 class Pass2(dspy.Module):
+    """``ground``'s instructions are the editable part; the taxonomy is appended per call."""
+
     def __init__(self, taxonomy: EvidenceSourceTaxonomy) -> None:
         super().__init__()
         self.taxonomy = taxonomy
-        self.ground = dspy.Predict(make_signature(taxonomy))
+        self.ground = dspy.Predict(make_signature(taxonomy).with_instructions(INSTRUCTIONS))
+
+    def signature(self) -> type[dspy.Signature]:
+        return make_signature(self.taxonomy, self.ground.signature.instructions)
 
     async def aforward(self, **inputs: str) -> dspy.Prediction:
-        return await self.ground.acall(**inputs)
+        return await self.ground.acall(signature=self.signature(), **inputs)
+
+    def forward(self, **inputs: str) -> dspy.Prediction:  # optimizers call programs synchronously
+        return self.ground(signature=self.signature(), **inputs)
 
 
 def program_inputs(pass1: Pass1Result, baseline: BaselineProfile | None, received: date | None) -> dict[str, str]:

@@ -26,6 +26,7 @@ src/cfr_v2/
   selection/    C03 (DSPy): the customer's main complaint (primary claim), bound to the claim-set hash
   procedures/   Operating procedure PDFs: inspect, extract, redact, snapshot; LightRAG store and procedure.search
   routing/      C04 (DSPy): one vertical per claim from LightRAG sections and the vertical definitions
+  optimize/     prompt optimization with DSPy against gold sets (GEPA, MIPROv2, COPRO); patches to review
   console/      the CFR console: a localhost website that runs every command below as a job (LDR-0023)
 registry/       release manifests (releases/<id>.yaml), evidence source taxonomy (evidence_sources/<version>.yaml)
 config/         ee-config template (config_gpt.example.yml); your config_gpt.yml and config/verticals/ are gitignored
@@ -248,6 +249,32 @@ after review.
 **Changing a stage's version** (any `STAGES` entry): add a release pinning the new version and make
 it the default (`IntakeSettings.release_id`, `.env.example`). A unit test fails until you do, and
 workers refuse to start while runs of the old release are queued (LDR-0022).
+
+## Prompt optimization (LDR-0027)
+
+Every model prompt is a DSPy program with one predictor whose instructions can be optimized
+against a gold set: C02 Pass 1 and Pass 2, C03 and C04.
+
+```bash
+.venv/bin/python -m pip install -e ".[optimize]" "opentelemetry-api==1.39.1" "opentelemetry-sdk==1.39.1"
+python -m cfr_v2.optimize prompts                                    # the prompts, versions, readiness
+python -m cfr_v2.optimize run <prompt> gold_*.xlsx --method gepa --budget light --cap 500 --out run1
+```
+
+- **Instructions only.** GEPA, MIPROv2 without demos, or COPRO rewrite the instructions; no
+  examples go into the prompt, so nothing from a case can reach the repository.
+- **Honest comparison.** The gold set is split by case (train, validation, test; fixed seed);
+  the baseline and the candidate are scored on the held-out test split, with the difference and
+  a 95% interval. Fewer than 20 examples is refused; fewer than 50 is warned about.
+- **Capped.** Every model call goes through the gateway client and counts against `--cap`;
+  progress prints as `[n/N]`. DSPy's own logs are silenced during a run: they would print whole
+  examples.
+- **Shipping a better prompt** is a reviewed change: when the candidate is better on test, the
+  run writes `patch.diff` (the new instructions and the bumped program version). Apply and commit
+  it, then make a release that pins the new version.
+- **Gold workbooks and run folders hold case text:** keep them local and delete them after review.
+- Gold specs (templates, readers, metrics) per prompt arrive in phase 2; until then the commands
+  other than `prompts` and `report` say so.
 
 ## Model gateway (P5)
 
