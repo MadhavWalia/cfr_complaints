@@ -100,3 +100,21 @@
     stamp.textContent = stamp.textContent.replace("Updated", "Not updated since") + ": can't reach the console";
   });
 })();
+
+// Copy buttons: the value to the clipboard, and "Copied" for two seconds.
+(() => {
+  const fallback = (text) => {
+    const area = Object.assign(document.createElement("textarea"), { value: text });
+    area.setAttribute("readonly", ""); area.style.position = "fixed"; area.style.opacity = "0";
+    document.body.append(area); area.select();
+    try { document.execCommand("copy"); } finally { area.remove(); }
+  };
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-copy]");
+    if (!button) return;
+    const text = button.dataset.copy;
+    try { await navigator.clipboard.writeText(text); } catch (e) { fallback(text); }
+    button.textContent = "Copied";
+    setTimeout(() => { button.textContent = "Copy"; }, 2000);
+  });
+})();

@@ -311,3 +311,45 @@ def test_the_env_file_keeps_every_other_line(tmp_path):
     for bad in ("a b", "a\nB=1", "$(x)", ""):
         with pytest.raises(ValueError, match="not a plain value"):
             write_env_value(path, "CFR_RELEASE_ID", bad)
+
+
+def test_a_new_release_is_written_from_the_releases_page(repo, monkeypatch):
+    monkeypatch.delenv("CFR_LIGHTRAG_WORKDIR", raising=False)
+    settings = ConsoleSettings.load(repo, workspace=repo / "var")
+    app = create_app(settings)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    snapshot = "sha256:" + "b" * 64
+    page = client.get(f"/releases?snapshot={snapshot}").text
+    assert 'id="new-release"' in page and f'value="{snapshot}"' in page  # from a finished build's next step
+    verticals = ReleaseRegistry(repo / "registry").load("cfr-v2-phase-e").routing_verticals
+    form = {
+        "csrf": app.state.csrf,
+        "base": "cfr-v2-phase-e",
+        "release_id": "cfr-v2-phase-f",
+        "procedure_snapshot": "__other__",
+        "procedure_snapshot_other": snapshot,
+        "routing_verticals": verticals,
+    }
+    sent = client.post("/releases/new", data=form, follow_redirects=False)
+    assert sent.status_code == 303 and sent.headers["location"].startswith("/releases?written=cfr-v2-phase-f&base=")
+    assert ReleaseRegistry(repo / "registry").load("cfr-v2-phase-f").procedure_snapshot == snapshot
+    shown = client.get(sent.headers["location"]).text
+    assert 'Wrote <span class="mono">registry/releases/cfr-v2-phase-f.yaml</span>' in shown
+    assert "procedure_snapshot" in shown and "git add registry/releases/cfr-v2-phase-f.yaml" in shown
+    # its snapshot has no store here, so it can't be made current yet
+    assert "Can&#39;t be made current" in shown or "Can't be made current" in shown
+
+    again = client.post("/releases/new", data=form)
+    assert again.status_code == 422 and "cfr-v2-phase-f already exists" in again.text
+    assert f'value="{snapshot}"' in again.text  # the typed ref is kept
+    assert client.post("/releases/new", data={k: v for k, v in form.items() if k != "csrf"}).status_code == 403
+
+
+def test_a_next_step_opens_its_form_filled_in(repo, monkeypatch):
+    settings = ConsoleSettings.load(repo, workspace=repo / "var")
+    client = TestClient(create_app(settings), base_url="http://127.0.0.1:8765")
+    snapshot = "sha256:" + "c" * 64
+    page = client.get(f"/procedures?fill=procedures.build&procedures={snapshot}").text
+    assert 'id="procedures.build" open' in page and f'value="{snapshot}"' in page
+    assert 'value="16"' in page  # the other fields keep their defaults
+    assert client.get("/procedures?fill=routing.trial").status_code == 404

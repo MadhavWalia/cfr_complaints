@@ -27,7 +27,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from cfr_v2.telemetry import get_logger
 
-from . import cases, commands, formats
+from . import cases, commands, formats, release_files
 from . import status as pipeline
 from .diagnosis import diagnose
 from .jobs import Job, JobRunner, JobStatus
@@ -424,7 +424,64 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             logger.warning("console: state database unavailable: %s", error)
         for release in found:
             release.blockers = cases.blockers(release, settings.repo_root, settings.env)
-        return page(request, "releases.html", title="Releases", releases=found, error=error)
+        query = request.query_params
+        values = {f.name: v for f in commands.NEW_RELEASE if (v := f.initial(form_context)) is not None}
+        if query.get("snapshot"):  # from a finished build: "make a release with this snapshot"
+            values["procedure_snapshot"] = query["snapshot"]
+        by_id = {r.release_id: r for r in found}
+        written = by_id.get(query.get("written", ""))
+        base = by_id.get(query.get("base", ""))
+        return releases_page(request, found, error, values=values, written=written, base=base)
+
+    def releases_page(request: Request, found, error, *, values, form_error=None, written=None, base=None):
+        changed = []
+        if written and written.manifest and base and base.manifest:
+            changed = [
+                (key, getattr(base.manifest, key), getattr(written.manifest, key))
+                for key in release_files.PINS
+                if getattr(base.manifest, key) != getattr(written.manifest, key)
+            ]
+        return page(
+            request,
+            "releases.html",
+            title="Releases",
+            releases=found,
+            error=error,
+            new_release=commands.NEW_RELEASE,
+            values=values,
+            form_error=form_error,
+            written=written,
+            base=base,
+            changed=changed,
+            ctx=form_context,
+        )
+
+    @app.post("/releases/new", dependencies=[Depends(require_csrf)])
+    async def new_release(request: Request):
+        """Writes registry/releases/<id>.yaml from another release, with new routing pins."""
+        form = await request.form()
+        raw = {k: v for k, v in form.multi_items() if isinstance(v, str) and k != "csrf"}
+        try:
+            values = {f.name: f.parse(f.read(form), form_context) for f in commands.NEW_RELEASE}
+            path = release_files.write_release(
+                settings.repo_root / "registry",
+                values["base"],
+                values["release_id"],
+                {key: values[key] for key in release_files.PINS},
+            )
+        except (commands.FormError, release_files.ReleaseFileError) as exc:
+            found, _ = cases.read_releases(settings.repo_root / "registry", None)
+            for release in found:
+                release.blockers = cases.blockers(release, settings.repo_root, settings.env)
+            raw = {
+                f.name: (raw.get(f"{f.name}_other") if raw.get(f.name) == commands.OTHER else raw.get(f.name))
+                for f in commands.NEW_RELEASE
+            }
+            response = releases_page(request, found, None, values=raw, form_error=str(exc))
+            response.status_code = 422
+            return response
+        logger.info("console: wrote release %s from %s", path.stem, values["base"])
+        return RedirectResponse(f"/releases?written={path.stem}&base={values['base']}#{path.stem}", status_code=303)
 
     @app.post("/releases/{release_id}/current", dependencies=[Depends(require_csrf)])
     def make_current(release_id: str):
@@ -452,6 +509,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         filled: str | None = None,
         values: dict | None = None,
         again: Job | None = None,
+        source: Job | None = None,
         status_code: int = 200,
     ):
         """An area's commands. ``filled`` names the command whose form shows ``values`` (a form sent
@@ -468,6 +526,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             filled=filled,
             values=values or {},
             again=again,
+            source=source,
             ctx=form_context,
             recent=listed(area=area),
             status=read_status() if area == "system" else None,  # the queue, before starting a worker
@@ -480,7 +539,25 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         if path in ("/jobs", "/cases", "/releases"):
             continue
 
-        def show(request: Request, again: str | None = None, area: str = path[1:], label: str = label):
+        def show(
+            request: Request,
+            again: str | None = None,
+            fill: str | None = None,
+            area: str = path[1:],
+            label: str = label,
+        ):
+            if fill is not None:  # a next step: the command's form, filled in from the query
+                command = commands.BY_ID.get(fill)
+                if command is None or command.area != area:
+                    raise HTTPException(status_code=404, detail="No such command here.")
+                query = request.query_params
+                values = {f.name: str(v) for f in command.fields if (v := f.initial(form_context)) is not None}
+                values |= {f.name: query[f.name] for f in command.fields if f.name in query}
+                try:
+                    source = runner.get(query.get("from", ""))
+                except KeyError:
+                    source = None
+                return area_page(request, area, label, filled=fill, values=values, source=source)
             if again is None:
                 return area_page(request, area, label)
             job = _job(again)

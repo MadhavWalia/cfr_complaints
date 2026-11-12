@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -279,3 +280,36 @@ def test_offline_commands_run_for_real_and_their_files_download(console):
     assert client.post(f"/jobs/{gold.id}/delete", data={"csrf": csrf}, follow_redirects=False).status_code == 303
     assert client.get(f"/jobs/{gold.id}").status_code == 404
     assert client.post(f"/jobs/{export.id}/delete").status_code == 403  # no token
+
+
+def test_snapshots_are_offered_with_where_they_were_seen_and_their_store(ctx, tmp_path):
+    (tmp_path / "registry" / "releases" / "cfr-v2-phase-x.yaml").write_text("procedure_snapshot: sha256:built\n")
+    choices = dict(commands.known_snapshots(ctx))
+    assert list(choices) == ["sha256:new", "sha256:built"]
+    assert "taken" in choices["sha256:new"] and choices["sha256:new"].endswith("no store yet")
+    assert "pinned by cfr-v2-phase-x" in choices["sha256:built"] and choices["sha256:built"].endswith("store built")
+    # "Another ref…" reads the typed one; a ref must look like one
+    form = {"procedures": commands.OTHER, "procedures_other": "sha256:built"}
+    assert BY_ID["procedures.build"].parse(form, ctx)["procedures"] == "sha256:built"
+    with pytest.raises(FormError, match="Snapshot: a ref such as sha256"):
+        BY_ID["procedures.build"].parse({"procedures": "latest"}, ctx)
+
+
+def test_a_finished_job_links_to_what_usually_follows(ctx):
+    snapshot = Job("20261112-121420-9af6", "procedures.snapshot", "Snapshot", ("x",), JobStatus.DONE,
+                   "2026-11-12T12:14:20+00:00", summary="sha256:" + "b" * 64)  # fmt: skip
+    [(label, href)] = BY_ID["procedures.snapshot"].next_links(snapshot)
+    assert label == "Build its LightRAG store"
+    assert (
+        href == f"/procedures?fill=procedures.build&from={snapshot.id}&procedures=sha256%3A{'b' * 64}#procedures.build"
+    )
+    argv = ("python", "-m", "cfr_v2.procedures", "lightrag-build", "sha256:" + "b" * 64, "--concurrency", "16")
+    build = Job("20261112-130000-aaaa", "procedures.build", "Build", argv, JobStatus.DONE, "2026-11-12T13:00:00+00:00")
+    links = dict(BY_ID["procedures.build"].next_links(build))
+    assert links["Make a release with this snapshot"] == f"/releases?snapshot=sha256%3A{'b' * 64}#new-release"
+    assert BY_ID["procedures.build"].next_links(replace(build, status=JobStatus.FAILED)) == []  # only when done
+    count = Job("20261112-140000-cccc", "routing.backfill", "Backfill · count", ("--count-only",), JobStatus.DONE,
+                "2026-11-12T14:00:00+00:00", form={"from_release": "cfr-v2-phase-d", "count_only": "on"})  # fmt: skip
+    [(label, href)] = BY_ID["routing.backfill"].next_links(count)
+    assert label == "Route them" and "from_release=cfr-v2-phase-d" in href and "count_only=#" in href  # unticked
+    assert BY_ID["routing.backfill"].next_links(replace(count, argv=("backfill",))) == []  # a real run: done

@@ -1,0 +1,56 @@
+{# Form fields and copyable values, shared by the area pages and the release form (LDR-0025). #}
+{% macro field(f, value, ctx, fid) %}
+    {% set hid = fid ~ "-help" %}
+    <div class="field{% if f.kind == 'check' %} check{% endif %}">
+      {% if f.kind == "check" %}
+      <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      <label for="{{ fid }}">{{ f.label }}</label>
+      {% else %}
+      {% set options = f.options(ctx) if f.kind in ("choice", "job") else none %}
+      {% if f.kind == "job" and not options %}
+      <p class="label">{{ f.label }}</p>
+      {% else %}
+      <label for="{{ fid }}">{{ f.label }}{% if not f.required and not f.either %} <span class="muted">(optional)</span>{% endif %}</label>
+      {% endif %}
+      {% if f.kind in ("choice", "job") %}
+      {% if f.kind == "job" and not options %}
+      {% set source = catalogue[f.source] %}
+      <p class="muted none">None yet: a finished <a href="/{{ source.area }}#{{ source.id }}">{{ source.title }}</a> job appears here.</p>
+      {% else %}
+      <select id="{{ fid }}" name="{{ f.name }}"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+        {% if not f.required %}<option value="">None</option>{% endif %}
+        {% for v, l in options %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      {% elif f.kind == "ref" %}
+      {% set options = f.options(ctx) %}
+      {% set other = value and value not in (options | map("first") | list) %}
+      <div class="ref-pick">
+        <select id="{{ fid }}" name="{{ f.name }}"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+          {% if not value %}<option value="" selected>{{ "Choose one" if f.required else "None" }}</option>{% elif not f.required %}<option value="">None</option>{% endif %}
+          {% for v, l in options %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}
+          <option value="__other__"{% if other %} selected{% endif %}>Another ref…</option>
+        </select>
+        <input class="mono other" id="{{ fid }}-other" name="{{ f.name }}_other" aria-label="{{ f.label }}: another ref" placeholder="sha256:…" spellcheck="false" autocomplete="off"{% if other %} value="{{ value }}"{% endif %}>
+      </div>
+      {% elif f.kind in ("file", "files") %}
+      <input type="file" id="{{ fid }}" name="{{ f.name }}"{% if f.kind == "files" %} multiple{% endif %}{% if f.accept %} accept="{{ f.accept }}"{% endif %}{% if f.required %} required{% endif %}{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      {% elif f.kind == "lines" %}
+      <textarea id="{{ fid }}" name="{{ f.name }}" rows="4" spellcheck="false" class="mono"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>{{ value or "" }}</textarea>
+      {% else %}
+      <input id="{{ fid }}" name="{{ f.name }}"
+        type="{{ 'number' if f.kind in ('int', 'float') else 'date' if f.kind == 'date' else 'text' }}"
+        {%- if f.kind == "float" %} step="any"{% endif %}
+        {%- if f.kind == "path" %} class="mono" spellcheck="false" autocomplete="off"{% endif %}
+        {%- if value is not none %} value="{{ value }}"{% endif %}
+        {%- if f.minimum is not none %} min="{{ f.minimum }}"{% endif %}
+        {%- if f.maximum is not none %} max="{{ f.maximum }}"{% endif %}
+        {%- if f.required %} required{% endif %}
+        {%- if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      {% endif %}
+      {% endif %}
+      {% if f.help %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}
+    </div>
+{% endmacro %}
+
+{% macro copy(value, short=true) %}<span class="copyable"><span class="mono" title="{{ value }}">{{ (value[:19] ~ "…") if short and value | length > 22 else value }}</span><button type="button" class="copy" data-copy="{{ value }}" aria-label="Copy {{ value[:19] }}…">Copy</button></span>{% endmacro %}

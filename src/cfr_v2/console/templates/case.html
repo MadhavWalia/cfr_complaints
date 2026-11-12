@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_fields.html" as fields %}
 {% macro claim_text(id) %}{% set c = claims.get(id) %}{% if c %}{{ c.statement }}{% else %}<span class="mono">{{ id }}</span>{% endif %}{% endmacro %}
 {% macro words(value) %}{{ (value or "") | replace("_", " ") | lower | capitalize }}{% endmacro %}
 {% block main %}
@@ -25,7 +26,7 @@
   </div>
   {% if run.job and run.job.last_error %}<p class="last-error"><strong>Last error</strong> <span class="mono">{{ run.job.last_error }}</span></p>{% endif %}
   {% if not trace_url %}<p class="muted note">No trace was recorded for this run, so there are no Grafana links.</p>{% endif %}
-  <details class="cmdline"><summary>Run id</summary><p class="mono">{{ run.row.case_run_id }}</p></details>
+  <p class="run-id"><span class="muted">Run id</span> {{ fields.copy(run.row.case_run_id, short=false) }}</p>
 </section>
 
 <section class="section" aria-labelledby="timeline-h">

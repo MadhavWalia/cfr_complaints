@@ -184,6 +184,21 @@ tr.lit td:first-child > span::after, tr.lit td:first-child > time::after { conte
 .failure p { margin: 0; }
 .failure .reason { color: var(--heading); font-size: 14px; overflow-wrap: anywhere; }
 .filled-from { color: var(--text-2); max-width: var(--measure); }
+
+/* Step 3: refs to choose and copy, and what comes next. */
+.ref-pick { display: grid; gap: var(--s2); }
+.ref-pick .other { display: none; }
+.ref-pick:has(option[value="__other__"]:checked) .other { display: block; }
+.copyable { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); max-width: 100%; }
+.copyable > .mono { overflow-wrap: anywhere; }
+button.copy { font: 600 12px/1 var(--sans); color: var(--accent); background: transparent; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; min-height: 24px; cursor: pointer; }
+button.copy:hover { background: var(--hover); }
+.next { margin-top: var(--s4); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.next h2 { font-size: 15px; margin: 0 0 var(--s2); }
+.written { display: grid; gap: var(--s2); margin-bottom: var(--s5); max-width: 960px; }
+.written p, .written ul { margin: 0; }
+.new-release .form { max-width: var(--measure); }
+.run-id { margin-top: var(--s4); display: flex; flex-wrap: wrap; gap: var(--s2); align-items: baseline; }
 .last-error strong { color: var(--heading); margin-right: var(--s2); }
 
 .timeline { list-style: none; margin: 0; padding: 0 0 0 8px; display: grid; gap: 0; max-width: 760px; }
@@ -333,6 +348,7 @@ pre.log::selection { background: var(--light-blue); color: var(--deep); }
 .field label, .field .label { font-weight: 600; margin: 0; }
 .field.check { grid-template-columns: auto 1fr; align-items: center; column-gap: var(--s2); }
 .field.check .help { grid-column: 2; }
+.field:has(.ref-pick) { max-width: var(--measure); }  /* a ref's label says where it was seen */
 .field input:not([type="checkbox"]), .field select, .field textarea {
   font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--g4); border-radius: 4px;
   min-height: 40px; padding: 0 var(--s3); width: 100%;

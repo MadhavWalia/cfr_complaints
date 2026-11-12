@@ -1,3 +1,4 @@
+{% import "_fields.html" as fields %}
 <section id="job-head" class="panel" hx-get="/jobs/{{ job.id }}/head" hx-trigger="job-ended from:body" hx-swap="outerHTML">
   <div class="job-facts">
     <p><span class="pill {{ job.status.pill }}">{{ job.status.value }}</span>
@@ -6,7 +7,7 @@
       <div><dt>Started</dt><dd>{{ job.created_at | stamp }}</dd></div>
       <div><dt>Took</dt><dd>{{ job.seconds | took }}</dd></div>
       {% if job.exit_code is not none %}<div><dt>Exit code</dt><dd>{{ job.exit_code }}</dd></div>{% endif %}
-      {% if job.summary %}<div><dt>Outcome</dt><dd>{{ job.summary }}</dd></div>{% endif %}
+      {% if job.summary %}<div><dt>Outcome</dt><dd>{% if job.summary.startswith("sha256:") %}{{ fields.copy(job.summary, short=false) }}{% else %}{{ job.summary }}{% endif %}</dd></div>{% endif %}
     </dl>
   </div>
   {% if job.status.value == "failed" %}
@@ -22,6 +23,13 @@
   <div class="failure" role="status">
     <h2>Outcome unknown</h2>
     <p>The console was restarted while this job ran, and its process had ended by the time it came back, so its exit code was never seen. The end of the log is the best clue.</p>
+  </div>
+  {% endif %}
+  {% set steps = command.next_links(job) if command else [] %}
+  {% if steps %}
+  <div class="next">
+    <h2>Next</h2>
+    <p class="actions">{% for label, href in steps %}<a class="btn {{ 'primary' if loop.first else 'secondary' }}" href="{{ href }}">{{ label }}</a>{% endfor %}</p>
   </div>
   {% endif %}
   {% if job.finished and command and job.form is not none %}

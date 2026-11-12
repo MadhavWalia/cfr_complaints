@@ -17,10 +17,11 @@ import re
 import shutil
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlencode
 
 import yaml
 
@@ -29,7 +30,8 @@ from cfr_v2.registry.manifests import ReleaseRegistry
 
 from . import formats
 
-FieldKind = Literal["text", "int", "float", "date", "check", "choice", "file", "files", "path", "lines", "job"]
+FieldKind = Literal["text", "int", "float", "date", "check", "choice", "file", "files", "path", "lines", "job", "ref"]
+OTHER = "__other__"  # a ref field's "Another ref…" choice: the value is then typed in <name>_other
 
 
 class FormError(ValueError):
@@ -75,6 +77,8 @@ class Field:
         return list(self.choices(ctx) if callable(self.choices) else self.choices)
 
     def read(self, form: Mapping[str, Any]) -> Any:
+        if self.kind == "ref" and form.get(self.name) == OTHER:
+            return form.get(f"{self.name}_other")
         if self.kind == "files":
             getlist = getattr(form, "getlist", None)
             return getlist(self.name) if getlist else form.get(self.name) or []
@@ -120,6 +124,9 @@ class Field:
             case "choice":
                 if text not in {value for value, _ in self.options(ctx)}:
                     raise FormError(f"{self.label}: choose one of the options.")
+            case "ref":
+                if not re.fullmatch(r"sha256:[A-Za-z0-9]+", text):
+                    raise FormError(f"{self.label}: a ref such as sha256:…, or one of the choices.")
         return text
 
     def _number(self, text: str) -> float | int:
@@ -148,6 +155,25 @@ Values = Mapping[str, Any]
 
 
 @dataclass(frozen=True)
+class Next:
+    """A step that usually follows a finished job: another command's form, filled in from the job
+    (``values``), or a page (``page``)."""
+
+    label: str
+    command: str | None = None
+    values: Callable[[Any], Mapping[str, str]] = lambda job: {}
+    page: Callable[[Any], str] | None = None
+    when: Callable[[Any], bool] = field(default=lambda job: job.status.value == "done")
+
+    def href(self, job: Any) -> str:
+        if self.page is not None:
+            return self.page(job)
+        target = BY_ID[self.command or ""]
+        query = urlencode({"fill": target.id, "from": job.id, **self.values(job)})
+        return f"/{target.area}?{query}#{target.id}"
+
+
+@dataclass(frozen=True)
 class Command:
     id: str  # "<area>.<name>"
     area: str  # the rail area it lives in
@@ -161,6 +187,11 @@ class Command:
     check: Callable[[Values, Context], None] | None = None  # rules across fields; raises FormError
     long_running: bool = False  # runs until stopped (a worker)
     action: str = "Start"  # the button: names what it does
+    next: tuple[Next, ...] = ()  # what usually follows a finished job of this command
+
+    def next_links(self, job: Any) -> list[tuple[str, str]]:
+        """``(label, href)`` for each next step that applies to ``job``."""
+        return [(n.label, n.href(job)) for n in self.next if n.when(job)]
 
     def parse(self, form: Mapping[str, Any], ctx: Context) -> dict[str, Any]:
         values, problems = {}, []
@@ -248,7 +279,6 @@ def _intake_counts(folder: Path, code: int) -> str | None:
 # --- defaults and choices read from this machine -------------------------------------------------
 
 VERTICALS_DOCUMENT = "config/verticals/knowledge_document.txt"
-SNAPSHOT_HELP = "sha256:…; it starts as the one the current release pins."
 STORE_HELP = "Empty: the snapshot's own folder, lightrag_store_ and the start of its hash, where the worker looks."
 
 
@@ -267,6 +297,56 @@ def _latest_snapshot(ctx: Context) -> str | None:
         if job.summary and job.summary.startswith("sha256:"):
             return job.summary
     return _release_snapshot(ctx)
+
+
+def known_snapshots(ctx: Context) -> list[tuple[str, str]]:
+    """Snapshots the console knows: from snapshot jobs, release pins and stores on disk, each
+    labelled with where it was seen and whether its LightRAG store is built here."""
+    seen: dict[str, list[str]] = {}
+    for job in ctx.done_jobs("procedures.snapshot"):
+        if job.summary and job.summary.startswith("sha256:"):
+            seen.setdefault(job.summary, []).append(f"taken {formats.when(job.created_at)}")
+    for path in sorted((ctx.root / "registry" / "releases").glob("*.yaml"), reverse=True):
+        try:
+            pinned = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("procedure_snapshot")
+        except (OSError, yaml.YAMLError, AttributeError):
+            continue
+        if isinstance(pinned, str) and pinned.startswith("sha256:"):
+            seen.setdefault(pinned, []).append(f"pinned by {path.stem}")
+    for folder in sorted(ctx.root.glob(f"{stores.STORE_PREFIX}*")):
+        if (ref := stores.built_from(folder)) is not None:
+            seen.setdefault(ref, [])
+    choices = []
+    for ref, where in seen.items():
+        try:
+            built = stores.built_from(stores.store_dir(ref, root=ctx.root, env=ctx.env)) == ref
+        except ValueError:
+            continue
+        label = " · ".join([f"{ref.removeprefix('sha256:')[:12]}…", *where, "store built" if built else "no store yet"])
+        choices.append((ref, label))
+    return choices
+
+
+def known_verticals(ctx: Context) -> list[tuple[str, str]]:
+    """Knowledge documents the console knows: published from here, or pinned by a release."""
+    seen: dict[str, list[str]] = {}
+    for job in ctx.done_jobs("routing.publish"):
+        if job.summary and job.summary.startswith("sha256:"):
+            seen.setdefault(job.summary, []).append(f"published {formats.when(job.created_at)}")
+    for path in sorted((ctx.root / "registry" / "releases").glob("*.yaml"), reverse=True):
+        try:
+            pinned = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("routing_verticals")
+        except (OSError, yaml.YAMLError, AttributeError):
+            continue
+        if isinstance(pinned, str) and pinned.startswith("sha256:"):
+            seen.setdefault(pinned, []).append(f"pinned by {path.stem}")
+    return [(ref, " · ".join([f"{ref.removeprefix('sha256:')[:12]}…", *where])) for ref, where in seen.items()]
+
+
+def _ref_after(job: Any, word: str) -> str:
+    """The argument after ``word`` in a job's command line (e.g. the snapshot after lightrag-build)."""
+    argv = list(job.argv)
+    return argv[argv.index(word) + 1] if word in argv[:-1] else ""
 
 
 def _store_field(help: str) -> Field:
@@ -385,6 +465,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Intake · {v['start_date']:%-d %b} to {v['end_date']:%-d %b %Y}",
         summarize=_intake_counts,
         action="Admit the window",
+        next=(Next("Start a worker", page=lambda job: "/system#system.worker"),),
     ),
     Command(
         id="intake.case_list",
@@ -412,6 +493,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Intake · cases in {Path(getattr(v['cases'], 'filename', '') or v['cases']).name}",
         summarize=_intake_counts,
         action="Admit the cases",
+        next=(Next("Start a worker", page=lambda job: "/system#system.worker"),),
     ),
     Command(
         id="intake.synthetic",
@@ -437,6 +519,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Intake · {v['count']} synthetic cases, seed {v['seed']}",
         summarize=_intake_counts,
         action="Admit cases",
+        next=(Next("Start a worker", page=lambda job: "/system#system.worker"),),
     ),
     Command(
         id="intake.sql",
@@ -462,7 +545,7 @@ CATALOGUE: tuple[Command, ...] = (
         fields=(
             Field("claims_job", "Claims from a C02 trial", "job", source="evaluation.trial", either=True),
             Field("claims_path", "Or a folder of review files", "path", must="dir", either=True),
-            Field("procedures", "Snapshot", required=True, default=_release_snapshot, help=SNAPSHOT_HELP),
+            Field("procedures", "Snapshot", "ref", required=True, default=_release_snapshot, choices=known_snapshots),
             _store_field(STORE_HELP),
             Field("verticals", "Verticals document", "path", required=True, default=VERTICALS_DOCUMENT, must="file"),
             Field("cases", "Cases", "int", minimum=1, help="Only the first N cases; otherwise all."),
@@ -531,6 +614,14 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Backfill · {v['from_release']}" + (" · count" if v["count_only"] else ""),
         summarize=_printed(r"^(\d+ runs, \d+ claims)"),
         action="Start",
+        next=(
+            Next(
+                "Route them",
+                "routing.backfill",
+                lambda job: {**(job.form or {}), "count_only": ""},  # the same runs, routed this time
+                when=lambda job: job.status.value == "done" and "--count-only" in job.argv,
+            ),
+        ),
     ),
     # --- Procedures -----------------------------------------------------------------------------
     Command(
@@ -568,12 +659,19 @@ CATALOGUE: tuple[Command, ...] = (
         module="cfr_v2.procedures",
         fields=(
             Field("folder", "PDF folder", "path", required=True, must="dir"),
-            Field("previous", "Previous snapshot", help="sha256:…, to skip unchanged PDFs."),
+            Field(
+                "previous",
+                "Previous snapshot",
+                "ref",
+                choices=known_snapshots,
+                help="Unchanged PDFs aren't read again.",
+            ),
         ),
         args=lambda v, folder: ["snapshot", str(v["folder"]), *_opt("--previous", v["previous"])],
         job_title=lambda v: f"Snapshot · {v['folder'].name}",
         summarize=_printed(r"^snapshot: (\S+)"),
         action="Take the snapshot",
+        next=(Next("Build its LightRAG store", "procedures.build", lambda job: {"procedures": job.summary or ""}),),
     ),
     Command(
         id="procedures.build",
@@ -583,7 +681,7 @@ CATALOGUE: tuple[Command, ...] = (
         "passage, hours for a full set. It resumes: passages already in the store are skipped.",
         module="cfr_v2.procedures",
         fields=(
-            Field("procedures", "Snapshot", required=True, default=_latest_snapshot),
+            Field("procedures", "Snapshot", "ref", required=True, default=_latest_snapshot, choices=known_snapshots),
             _store_field(STORE_HELP + " Created if missing."),
             Field("concurrency", "Passages at once", "int", required=True, default=16, minimum=1, maximum=64),
         ),
@@ -598,6 +696,13 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"LightRAG build · {v['procedures'][:19]}…",
         summarize=_printed(r"^(\d+ of \d+ passages in the graph; \d+ failed)"),
         action="Build",
+        next=(
+            Next(
+                "Make a release with this snapshot",
+                page=lambda job: f"/releases?{urlencode({'snapshot': _ref_after(job, 'lightrag-build')})}#new-release",
+            ),
+            Next("Try a search", "procedures.search", lambda job: {"procedures": _ref_after(job, "lightrag-build")}),
+        ),
     ),
     Command(
         id="procedures.search",
@@ -608,7 +713,7 @@ CATALOGUE: tuple[Command, ...] = (
         module="cfr_v2.procedures",
         fields=(
             Field("query", "Query", required=True),
-            Field("procedures", "Snapshot", required=True, default=_release_snapshot, help=SNAPSHOT_HELP),
+            Field("procedures", "Snapshot", "ref", required=True, default=_release_snapshot, choices=known_snapshots),
             _store_field(STORE_HELP),
             Field("limit", "Results", "int", required=True, default=8, minimum=1, maximum=50),
             Field("text", "Show the passages", "check"),
@@ -661,6 +766,7 @@ CATALOGUE: tuple[Command, ...] = (
         ),
         summarize=_wrote("c02_trial", "review file"),
         action="Run the trial",
+        next=(Next("Route these claims", "routing.trial", lambda job: {"claims_job": job.id}),),
     ),
     Command(
         id="evaluation.gold_template",
@@ -682,6 +788,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: "Gold workbook" + (f" · {len(v['case_nos'])} cases" if v["case_nos"] else ""),
         summarize=lambda folder, code: "gold_template.xlsx" if code == 0 else None,
         action="Write the workbook",
+        next=(Next("Score Pass 1 against the workbooks", "evaluation.score"),),
     ),
     Command(
         id="evaluation.score",
@@ -863,6 +970,49 @@ CATALOGUE: tuple[Command, ...] = (
 )
 
 BY_ID: dict[str, Command] = {c.id: c for c in CATALOGUE}
+
+
+def _current_pin(key: str) -> Callable[[Context], str | None]:
+    def pin(ctx: Context) -> str | None:
+        try:
+            return getattr(ReleaseRegistry(ctx.root / "registry").load(ctx.env.get("CFR_RELEASE_ID", "")), key)
+        except (OSError, ValueError, yaml.YAMLError):
+            return None
+
+    return pin
+
+
+# The release form on the Releases page (release_files.write_release).
+NEW_RELEASE: tuple[Field, ...] = (
+    Field(
+        "base",
+        "Based on",
+        "choice",
+        required=True,
+        default=lambda ctx: ctx.env.get("CFR_RELEASE_ID"),
+        choices=_registry("releases"),
+        help="Its file is copied: stage versions and everything else stay as they are.",
+    ),
+    Field("release_id", "New release id", required=True, help="Lower-case letters, digits, dots and hyphens."),
+    Field(
+        "procedure_snapshot",
+        "Procedure snapshot",
+        "ref",
+        required=True,
+        default=_current_pin("procedure_snapshot"),
+        choices=known_snapshots,
+        help="The worker searches its LightRAG store, so build that first.",
+    ),
+    Field(
+        "routing_verticals",
+        "Knowledge document",
+        "ref",
+        required=True,
+        default=_current_pin("routing_verticals"),
+        choices=known_verticals,
+        help="Publish a new one under Routing → Publish the verticals.",
+    ),
+)
 
 
 def for_area(area: str) -> list[Command]:

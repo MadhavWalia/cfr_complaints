@@ -1,6 +1,15 @@
 {% extends "base.html" %}
+{% import "_fields.html" as fields %}
 {% block main %}
-<div class="head"><h1>Releases</h1></div>
+<div class="head"><h1>Releases</h1><div class="actions"><a class="btn secondary" href="#new-release">New release</a></div></div>
+{% if written %}
+<div class="panel written" role="status">
+  <p><strong>Wrote <span class="mono">registry/releases/{{ written.release_id }}.yaml</span></strong>{% if base %}, from {{ base.release_id }}{% endif %}.</p>
+  {% if changed %}<ul class="plain">{% for key, old, new in changed %}<li><span class="mono">{{ key }}</span>: {{ fields.copy(old) if old else "none" }} → {{ fields.copy(new) }}</li>{% endfor %}</ul>{% endif %}
+  <p>It's a change to the repository: review and commit it. {{ fields.copy("git add registry/releases/" ~ written.release_id ~ ".yaml && git commit -m \"Add release " ~ written.release_id ~ "\"", short=false) }}</p>
+  <p class="muted">Make it current below once its snapshot's LightRAG store is built.</p>
+</div>
+{% endif %}
 <p class="lede muted">Releases are files in <span class="mono">registry/releases/</span>, changed through git. A release is pinned when the first case is admitted under it; each case run keeps the version it was admitted with. Making one current sets <span class="mono">CFR_RELEASE_ID</span> in <span class="mono">.env</span>: new cases are admitted under it, and the next jobs use it. A running worker keeps the procedure snapshot it opened, so if the snapshot changes, restart it once the old release's runs are done.</p>
 {% if error %}
 <div class="panel error-box" role="status">
@@ -43,8 +52,8 @@
       </ul>
     </dd></div>
     <div><dt>Evidence sources</dt><dd class="mono">{{ m.evidence_sources or "—" }}</dd></div>
-    <div><dt>Verticals document</dt><dd class="mono ref">{{ m.routing_verticals or "—" }}</dd></div>
-    <div><dt>Procedure snapshot</dt><dd class="mono ref">{{ m.procedure_snapshot or "—" }}</dd></div>
+    <div><dt>Knowledge document</dt><dd>{{ fields.copy(m.routing_verticals) if m.routing_verticals else "—" }}</dd></div>
+    <div><dt>Procedure snapshot</dt><dd>{{ fields.copy(m.procedure_snapshot) if m.procedure_snapshot else "—" }}</dd></div>
     <div><dt>This file's ref</dt><dd class="mono ref">{{ m.ref }}</dd></div>
   </dl>
   {% endif %}
@@ -70,4 +79,15 @@
 {% else %}
 <div class="empty"><h3>No releases</h3><p>Add a manifest to <span class="mono">registry/releases/</span>.</p></div>
 {% endfor %}
+
+<section class="section new-release" id="new-release" aria-labelledby="new-release-h">
+  <h2 id="new-release-h">New release</h2>
+  <p class="muted lede-sm">Copies a release's file and changes only its id and its routing inputs: the procedure snapshot and the knowledge document. Stage versions follow the code. The file is written to <span class="mono">registry/releases/</span> for you to review and commit; nothing is pinned until a case is admitted under it.</p>
+  <form method="post" action="/releases/new" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if form_error %}<p class="form-error" role="alert">{{ form_error }}</p>{% endif %}
+    {% for f in new_release %}{{ fields.field(f, values.get(f.name), ctx, "release-" ~ f.name) }}{% endfor %}
+    <button class="btn primary" type="submit">Write the file</button>
+  </form>
+</section>
 {% endblock %}
