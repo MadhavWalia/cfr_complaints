@@ -39,6 +39,7 @@ AREA_ROWS = 5  # recent jobs under an area's commands
 LOG_TAIL_BYTES = 200_000  # the job page opens on the log's last 200 KB; the full log downloads
 LOG_CHUNK = 64_000
 LOG_POLL_SEC = 0.5
+JOB_CHOICES = 20  # earlier jobs offered as a command's input
 
 # The rail, in order: (path, label). Areas not built yet render their plan.
 AREAS = (
@@ -96,7 +97,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     app.state.csrf = secrets.token_urlsafe(32)
     app.state.db = None
     templates = Jinja2Templates(directory=HERE / "templates")
-    templates.env.globals.update(areas=AREAS)
+    templates.env.globals.update(areas=AREAS, catalogue=commands.BY_ID)
     templates.env.filters.update(when=formats.when, took=formats.took, size=formats.size, shell=formats.shell)
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
@@ -142,6 +143,14 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
 
     runner = JobRunner(settings.workspace / "jobs", cwd=settings.repo_root, env=settings.env)
     app.state.runner = runner
+    form_context = commands.Context(
+        root=settings.repo_root,
+        env=settings.env,
+        done_jobs=lambda command: [j for j in runner.list() if j.command == command and j.status is JobStatus.DONE][
+            :JOB_CHOICES
+        ],
+        outputs=lambda job_id: runner.folder(job_id) / "outputs",
+    )
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request):
@@ -243,6 +252,15 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         runner.stop(job_id, force=form.get("force") == "1")
         return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
+    @app.post("/jobs/{job_id}/delete", dependencies=[Depends(require_csrf)])
+    def job_delete(job_id: str):
+        _job(job_id)
+        try:
+            runner.delete(job_id)
+        except RuntimeError:
+            raise HTTPException(status_code=409, detail="Stop the job before deleting it.") from None
+        return RedirectResponse("/jobs", status_code=303)
+
     @app.get("/jobs/{job_id}/log.txt")
     def job_log_file(job_id: str):
         _job(job_id)
@@ -281,7 +299,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             error=error,
             failed=failed,
             values=values or {},
+            ctx=form_context,
             recent=listed(area=area),
+            status=read_status() if area == "system" else None,  # the queue, before starting a worker
         )
         response.status_code = status_code
         return response
@@ -303,9 +323,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         form = await request.form()
         label = dict(AREAS)["/" + command.area]
         try:
-            values = command.parse(form)
+            values = command.parse(form, form_context)
         except commands.FormError as exc:
-            raw = {k: v for k, v in form.items() if isinstance(v, str) and k != "csrf"}
+            raw = {k: v for k, v in form.multi_items() if isinstance(v, str) and k != "csrf"}
             return area_page(
                 request, command.area, label, error=str(exc), failed=command.id, values=raw, status_code=422
             )
@@ -314,6 +334,8 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             for f in command.fields:  # uploads go into the job's inputs/ first
                 if f.kind == "file" and values.get(f.name) is not None:
                     values[f.name] = commands.save_upload(values[f.name], folder)
+                elif f.kind == "files":
+                    values[f.name] = [commands.save_upload(u, folder) for u in values[f.name]]
             return command.argv(values, folder)
 
         job = runner.start(command.id, command.describe(values), argv, summarize=command.summarize)

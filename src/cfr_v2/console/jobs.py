@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import signal
 import subprocess
 import threading
@@ -223,6 +224,14 @@ class JobRunner:
             pass
         logger.info("console: job %s %s", job_id, "killed" if force else "asked to stop")
         return job
+
+    def delete(self, job_id: str) -> None:
+        """A finished job's folder, with its log, uploads and outputs (review files are deleted
+        once reviewed). A running job must be stopped first: ``RuntimeError``."""
+        if not self.get(job_id).finished:
+            raise RuntimeError(f"job {job_id} is running")
+        shutil.rmtree(self.folder(job_id))
+        logger.info("console: job %s deleted", job_id)
 
     def _wait(self, job_id: str, process: subprocess.Popen, summarize) -> None:
         code = process.wait()

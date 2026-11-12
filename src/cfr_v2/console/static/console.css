@@ -218,22 +218,40 @@ pre.log {
 pre.log[data-finished="false"]:empty::before { content: "Waiting for output…"; color: var(--g4); }
 pre.log::selection { background: var(--light-blue); color: var(--deep); }
 
-.command { max-width: 760px; }
-.command + .command { padding-top: var(--s6); border-top: 1px solid var(--line-soft); }
-.effect { margin: var(--s2) 0 var(--s4); max-width: 70ch; color: var(--text-2); }
+.commands { max-width: 760px; margin-bottom: var(--s7); border-bottom: 1px solid var(--line-soft); }
+.command { border-top: 1px solid var(--line-soft); scroll-margin-top: var(--s4); }
+.command > summary { list-style: none; cursor: pointer; position: relative; padding: var(--s4) var(--s7) var(--s4) 0; }
+.command > summary::-webkit-details-marker { display: none; }
+.command > summary::after {
+  content: ""; position: absolute; right: var(--s3); top: calc(var(--s4) + 8px); width: 8px; height: 8px;
+  border-right: 2px solid var(--text-2); border-bottom: 2px solid var(--text-2); transform: rotate(45deg);
+}
+.command[open] > summary::after { transform: rotate(-135deg); top: calc(var(--s4) + 12px); }
+.command > summary h2 { margin: 0; }
+.command > summary:hover h2 { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.command > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.command .form { padding: var(--s2) 0 var(--s6); }
+.effect { margin: var(--s1) 0 0; max-width: 70ch; color: var(--text-2); }
+.none { margin: 0; }
+.journal td:last-child span, .job-facts dd { overflow-wrap: anywhere; }
+.danger { margin-top: var(--s5); }
+.danger summary { cursor: pointer; color: var(--text-2); font-size: 13px; width: fit-content; }
+.danger .actions { margin-top: var(--s3); align-items: center; }
 .form { display: grid; gap: var(--s4); justify-items: start; }
 .field { display: grid; gap: var(--s1); width: 100%; max-width: 420px; }
-.field label { font-weight: 600; }
+.field label, .field .label { font-weight: 600; margin: 0; }
 .field.check { grid-template-columns: auto 1fr; align-items: center; column-gap: var(--s2); }
 .field.check .help { grid-column: 2; }
-.field input:not([type="checkbox"]), .field select {
+.field input:not([type="checkbox"]), .field select, .field textarea {
   font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--g4); border-radius: 4px;
   min-height: 40px; padding: 0 var(--s3); width: 100%;
 }
 .field input[type="file"] { padding: 7px var(--s3); }
+.field textarea { padding: var(--s2) var(--s3); resize: vertical; }
 .field input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); margin: 0; }
-.field input:focus-visible, .field select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.field input:focus-visible, .field select:focus-visible, .field textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .help { font-size: 13px; }
 .form-error { color: var(--failed); font-weight: 600; max-width: 70ch; }
+.form-error:focus { outline: none; }
 :root[data-theme="dark"] .form-error { color: var(--white); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .form-error { color: var(--white); } }

@@ -67,3 +67,25 @@
   mark(document);
   document.body.addEventListener("htmx:afterSwap", () => mark(document));
 })();
+
+// Commands: a link to #<command id> opens its form; a form sends once (no double-started jobs).
+(() => {
+  const open = () => {
+    const target = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (target && target.tagName === "DETAILS") { target.open = true; target.scrollIntoView(); }
+  };
+  open();
+  addEventListener("hashchange", open);
+  const problem = document.querySelector(".form-error");  // a form sent back: show what to fix
+  if (problem) { problem.tabIndex = -1; problem.closest("details").scrollIntoView(); problem.focus({ preventScroll: true }); }
+  document.addEventListener("submit", (event) => {
+    const button = event.target.querySelector("button[type=submit]");
+    if (!button) return;
+    if (button.dataset.sent) { event.preventDefault(); return; }
+    button.dataset.sent = "1";
+    button.setAttribute("aria-disabled", "true");
+  });
+  addEventListener("pageshow", (event) => {  // back to a cached page: sendable again
+    if (event.persisted) document.querySelectorAll("button[data-sent]").forEach((b) => { delete b.dataset.sent; b.removeAttribute("aria-disabled"); });
+  });
+})();

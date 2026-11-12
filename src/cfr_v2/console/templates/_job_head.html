@@ -29,4 +29,14 @@
     <ul>{% for name, size in outputs %}<li><a href="/jobs/{{ job.id }}/files/outputs/{{ name }}" download>{{ name }}</a> <span class="muted">{{ size | size }}</span></li>{% endfor %}</ul>
   </div>
   {% endif %}
+  {% if job.finished %}
+  <details class="danger">
+    <summary>Delete this job</summary>
+    <form method="post" action="/jobs/{{ job.id }}/delete" class="actions">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn secondary" type="submit">Delete the job and its files</button>
+      <span class="muted">Its log, uploads and outputs. This can't be undone.</span>
+    </form>
+  </details>
+  {% endif %}
 </section>

@@ -2,38 +2,71 @@
 {% block main %}
 <div class="head"><h1>{{ title }}</h1></div>
 <p class="lede muted">{{ plan }}</p>
+{% if status is not none %}
+<section class="section" aria-labelledby="queue-h">
+  <h2 id="queue-h">Queue</h2>
+  {% include "_pipeline_status.html" %}
+</section>
+{% endif %}
+<div class="commands">
 {% for command in commands %}
-<section class="section command" id="{{ command.id }}" aria-labelledby="{{ command.id }}-h">
-  <h2 id="{{ command.id }}-h">{{ command.title }}</h2>
-  <p class="effect">{{ command.effect }}</p>
+<details class="command" id="{{ command.id }}"{% if failed == command.id or commands | length == 1 %} open{% endif %}>
+  <summary>
+    <h2>{{ command.title }}</h2>
+    <p class="effect">{{ command.effect }}</p>
+  </summary>
   <form method="post" action="/commands/{{ command.id }}" enctype="multipart/form-data" class="form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {% if failed == command.id and error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
     {% for f in command.fields %}
     {% set fid = command.id ~ "-" ~ f.name %}
-    {% set value = values.get(f.name) if failed == command.id else f.default %}
+    {% set value = values.get(f.name) if failed == command.id else f.initial(ctx) %}
+    {% set hid = fid ~ "-help" %}
     <div class="field{% if f.kind == 'check' %} check{% endif %}">
       {% if f.kind == "check" %}
-      <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}>
+      <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
       <label for="{{ fid }}">{{ f.label }}</label>
       {% else %}
-      <label for="{{ fid }}">{{ f.label }}{% if not f.required %} <span class="muted">(optional)</span>{% endif %}</label>
-      {% if f.kind == "choice" %}
-      <select id="{{ fid }}" name="{{ f.name }}">{% for v, l in f.choices %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}</select>
-      {% elif f.kind == "file" %}
-      <input type="file" id="{{ fid }}" name="{{ f.name }}"{% if f.accept %} accept="{{ f.accept }}"{% endif %}{% if f.required %} required{% endif %}>
+      {% set options = f.options(ctx) if f.kind in ("choice", "job") else none %}
+      {% if f.kind == "job" and not options %}
+      <p class="label">{{ f.label }}</p>
       {% else %}
-      <input id="{{ fid }}" name="{{ f.name }}" type="{{ 'number' if f.kind == 'int' else 'date' if f.kind == 'date' else 'text' }}"
-        {% if value is not none %} value="{{ value }}"{% endif %}{% if f.minimum is not none %} min="{{ f.minimum }}"{% endif %}{% if f.maximum is not none %} max="{{ f.maximum }}"{% endif %}{% if f.required %} required{% endif %}>
+      <label for="{{ fid }}">{{ f.label }}{% if not f.required and not f.either %} <span class="muted">(optional)</span>{% endif %}</label>
+      {% endif %}
+      {% if f.kind in ("choice", "job") %}
+      {% if f.kind == "job" and not options %}
+      {% set source = catalogue[f.source] %}
+      <p class="muted none">None yet: a finished <a href="/{{ source.area }}#{{ source.id }}">{{ source.title }}</a> job appears here.</p>
+      {% else %}
+      <select id="{{ fid }}" name="{{ f.name }}"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+        {% if not f.required %}<option value="">None</option>{% endif %}
+        {% for v, l in options %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      {% elif f.kind in ("file", "files") %}
+      <input type="file" id="{{ fid }}" name="{{ f.name }}"{% if f.kind == "files" %} multiple{% endif %}{% if f.accept %} accept="{{ f.accept }}"{% endif %}{% if f.required %} required{% endif %}{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      {% elif f.kind == "lines" %}
+      <textarea id="{{ fid }}" name="{{ f.name }}" rows="4" spellcheck="false" class="mono"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>{{ value or "" }}</textarea>
+      {% else %}
+      <input id="{{ fid }}" name="{{ f.name }}"
+        type="{{ 'number' if f.kind in ('int', 'float') else 'date' if f.kind == 'date' else 'text' }}"
+        {%- if f.kind == "float" %} step="any"{% endif %}
+        {%- if f.kind == "path" %} class="mono" spellcheck="false" autocomplete="off"{% endif %}
+        {%- if value is not none %} value="{{ value }}"{% endif %}
+        {%- if f.minimum is not none %} min="{{ f.minimum }}"{% endif %}
+        {%- if f.maximum is not none %} max="{{ f.maximum }}"{% endif %}
+        {%- if f.required %} required{% endif %}
+        {%- if f.help %} aria-describedby="{{ hid }}"{% endif %}>
       {% endif %}
       {% endif %}
-      {% if f.help %}<p class="help muted">{{ f.help }}</p>{% endif %}
+      {% if f.help %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}
     </div>
     {% endfor %}
     <button class="btn primary" type="submit">{{ command.action }}</button>
   </form>
-</section>
+</details>
 {% endfor %}
+</div>
 {% if recent %}
 <section class="section" aria-labelledby="recent-h">
   <h2 id="recent-h">Recent {{ title | lower }} jobs</h2>

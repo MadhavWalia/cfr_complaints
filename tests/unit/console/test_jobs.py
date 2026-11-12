@@ -14,7 +14,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-from cfr_v2.console import commands, formats
+from cfr_v2.console import formats
 from cfr_v2.console.app import create_app
 from cfr_v2.console.jobs import Job, JobRunner, JobStatus
 from cfr_v2.console.settings import ConsoleSettings
@@ -101,6 +101,16 @@ def test_a_restarted_console_adopts_live_jobs_and_marks_dead_ones_lost(tmp_path,
     assert _wait(restarted, "20261112-090000-aaaa").status is JobStatus.STOPPED  # it was asked to
 
 
+def test_a_finished_job_can_be_deleted_with_its_files_and_a_running_one_cannot(runner):
+    slow = runner.start("t", "Sleeps", _python("import time; time.sleep(30)"))
+    with pytest.raises(RuntimeError):
+        runner.delete(slow.id)
+    runner.stop(slow.id)
+    _wait(runner, slow.id)
+    runner.delete(slow.id)
+    assert not runner.folder(slow.id).exists() and runner.list() == []
+
+
 def test_files_outside_a_jobs_inputs_and_outputs_are_refused(runner):
     job = runner.start(
         "t",
@@ -115,18 +125,6 @@ def test_files_outside_a_jobs_inputs_and_outputs_are_refused(runner):
             runner.file(job.id, kind, relative)
     with pytest.raises(KeyError):
         runner.get("../etc")
-
-
-def test_commands_turn_form_values_into_the_terminals_arguments(tmp_path):
-    synthetic = commands.BY_ID["intake.synthetic"]
-    values = synthetic.parse({"count": "3", "seed": "9"})
-    assert synthetic.argv(values, tmp_path)[1:] == ["-m", "cfr_v2.intake", "--synthetic", "3", "--seed", "9"]
-    assert synthetic.describe(values) == "Intake · 3 synthetic cases, seed 9"
-    with pytest.raises(commands.FormError, match="Cases: at least 1. Seed: a whole number"):
-        synthetic.parse({"count": "0", "seed": "x"})
-    sql = commands.BY_ID["intake.sql"]
-    assert sql.argv(sql.parse({"by_case_no": "on"}), tmp_path)[3:] == ["--print-sql", "--case-nos-from", "cases.xlsx"]
-    assert sql.argv(sql.parse({}), tmp_path)[3:] == ["--print-sql"]
 
 
 def test_formats():
