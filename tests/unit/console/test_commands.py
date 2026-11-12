@@ -313,3 +313,24 @@ def test_a_finished_job_links_to_what_usually_follows(ctx):
     [(label, href)] = BY_ID["routing.backfill"].next_links(count)
     assert label == "Route them" and "from_release=cfr-v2-phase-d" in href and "count_only=#" in href  # unticked
     assert BY_ID["routing.backfill"].next_links(replace(count, argv=("backfill",))) == []  # a real run: done
+
+
+def test_every_command_says_what_it_does_and_counts_calls_where_it_can(ctx, tmp_path):
+    for command in CATALOGUE:
+        assert all(tag in commands.TAGS for tag in command.tags), command.id
+        if "calls gpt-5" not in command.tags:
+            assert "calls the models" not in command.effect, command.id
+    assert set(BY_ID["procedures.build"].tags) == {"calls gpt-5", "long-running"}
+    assert BY_ID["procedures.build"].estimate(ctx) is None  # no snapshot log to count sections from
+    log = tmp_path / "jobs" / "20261112-110000-bbbb" / "log.txt"
+    log.parent.mkdir(parents=True)
+    log.write_text("35 distinct files\ncurrent: 2,016 pages; 1,844 sections; 3,508,141 characters\n")
+    build = BY_ID["procedures.build"].estimate(ctx)
+    assert build.calls == 5532 and build.render().startswith("About 5,532 gpt-5 calls for the newest snapshot: 1,844")
+    trial = BY_ID["evaluation.trial"].estimate(ctx)
+    assert (trial.field, trial.per, trial.render()) == (
+        "sample",
+        3,
+        "Up to 15 gpt-5 calls: 5 cases, Pass 1, Pass 2 and C03 each.",
+    )
+    assert BY_ID["routing.backfill"].estimate(ctx) is None  # no count yet

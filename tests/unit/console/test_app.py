@@ -244,3 +244,11 @@ def test_what_needs_attention_comes_first_with_its_action(tmp_path, monkeypatch)
     assert "Needs attention" in partial and "Needs attention" not in client.get("/partials/pipeline-status").text
     system = client.get("/system").text
     assert "Needs attention" not in system and 'hx-get="/partials/pipeline-status"' in system
+
+
+def test_area_pages_show_what_each_command_does(tmp_path, monkeypatch):
+    _, client = _client(tmp_path, _status(), monkeypatch)
+    page = client.get("/evaluation").text
+    assert '<li class="badge cost" title="Spends model calls on the gateway">calls gpt-5</li>' in page
+    assert 'data-field="evaluation.trial-sample"' in page and "Up to 15 gpt-5 calls" in page
+    assert ">changes nothing</li>" in page

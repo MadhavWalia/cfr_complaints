@@ -106,7 +106,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     app.state.db = None
     app.state.store = None  # set by tests to an in-memory store
     templates = Jinja2Templates(directory=HERE / "templates")
-    templates.env.globals.update(areas=AREAS, catalogue=commands.BY_ID)
+    templates.env.globals.update(areas=AREAS, catalogue=commands.BY_ID, tag_help=commands.TAGS)
     templates.env.filters.update(
         when=formats.when, stamp=formats.stamp, took=formats.took, size=formats.size, shell=formats.shell
     )

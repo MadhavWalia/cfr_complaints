@@ -154,6 +154,35 @@ class Field:
 Values = Mapping[str, Any]
 
 
+# What a command does, as the same few words everywhere (LDR-0025 step 4).
+TAGS = {
+    "changes nothing": "Reads only; writes nothing but its own job folder",
+    "writes the database": "Writes to the state database or the artifact store",
+    "changes repository files": "Changes files under registry/: review with git diff, then commit",
+    "calls gpt-5": "Spends model calls on the gateway",
+    "long-running": "Runs for hours, or until stopped",
+    "keep output local": "Its files hold case or procedure text: keep them on this machine",
+}
+
+
+@dataclass(frozen=True)
+class Estimate:
+    """Model calls, before starting: ``text`` with ``{n}`` and ``{calls}``; with ``field``, the
+    page recomputes it as that field changes (``calls = n × per``)."""
+
+    text: str
+    n: int
+    per: float
+    field: str | None = None
+
+    @property
+    def calls(self) -> int:
+        return round(self.n * self.per)
+
+    def render(self) -> str:
+        return self.text.format(n=f"{self.n:,}", calls=f"{self.calls:,}")
+
+
 @dataclass(frozen=True)
 class Next:
     """A step that usually follows a finished job: another command's form, filled in from the job
@@ -188,6 +217,8 @@ class Command:
     long_running: bool = False  # runs until stopped (a worker)
     action: str = "Start"  # the button: names what it does
     next: tuple[Next, ...] = ()  # what usually follows a finished job of this command
+    tags: tuple[str, ...] = ()  # from TAGS
+    estimate: Callable[[Context], Estimate | None] | None = None  # model calls, when they can be counted
 
     def next_links(self, job: Any) -> list[tuple[str, str]]:
         """``(label, href)`` for each next step that applies to ``job``."""
@@ -343,6 +374,38 @@ def known_verticals(ctx: Context) -> list[tuple[str, str]]:
     return [(ref, " · ".join([f"{ref.removeprefix('sha256:')[:12]}…", *where])) for ref, where in seen.items()]
 
 
+def _build_estimate(ctx: Context) -> Estimate | None:
+    """The newest snapshot's sections, from its job's summary lines, at about three calls each."""
+    for job in ctx.done_jobs("procedures.snapshot"):
+        try:
+            log = (ctx.outputs(job.id).parent / "log.txt").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if match := re.search(r"^current: [\d,]+ pages; ([\d,]+) sections", log, re.MULTILINE):
+            sections = int(match.group(1).replace(",", ""))
+            return Estimate(
+                "About {calls} gpt-5 calls for the newest snapshot: {n} sections, about 3 each.", sections, 3
+            )
+    return None
+
+
+def _trial_estimate(ctx: Context) -> Estimate:
+    return Estimate("Up to {calls} gpt-5 calls: {n} cases, Pass 1, Pass 2 and C03 each.", 5, 3, field="sample")
+
+
+def _backfill_estimate(ctx: Context) -> Estimate | None:
+    """From the newest count: one search and one router call per claim."""
+    for job in ctx.done_jobs("routing.backfill"):
+        if job.summary and (match := re.match(r"([\d,]+) runs, ([\d,]+) claims", job.summary)):
+            claims = int(match.group(2).replace(",", ""))
+            return Estimate(
+                "About {calls} gpt-5 calls for the last count's {n} claims (a search and a router call each).",
+                claims,
+                2,
+            )
+    return None
+
+
 def _ref_after(job: Any, word: str) -> str:
     """The argument after ``word`` in a job's command line (e.g. the snapshot after lightrag-build)."""
     argv = list(job.argv)
@@ -466,6 +529,7 @@ CATALOGUE: tuple[Command, ...] = (
         summarize=_intake_counts,
         action="Admit the window",
         next=(Next("Start a worker", page=lambda job: "/system#system.worker"),),
+        tags=("writes the database",),
     ),
     Command(
         id="intake.case_list",
@@ -494,6 +558,7 @@ CATALOGUE: tuple[Command, ...] = (
         summarize=_intake_counts,
         action="Admit the cases",
         next=(Next("Start a worker", page=lambda job: "/system#system.worker"),),
+        tags=("writes the database",),
     ),
     Command(
         id="intake.synthetic",
@@ -520,6 +585,7 @@ CATALOGUE: tuple[Command, ...] = (
         summarize=_intake_counts,
         action="Admit cases",
         next=(Next("Start a worker", page=lambda job: "/system#system.worker"),),
+        tags=("writes the database",),
     ),
     Command(
         id="intake.sql",
@@ -532,6 +598,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: "Intake query" + (" · by case number" if v["by_case_no"] else " · date window"),
         summarize=_copy_log_to("intake.sql"),
         action="Write the query",
+        tags=("changes nothing",),
     ),
     # --- Routing --------------------------------------------------------------------------------
     Command(
@@ -571,6 +638,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: "Router trial" + (f" · {v['cases']} cases" if v["cases"] else ""),
         summarize=_wrote("router_trial", "file"),
         action="Route the claims",
+        tags=("calls gpt-5", "keep output local"),
     ),
     Command(
         id="routing.publish",
@@ -584,6 +652,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: "Publish the verticals",
         summarize=_printed(r"stored as (\S+)"),
         action="Publish",
+        tags=("writes the database",),
     ),
     Command(
         id="routing.backfill",
@@ -622,6 +691,8 @@ CATALOGUE: tuple[Command, ...] = (
                 when=lambda job: job.status.value == "done" and "--count-only" in job.argv,
             ),
         ),
+        tags=("calls gpt-5", "writes the database"),
+        estimate=_backfill_estimate,
     ),
     # --- Procedures -----------------------------------------------------------------------------
     Command(
@@ -636,6 +707,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Inspect · {v['folder'].name}",
         summarize=_printed(r"^(\d+ of \d+ files read)"),
         action="Inspect",
+        tags=("changes nothing",),
     ),
     Command(
         id="procedures.extract",
@@ -649,6 +721,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Extraction trial · {v['folder'].name}",
         summarize=_wrote("extract", "file"),
         action="Extract",
+        tags=("changes nothing", "keep output local"),
     ),
     Command(
         id="procedures.snapshot",
@@ -672,6 +745,7 @@ CATALOGUE: tuple[Command, ...] = (
         summarize=_printed(r"^snapshot: (\S+)"),
         action="Take the snapshot",
         next=(Next("Build its LightRAG store", "procedures.build", lambda job: {"procedures": job.summary or ""}),),
+        tags=("writes the database",),
     ),
     Command(
         id="procedures.build",
@@ -703,6 +777,8 @@ CATALOGUE: tuple[Command, ...] = (
             ),
             Next("Try a search", "procedures.search", lambda job: {"procedures": _ref_after(job, "lightrag-build")}),
         ),
+        tags=("calls gpt-5", "long-running"),
+        estimate=_build_estimate,
     ),
     Command(
         id="procedures.search",
@@ -730,6 +806,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: "Search",
         check=_store_check(build=False),
         action="Search",
+        tags=("calls gpt-5", "keep output local"),
     ),
     # --- Evaluation -----------------------------------------------------------------------------
     Command(
@@ -767,6 +844,8 @@ CATALOGUE: tuple[Command, ...] = (
         summarize=_wrote("c02_trial", "review file"),
         action="Run the trial",
         next=(Next("Route these claims", "routing.trial", lambda job: {"claims_job": job.id}),),
+        tags=("calls gpt-5", "keep output local"),
+        estimate=_trial_estimate,
     ),
     Command(
         id="evaluation.gold_template",
@@ -789,6 +868,7 @@ CATALOGUE: tuple[Command, ...] = (
         summarize=lambda folder, code: "gold_template.xlsx" if code == 0 else None,
         action="Write the workbook",
         next=(Next("Score Pass 1 against the workbooks", "evaluation.score"),),
+        tags=("changes nothing",),
     ),
     Command(
         id="evaluation.score",
@@ -823,6 +903,7 @@ CATALOGUE: tuple[Command, ...] = (
             "pass1_score.json" if (folder / "outputs" / "pass1_score.json").is_file() else None
         ),
         action="Score",
+        tags=("changes nothing",),
     ),
     Command(
         id="evaluation.sources_export",
@@ -835,6 +916,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Export · {v['version']}",
         summarize=lambda folder, code: "workbook" if code == 0 else None,
         action="Export",
+        tags=("changes nothing",),
     ),
     Command(
         id="evaluation.sources_import",
@@ -847,6 +929,7 @@ CATALOGUE: tuple[Command, ...] = (
         args=lambda v, folder: ["import", str(v["workbook"])],
         job_title=lambda v: f"Import · {Path(getattr(v['workbook'], 'filename', '') or v['workbook']).name}",
         action="Import",
+        tags=("changes repository files",),
     ),
     Command(
         id="evaluation.sources_check",
@@ -857,6 +940,7 @@ CATALOGUE: tuple[Command, ...] = (
         args=lambda v, folder: ["check"],
         job_title=lambda v: "Check evidence sources",
         action="Check",
+        tags=("changes nothing",),
     ),
     # --- System ---------------------------------------------------------------------------------
     Command(
@@ -900,6 +984,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Worker · at most {v['max_queued']} queued",
         long_running=True,
         action="Start the worker",
+        tags=("calls gpt-5", "writes the database", "long-running"),
     ),
     Command(
         id="system.smoke",
@@ -926,6 +1011,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: "Gateway check" + ("" if v["check"] == "models" else f" · {v['check']}"),
         summarize=_printed(r"^smoke: (\w+)"),
         action="Check",
+        tags=("calls gpt-5",),
     ),
     Command(
         id="system.migrate",
@@ -938,6 +1024,7 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: "Migrations",
         summarize=_printed(r"^applied: (.*)"),
         action="Migrate",
+        tags=("writes the database",),
     ),
     Command(
         id="system.tests",

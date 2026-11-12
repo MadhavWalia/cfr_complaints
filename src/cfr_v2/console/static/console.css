@@ -193,6 +193,11 @@ tr.lit td:first-child > span::after, tr.lit td:first-child > time::after { conte
 .copyable > .mono { overflow-wrap: anywhere; }
 button.copy { font: 600 12px/1 var(--sans); color: var(--accent); background: transparent; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; min-height: 24px; cursor: pointer; }
 button.copy:hover { background: var(--hover); }
+/* Step 4: what a command does, as tags, and its model calls. */
+.badges { list-style: none; margin: var(--s1) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
+.badge { font-size: 12px; font-weight: 600; color: var(--text-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.badge.cost { color: var(--heading); border-color: var(--accent); }
+.estimate { font-weight: 600; color: var(--heading); max-width: var(--measure); margin: 0; }
 .next { margin-top: var(--s4); padding-top: var(--s4); border-top: 1px solid var(--line); }
 .next h2 { font-size: 15px; margin: 0 0 var(--s2); }
 .written { display: grid; gap: var(--s2); margin-bottom: var(--s5); max-width: 960px; }

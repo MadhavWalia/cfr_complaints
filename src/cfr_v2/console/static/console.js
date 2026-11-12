@@ -118,3 +118,17 @@
     setTimeout(() => { button.textContent = "Copy"; }, 2000);
   });
 })();
+
+// An estimate that depends on a field (cases in a trial) follows it as you type.
+(() => {
+  document.querySelectorAll("p.estimate[data-field]").forEach((p) => {
+    const input = document.getElementById(p.dataset.field);
+    if (!input) return;
+    const update = () => {
+      const n = Math.max(0, parseInt(input.value, 10) || 0);
+      const calls = Math.round(n * parseFloat(p.dataset.per));
+      p.textContent = p.dataset.text.replace("{n}", n.toLocaleString("en")).replace("{calls}", calls.toLocaleString("en"));
+    };
+    input.addEventListener("input", update);
+  });
+})();
