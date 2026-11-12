@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="head"><h1>{{ title }}</h1></div>
+<p class="lede muted">{{ plan }}</p>
+{% for command in commands %}
+<section class="section command" id="{{ command.id }}" aria-labelledby="{{ command.id }}-h">
+  <h2 id="{{ command.id }}-h">{{ command.title }}</h2>
+  <p class="effect">{{ command.effect }}</p>
+  <form method="post" action="/commands/{{ command.id }}" enctype="multipart/form-data" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if failed == command.id and error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+    {% for f in command.fields %}
+    {% set fid = command.id ~ "-" ~ f.name %}
+    {% set value = values.get(f.name) if failed == command.id else f.default %}
+    <div class="field{% if f.kind == 'check' %} check{% endif %}">
+      {% if f.kind == "check" %}
+      <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}>
+      <label for="{{ fid }}">{{ f.label }}</label>
+      {% else %}
+      <label for="{{ fid }}">{{ f.label }}{% if not f.required %} <span class="muted">(optional)</span>{% endif %}</label>
+      {% if f.kind == "choice" %}
+      <select id="{{ fid }}" name="{{ f.name }}">{% for v, l in f.choices %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+      {% elif f.kind == "file" %}
+      <input type="file" id="{{ fid }}" name="{{ f.name }}"{% if f.accept %} accept="{{ f.accept }}"{% endif %}{% if f.required %} required{% endif %}>
+      {% else %}
+      <input id="{{ fid }}" name="{{ f.name }}" type="{{ 'number' if f.kind == 'int' else 'date' if f.kind == 'date' else 'text' }}"
+        {% if value is not none %} value="{{ value }}"{% endif %}{% if f.minimum is not none %} min="{{ f.minimum }}"{% endif %}{% if f.maximum is not none %} max="{{ f.maximum }}"{% endif %}{% if f.required %} required{% endif %}>
+      {% endif %}
+      {% endif %}
+      {% if f.help %}<p class="help muted">{{ f.help }}</p>{% endif %}
+    </div>
+    {% endfor %}
+    <button class="btn primary" type="submit">{{ command.action }}</button>
+  </form>
+</section>
+{% endfor %}
+{% if recent %}
+<section class="section" aria-labelledby="recent-h">
+  <h2 id="recent-h">Recent {{ title | lower }} jobs</h2>
+  {% with jobs = recent, journal_url = "/partials/journal?area=" ~ area %}{% include "_journal.html" %}{% endwith %}
+</section>
+{% endif %}
+{% endblock %}

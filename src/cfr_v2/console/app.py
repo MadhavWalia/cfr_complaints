@@ -7,27 +7,38 @@ send requests to localhost.
 
 from __future__ import annotations
 
+import asyncio
+import codecs
 import logging
 import secrets
+from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from cfr_v2.telemetry import get_logger
 
+from . import commands, formats
 from . import status as pipeline
+from .jobs import Job, JobRunner, JobStatus
 from .settings import ConsoleSettings
 
 logger = get_logger("cfr_v2.console")
 HERE = Path(__file__).parent
 DB_CONNECT_TIMEOUT_SEC = 3  # a stopped Postgres must not hang the page
+JOURNAL_ROWS = 10
+AREA_ROWS = 5  # recent jobs under an area's commands
+LOG_TAIL_BYTES = 200_000  # the job page opens on the log's last 200 KB; the full log downloads
+LOG_CHUNK = 64_000
+LOG_POLL_SEC = 0.5
 
 # The rail, in order: (path, label). Areas not built yet render their plan.
 AREAS = (
@@ -57,6 +68,19 @@ def _with_connect_timeout(url: str) -> str:
     return f"{url}{'&' if urlsplit(url).query else '?'}connect_timeout={DB_CONNECT_TIMEOUT_SEC}"
 
 
+def _log_tail(path: Path) -> tuple[str, int]:
+    """The end of a log, starting at a line, and the offset streaming continues from."""
+    if not path.is_file():
+        return "", 0
+    size = path.stat().st_size
+    with path.open("rb") as log:
+        log.seek(max(0, size - LOG_TAIL_BYTES))
+        data = log.read()
+    if size > LOG_TAIL_BYTES:
+        data = data.split(b"\n", 1)[-1]
+    return data.decode("utf-8", errors="replace"), size
+
+
 def create_app(settings: ConsoleSettings) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -73,6 +97,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     app.state.db = None
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.globals.update(areas=AREAS)
+    templates.env.filters.update(when=formats.when, took=formats.took, size=formats.size, shell=formats.shell)
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
         context.update(
@@ -115,24 +140,184 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             logger.warning("console: state database unavailable: %s", type(exc).__name__)
             return pipeline.unavailable(type(exc).__name__)
 
+    runner = JobRunner(settings.workspace / "jobs", cwd=settings.repo_root, env=settings.env)
+    app.state.runner = runner
+
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request):
-        return page(request, "pipeline.html", status=read_status(), jobs=[])
+        return page(request, "pipeline.html", status=read_status(), jobs=runner.list(JOURNAL_ROWS))
 
     @app.get("/partials/pipeline-status", response_class=HTMLResponse)
     def pipeline_status(request: Request):
         return page(request, "_pipeline_status.html", status=read_status())
 
+    def listed(*, area: str | None = None, status: str | None = None, everything: bool = False) -> list[Job]:
+        jobs = runner.list(None if everything or area else JOURNAL_ROWS)
+        if area:
+            jobs = [j for j in jobs if j.command.split(".")[0] == area][:AREA_ROWS]
+        if status in {s.value for s in JobStatus}:
+            jobs = [j for j in jobs if j.status.value == status]
+        return jobs
+
+    @app.get("/partials/journal", response_class=HTMLResponse)
+    def journal(request: Request, area: str | None = None, status: str | None = None, all: bool = False):
+        url = str(request.url.path) + (f"?{request.url.query}" if request.url.query else "")
+        return page(request, "_journal.html", jobs=listed(area=area, status=status, everything=all), journal_url=url)
+
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
 
+    # --- jobs ----------------------------------------------------------------------------
+
+    @app.get("/jobs", response_class=HTMLResponse)
+    def jobs(request: Request, status: str | None = None):
+        valid = status if status in {s.value for s in JobStatus} else None
+        return page(
+            request,
+            "jobs.html",
+            title="Jobs",
+            jobs=listed(status=valid, everything=True),
+            filter=valid,
+            statuses=list(JobStatus),
+        )
+
+    def _job(job_id: str) -> Job:
+        try:
+            return runner.get(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="No such job.") from None
+
+    @app.get("/jobs/{job_id}", response_class=HTMLResponse)
+    def job_page(request: Request, job_id: str):
+        job = _job(job_id)
+        text, offset = _log_tail(runner.log_path(job_id))
+        return page(
+            request,
+            "job.html",
+            title=job.title,
+            job=job,
+            log=text,
+            offset=offset,
+            outputs=runner.files(job_id, "outputs"),
+            inputs=runner.files(job_id, "inputs"),
+            command=commands.BY_ID.get(job.command),
+        )
+
+    @app.get("/jobs/{job_id}/head", response_class=HTMLResponse)
+    def job_head(request: Request, job_id: str):
+        job = _job(job_id)
+        return page(
+            request,
+            "_job_head.html",
+            job=job,
+            outputs=runner.files(job_id, "outputs"),
+            command=commands.BY_ID.get(job.command),
+        )
+
+    @app.get("/jobs/{job_id}/log", response_class=EventSourceResponse)
+    async def job_log(request: Request, job_id: str, offset: int = 0) -> AsyncIterable[ServerSentEvent]:
+        """The log from ``offset`` on, as it grows; ``end`` once the job has finished."""
+        _job(job_id)
+        position = int(request.headers.get("last-event-id") or offset)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        path = runner.log_path(job_id)
+        while not await request.is_disconnected():
+            with path.open("rb") as log:
+                log.seek(position)
+                chunk = log.read(LOG_CHUNK)
+            if chunk:
+                position += len(chunk)
+                yield ServerSentEvent(data={"text": decoder.decode(chunk)}, event="log", id=str(position))
+                continue
+            job = runner.get(job_id)
+            if job.finished:
+                yield ServerSentEvent(data={"status": job.status.value}, event="end")
+                return
+            await asyncio.sleep(LOG_POLL_SEC)
+
+    @app.post("/jobs/{job_id}/stop", dependencies=[Depends(require_csrf)])
+    async def job_stop(request: Request, job_id: str):
+        form = await request.form()
+        _job(job_id)
+        runner.stop(job_id, force=form.get("force") == "1")
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+    @app.get("/jobs/{job_id}/log.txt")
+    def job_log_file(job_id: str):
+        _job(job_id)
+        return FileResponse(runner.log_path(job_id), filename=f"{job_id}.log", media_type="text/plain")
+
+    @app.get("/jobs/{job_id}/files/{kind}/{relative:path}")
+    def job_file(job_id: str, kind: str, relative: str):
+        try:
+            path = runner.file(job_id, kind, relative)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="No such file.") from None
+        return FileResponse(path, filename=path.name)
+
+    # --- areas and their commands --------------------------------------------------------
+
+    def area_page(
+        request: Request,
+        area: str,
+        label: str,
+        *,
+        error: str | None = None,
+        failed: str | None = None,
+        values: dict | None = None,
+        status_code: int = 200,
+    ):
+        found = commands.for_area(area)
+        if not found:
+            return page(request, "planned.html", title=label, plan=PLANNED["/" + area])
+        response = page(
+            request,
+            "area.html",
+            title=label,
+            area=area,
+            commands=found,
+            plan=PLANNED["/" + area],
+            error=error,
+            failed=failed,
+            values=values or {},
+            recent=listed(area=area),
+        )
+        response.status_code = status_code
+        return response
+
     for path, label in AREAS[1:]:
+        if path in ("/jobs",):
+            continue
 
-        def planned(request: Request, path: str = path, label: str = label):
-            return page(request, "planned.html", title=label, plan=PLANNED[path])
+        def show(request: Request, area: str = path[1:], label: str = label):
+            return area_page(request, area, label)
 
-        app.add_api_route(path, planned, methods=["GET"], response_class=HTMLResponse, name=label.lower())
+        app.add_api_route(path, show, methods=["GET"], response_class=HTMLResponse, name=label.lower())
+
+    @app.post("/commands/{command_id}", dependencies=[Depends(require_csrf)])
+    async def run_command(request: Request, command_id: str):
+        command = commands.BY_ID.get(command_id)
+        if command is None:
+            raise HTTPException(status_code=404, detail="No such command.")
+        form = await request.form()
+        label = dict(AREAS)["/" + command.area]
+        try:
+            values = command.parse(form)
+        except commands.FormError as exc:
+            raw = {k: v for k, v in form.items() if isinstance(v, str) and k != "csrf"}
+            return area_page(
+                request, command.area, label, error=str(exc), failed=command.id, values=raw, status_code=422
+            )
+
+        def argv(folder: Path) -> list[str]:
+            for f in command.fields:  # uploads go into the job's inputs/ first
+                if f.kind == "file" and values.get(f.name) is not None:
+                    values[f.name] = commands.save_upload(values[f.name], folder)
+            return command.argv(values, folder)
+
+        job = runner.start(command.id, command.describe(values), argv, summarize=command.summarize)
+        return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 
     return app
 

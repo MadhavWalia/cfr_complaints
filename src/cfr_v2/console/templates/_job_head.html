@@ -1,0 +1,32 @@
+<section id="job-head" class="panel" hx-get="/jobs/{{ job.id }}/head" hx-trigger="job-ended from:body" hx-swap="outerHTML">
+  <div class="job-facts">
+    <p><span class="pill {{ job.status.pill }}">{{ job.status.value }}</span>
+      {% if job.status.value == "running" and job.stop_requested %}<span class="muted">stopping…</span>{% endif %}</p>
+    <dl>
+      <div><dt>Started</dt><dd>{{ job.created_at | when }}</dd></div>
+      <div><dt>Took</dt><dd>{{ job.seconds | took }}</dd></div>
+      {% if job.exit_code is not none %}<div><dt>Exit code</dt><dd>{{ job.exit_code }}</dd></div>{% endif %}
+      {% if job.summary %}<div><dt>Outcome</dt><dd>{{ job.summary }}</dd></div>{% endif %}
+    </dl>
+  </div>
+  <details class="cmdline"><summary>Command</summary><p class="mono">{{ job.argv | shell }}</p></details>
+  {% if job.status.value == "running" %}
+  <form method="post" action="/jobs/{{ job.id }}/stop" class="actions">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if job.stop_requested %}
+    <input type="hidden" name="force" value="1">
+    <button class="btn secondary" type="submit">Force stop</button>
+    <span class="muted">Ends it at once, without letting it finish its current step.</span>
+    {% else %}
+    <button class="btn secondary" type="submit">Stop</button>
+    {% if command and command.long_running %}<span class="muted">A worker finishes the cases it holds first.</span>{% endif %}
+    {% endif %}
+  </form>
+  {% endif %}
+  {% if outputs %}
+  <div class="files">
+    <h2>Files it wrote</h2>
+    <ul>{% for name, size in outputs %}<li><a href="/jobs/{{ job.id }}/files/outputs/{{ name }}" download>{{ name }}</a> <span class="muted">{{ size | size }}</span></li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</section>

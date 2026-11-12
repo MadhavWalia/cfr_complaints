@@ -20,3 +20,50 @@
     toggle.setAttribute("aria-expanded", String(open));
   });
 })();
+
+// A job's log, live: appended as the job writes it; the head refreshes once it ends.
+(() => {
+  const pre = document.querySelector("pre[data-log]");
+  if (!pre || pre.dataset.finished === "true" || !("EventSource" in window)) return;
+  const nearBottom = () => pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.scrollTop = pre.scrollHeight;
+  const source = new EventSource(pre.dataset.log);
+  source.addEventListener("log", (e) => {
+    const follow = nearBottom();
+    pre.append(JSON.parse(e.data).text);
+    if (follow) pre.scrollTop = pre.scrollHeight;
+  });
+  source.addEventListener("end", () => {
+    source.close();
+    document.body.dispatchEvent(new Event("job-ended"));
+  });
+})();
+
+// Journal rows whose status changed since you last saw them stay highlighted until they
+// have been on screen for two seconds (the gate board's changed row). Per browser.
+(() => {
+  const KEY = "cfr-seen";
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { return {}; } };
+  const save = (seen) => { try { localStorage.setItem(KEY, JSON.stringify(seen)); } catch (e) {} };
+  const first = !localStorage.getItem(KEY);
+  const watch = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const row = entry.target;
+      clearTimeout(row._seenTimer);
+      if (entry.isIntersecting) row._seenTimer = setTimeout(() => {
+        const seen = load(); seen[row.dataset.job] = row.dataset.status; save(seen);
+      }, 2000);
+    }
+  });
+  const mark = (scope) => {
+    const seen = load();
+    scope.querySelectorAll("tr[data-job]").forEach((row) => {
+      if (first) { seen[row.dataset.job] = row.dataset.status; return; }  // nothing is news on a first visit
+      row.classList.toggle("lit", seen[row.dataset.job] !== row.dataset.status);
+      if (row.classList.contains("lit")) watch.observe(row);
+    });
+    if (first) save(seen);
+  };
+  mark(document);
+  document.body.addEventListener("htmx:afterSwap", () => mark(document));
+})();

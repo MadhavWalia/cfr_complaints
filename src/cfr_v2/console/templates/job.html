@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="head">
+  <h1>{{ job.title }}</h1>
+  <div class="actions"><a class="btn secondary" href="/jobs/{{ job.id }}/log.txt" download>Download the log</a></div>
+</div>
+{% include "_job_head.html" %}
+{% if inputs %}
+<section class="section files" aria-labelledby="in-h">
+  <h2 id="in-h">Files it was given</h2>
+  <ul>{% for name, size in inputs %}<li><a href="/jobs/{{ job.id }}/files/inputs/{{ name }}" download>{{ name }}</a> <span class="muted">{{ size | size }}</span></li>{% endfor %}</ul>
+</section>
+{% endif %}
+<section class="section" aria-labelledby="log-h">
+  <h2 id="log-h">Log</h2>
+  <pre class="log" tabindex="0" aria-live="off" data-log="/jobs/{{ job.id }}/log?offset={{ offset }}" data-finished="{{ 'true' if job.finished else 'false' }}">{{ log }}</pre>
+  {% if not log and job.finished %}<p class="muted">It printed nothing.</p>{% endif %}
+</section>
+{% endblock %}
