@@ -36,8 +36,9 @@ def _args(command_id: str, form: dict, ctx: Context, folder: Path) -> list[str]:
 @pytest.fixture
 def ctx(tmp_path):
     (tmp_path / "pdfs").mkdir()
-    (tmp_path / "store").mkdir()
-    (tmp_path / "store" / "cfr_store.json").write_text(json.dumps({"procedures_ref": "sha256:built"}))
+    for folder in ("store", "lightrag_store_built"):  # a store elsewhere, and the snapshot's own
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "cfr_store.json").write_text(json.dumps({"procedures_ref": "sha256:built"}))
     (tmp_path / "config" / "verticals").mkdir(parents=True)
     (tmp_path / commands.VERTICALS_DOCUMENT).write_text("verticals")
     (tmp_path / "registry" / "releases").mkdir(parents=True)
@@ -62,7 +63,7 @@ def ctx(tmp_path):
     done = {"evaluation.trial": [trial], "procedures.snapshot": [snap]}
     return Context(
         root=tmp_path,
-        env={"CFR_LIGHTRAG_WORKDIR": "store"},
+        env={},
         done_jobs=lambda command: done.get(command, []),
         outputs=lambda job_id: tmp_path / "jobs" / job_id / "outputs",
     )
@@ -110,33 +111,51 @@ def test_procedures_commands_take_paths_and_default_to_the_store(ctx, tmp_path):
     assert _args("procedures.snapshot", {"folder": pdfs, "previous": "sha256:old"}, ctx, tmp_path) == [
         "snapshot", pdfs, "--previous", "sha256:old",
     ]  # fmt: skip
-    # a build defaults to the newest snapshot made here; the store holds another, so a new folder
-    assert _args("procedures.build", {}, ctx, tmp_path) == [
-        "lightrag-build", "sha256:new", "--workdir", str(tmp_path / "lightrag_store_new"), "--concurrency", "16",
-    ]  # fmt: skip
-    with pytest.raises(FormError, match="store was built from sha256:built…, .* such as lightrag_store_new"):
+    # a build defaults to the newest snapshot made here, into that snapshot's own folder
+    assert _args("procedures.build", {}, ctx, tmp_path) == ["lightrag-build", "sha256:new", "--concurrency", "16"]
+    assert _args("procedures.build", {"procedures": "sha256:built"}, ctx, tmp_path)[1] == "sha256:built"  # resumes
+    with pytest.raises(FormError, match="store was built from sha256:built…, and a store holds one snapshot. Leave"):
         BY_ID["procedures.build"].parse({"workdir": store}, ctx)
     resume = {"procedures": "sha256:built", "workdir": store}
-    assert _args("procedures.build", resume, ctx, tmp_path)[3] == store  # resumes its own
-    # a search defaults to the one the store was built from
-    assert _args("procedures.search", {"query": "fee after cancel", "text": "on"}, ctx, tmp_path) == [
-        "search", "sha256:built", "fee after cancel", "--workdir", store, "--limit", "8", "--text",
+    assert _args("procedures.build", resume, ctx, tmp_path)[2:4] == ["--workdir", store]  # a folder elsewhere
+    with pytest.raises(FormError, match="Snapshot: a ref such as sha256"):
+        BY_ID["procedures.build"].parse({"procedures": "../etc"}, ctx)
+    # CFR_LIGHTRAG_WORKDIR overrides the folder, so a store holding another snapshot is named
+    overridden = Context(ctx.root, {"CFR_LIGHTRAG_WORKDIR": "store"}, ctx.done_jobs, ctx.outputs)
+    with pytest.raises(
+        FormError, match="CFR_LIGHTRAG_WORKDIR in .env chooses that folder: remove it to use lightrag_store_new"
+    ):
+        BY_ID["procedures.build"].parse({}, overridden)
+    # a search needs a store built from its snapshot
+    search = {"query": "fee after cancel", "procedures": "sha256:built", "text": "on"}
+    assert _args("procedures.search", search, ctx, tmp_path) == [
+        "search", "sha256:built", "fee after cancel", "--limit", "8", "--text",
     ]  # fmt: skip
+    with pytest.raises(FormError, match="there is no store for it at lightrag_store_new. Build it first"):
+        BY_ID["procedures.search"].parse(search | {"procedures": "sha256:new"}, ctx)
+
+
+def test_the_snapshot_starts_as_the_current_releases():
+    ctx = Context(REPO, {"CFR_RELEASE_ID": "cfr-v2-phase-e"}, lambda command: [], lambda job_id: REPO)
+    pinned = commands.ReleaseRegistry(REPO / "registry").load("cfr-v2-phase-e").procedure_snapshot
+    assert pinned and BY_ID["procedures.search"].fields[1].initial(ctx) == pinned
+    assert BY_ID["procedures.build"].fields[0].initial(ctx) == pinned  # no snapshot made here yet
+    assert commands._release_snapshot(Context(REPO, {"CFR_RELEASE_ID": "nope"}, ctx.done_jobs, ctx.outputs)) is None
 
 
 def test_routing_commands_take_an_earlier_trials_claims(ctx, tmp_path):
     trial = ctx.outputs("20261112-100000-aaaa")
-    args = _args("routing.trial", {"claims_job": "20261112-100000-aaaa", "cases": "5"}, ctx, tmp_path)
+    form = {"claims_job": "20261112-100000-aaaa", "cases": "5", "procedures": "sha256:built"}
+    args = _args("routing.trial", form, ctx, tmp_path)
     assert args == [
         "sha256:built",
-        "--workdir", str(tmp_path / "store"),
         "--verticals", str(tmp_path / commands.VERTICALS_DOCUMENT),
         "--claims-from", str(trial / "c02_trial"),
         "--cases", "5", "--concurrency", "4",
         "--out", str(tmp_path / "outputs" / "router_trial"),
     ]  # fmt: skip
     with pytest.raises(FormError, match="Claims: choose a C02 trial or type a folder, not both"):
-        BY_ID["routing.trial"].parse({}, ctx)
+        BY_ID["routing.trial"].parse({"procedures": "sha256:built"}, ctx)
     with pytest.raises(FormError, match="Claims from a C02 trial: choose one of the finished jobs"):
         BY_ID["routing.trial"].parse({"claims_job": "20261112-000000-zzzz"}, ctx)
     assert _args("routing.publish", {}, ctx, tmp_path) == [
@@ -145,7 +164,7 @@ def test_routing_commands_take_an_earlier_trials_claims(ctx, tmp_path):
     (tmp_path / "outputs").mkdir()
     backfill = _args("routing.backfill", {"from_release": "cfr-v2-phase-d", "count_only": "on"}, ctx, tmp_path)
     assert backfill == [
-        "backfill", "--from-release", "cfr-v2-phase-d", "--workdir", str(tmp_path / "store"),
+        "backfill", "--from-release", "cfr-v2-phase-d",
         "--concurrency", "4", "--count-only", "--out", str(tmp_path / "outputs" / "backfill.jsonl"),
     ]  # fmt: skip
     with pytest.raises(FormError, match="Failed under: choose one of the options"):

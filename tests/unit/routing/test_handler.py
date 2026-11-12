@@ -163,23 +163,30 @@ def test_the_pinned_document_and_one_store_serve_every_run(loop):
     pinned.close()  # twice is harmless
 
 
-def test_no_store_directory_or_a_store_from_another_snapshot_is_refused(tmp_path, loop):
-    from cfr_v2.procedures.lightrag_engine import STORE_MARKER
+def test_no_store_directory_or_a_store_from_another_snapshot_is_refused(tmp_path, loop, monkeypatch):
+    from cfr_v2.procedures.stores import STORE_MARKER, store_name
 
     store = InMemoryArtifactStore()
     verticals = _verticals(store)
     manifest = _manifest(store, routing_verticals=verticals, procedure_snapshot=SNAPSHOT)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CFR_LIGHTRAG_WORKDIR", raising=False)
 
     def pinned(workdir):
         return PinnedRouting(store, lambda _: manifest, lightrag_opener(store, workdir, None, None), loop=loop)
 
-    with pytest.raises(RoutingSetupError, match="CFR_LIGHTRAG_WORKDIR"):
+    # without a folder, the store is the snapshot's own, named after it
+    with pytest.raises(RoutingSetupError, match=f"no LightRAG store at {store_name(SNAPSHOT)}: run lightrag-build"):
         pinned(None)(MANIFEST_REF)
     with pytest.raises(RoutingSetupError, match="no cfr_store.json"):
         pinned(tmp_path)(MANIFEST_REF)
     (tmp_path / STORE_MARKER).write_text(json.dumps({"procedures_ref": "sha256:" + "d" * 64}))
     with pytest.raises(RoutingSetupError, match="was built from"):
         pinned(tmp_path)(MANIFEST_REF)
+    # CFR_LIGHTRAG_WORKDIR overrides the folder; when it holds another snapshot, the error says so
+    monkeypatch.setenv("CFR_LIGHTRAG_WORKDIR", str(tmp_path))
+    with pytest.raises(RoutingSetupError, match=f"unset it to use {store_name(SNAPSHOT)}"):
+        pinned(None)(MANIFEST_REF)
 
 
 # --- publish-verticals ---------------------------------------------------------------------

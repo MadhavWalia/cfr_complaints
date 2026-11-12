@@ -203,7 +203,7 @@ definitions (LDR-0019, LDR-0020, LDR-0021). Prepare once per update, in this ord
 
 ```bash
 python -m cfr_v2.procedures snapshot /path/to/pdfs                         # extract, redact, store; prints the snapshot ref
-python -m cfr_v2.procedures lightrag-build sha256:<snapshot> --workdir lightrag_store   # ~3 gpt-5 calls per section; resumable
+python -m cfr_v2.procedures lightrag-build sha256:<snapshot>                         # ~3 gpt-5 calls per section; resumable
 python -m cfr_v2.routing publish-verticals config/verticals/knowledge_document.txt      # prints the document's ref
 ```
 
@@ -211,18 +211,20 @@ python -m cfr_v2.routing publish-verticals config/verticals/knowledge_document.t
   `procedure_snapshot` in `registry/releases/<release>.yaml`. A run is routed with what its release
   names, so updating either means a new release.
 - **The knowledge document is internal:** keep it in `config/verticals/` (gitignored), never in git.
-- **The worker searches the store in `CFR_LIGHTRAG_WORKDIR`.** `lightrag-build` writes
-  `cfr_store.json` there, naming the snapshot it was built from, and the worker refuses a store
-  whose marker doesn't match the release. A build into a store made from another snapshot is
-  refused too.
+- **Each snapshot has its own store, named after it:** `lightrag_store_<first 12 of its hash>`.
+  `lightrag-build` creates it, and the worker finds it from the release's `procedure_snapshot`, so
+  moving to a new snapshot means building it, then changing the release; nothing else. The store's
+  `cfr_store.json` names the snapshot it was built from, and a store that doesn't match is refused,
+  for search and for a build alike. `CFR_LIGHTRAG_WORKDIR` (or `--workdir`) overrides the folder,
+  for a store kept somewhere else.
 - **A claim set with no claims is routed without any of this.** Any failed claim fails the stage,
   and the worker retries it. A search the gateway blocks routes that claim without sections.
 
 Outside the workflow:
 
 ```bash
-python -m cfr_v2.procedures search sha256:<snapshot> "a query" --workdir lightrag_store   # try searches
-python -m cfr_v2.routing sha256:<snapshot> --workdir lightrag_store \
+python -m cfr_v2.procedures search sha256:<snapshot> "a query"                            # try searches
+python -m cfr_v2.routing sha256:<snapshot> \
   --verticals config/verticals/knowledge_document.txt --claims-from c02_trial --out router_trial   # trial + routing.xlsx
 python -m cfr_v2.routing backfill --from-release <old release> --count-only               # route stored claim sets of failed runs
 ```

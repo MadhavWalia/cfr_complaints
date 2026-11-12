@@ -22,6 +22,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
+
+from cfr_v2.procedures import stores
+from cfr_v2.registry.manifests import ReleaseRegistry
+
 from . import formats
 
 FieldKind = Literal["text", "int", "float", "date", "check", "choice", "file", "files", "path", "lines", "job"]
@@ -153,7 +158,7 @@ class Command:
     fields: tuple[Field, ...] = ()
     job_title: Callable[[Values], str] | None = None
     summarize: Callable[[Path, int], str | None] | None = None
-    check: Callable[[Values], None] | None = None  # rules across fields; raises FormError
+    check: Callable[[Values, Context], None] | None = None  # rules across fields; raises FormError
     long_running: bool = False  # runs until stopped (a worker)
     action: str = "Start"  # the button: names what it does
 
@@ -166,7 +171,7 @@ class Command:
                 problems.append(str(exc))
         if not problems and self.check is not None:
             try:
-                self.check(values)
+                self.check(values, ctx)
             except FormError as exc:
                 problems.append(str(exc))
         if problems:
@@ -243,53 +248,61 @@ def _intake_counts(folder: Path, code: int) -> str | None:
 # --- defaults and choices read from this machine -------------------------------------------------
 
 VERTICALS_DOCUMENT = "config/verticals/knowledge_document.txt"
+SNAPSHOT_HELP = "sha256:…; it starts as the one the current release pins."
+STORE_HELP = "Empty: the snapshot's own folder, lightrag_store_ and the start of its hash, where the worker looks."
 
 
-def _workdir(ctx: Context) -> str:
-    return ctx.env.get("CFR_LIGHTRAG_WORKDIR") or "lightrag_store"
-
-
-def _built_from(workdir: Path) -> str | None:
-    """The snapshot a LightRAG store was built from (its ``cfr_store.json``), if it records one."""
+def _release_snapshot(ctx: Context) -> str | None:
+    """The procedure snapshot the current release (``CFR_RELEASE_ID``) pins: the one the worker searches."""
     try:
-        marker = json.loads((workdir / "cfr_store.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        manifest = ReleaseRegistry(ctx.root / "registry").load(ctx.env.get("CFR_RELEASE_ID", ""))
+    except (OSError, ValueError, yaml.YAMLError):  # no such release, or a broken file: no default
         return None
-    return marker.get("procedures_ref") if isinstance(marker, dict) else None
-
-
-def _store_ref(ctx: Context) -> str | None:
-    """The snapshot the configured LightRAG store was built from."""
-    return _built_from(ctx.root / _workdir(ctx))
-
-
-def _new_store(snapshot: str) -> str:
-    """A folder for a store built from ``snapshot``: the start of its hash names it."""
-    return f"lightrag_store_{snapshot.removeprefix('sha256:')[:12]}"
-
-
-def _build_workdir(ctx: Context) -> str:
-    """For a build: the configured store, unless it was built from another snapshot than the one
-    the form offers; a store never takes a second snapshot, so that one gets a new folder."""
-    snapshot, built = _latest_snapshot(ctx), _store_ref(ctx)
-    return _new_store(snapshot) if snapshot and built and built != snapshot else _workdir(ctx)
-
-
-def _store_takes(values: Values) -> None:
-    built = _built_from(values["workdir"])
-    if built and built != values["procedures"]:
-        raise FormError(
-            f"LightRAG store: {values['workdir'].name} was built from {built[:19]}…, and a store never takes "
-            f"a second snapshot. Type a new folder, such as {_new_store(values['procedures'])}."
-        )
+    return manifest.procedure_snapshot
 
 
 def _latest_snapshot(ctx: Context) -> str | None:
-    """For a build: the newest snapshot made here, else the store's own."""
+    """For a build: the newest snapshot made here, else the release's."""
     for job in ctx.done_jobs("procedures.snapshot"):
         if job.summary and job.summary.startswith("sha256:"):
             return job.summary
-    return _store_ref(ctx)
+    return _release_snapshot(ctx)
+
+
+def _store_field(help: str) -> Field:
+    return Field("workdir", "LightRAG store", "path", help=help)
+
+
+def _store_args(values: Values) -> list[str]:
+    return _opt("--workdir", values["workdir"])
+
+
+def _store_check(build: bool) -> Callable[[Values, Context], None]:
+    """The store a command will use must hold its snapshot; a build may also start a new one."""
+
+    def check(values: Values, ctx: Context) -> None:
+        ref = values["procedures"]
+        try:
+            folder = values["workdir"] or stores.store_dir(ref, root=ctx.root, env=ctx.env)
+        except ValueError:
+            raise FormError("Snapshot: a ref such as sha256:…") from None
+        built = stores.built_from(folder)
+        if built == ref or (build and built is None):
+            return
+        name = folder.name
+        if built is None:
+            problem = f"there is no store for it at {name}. Build it first, under Procedures"
+        else:
+            problem = f"{name} was built from {built[:19]}…, and a store holds one snapshot"
+        if values["workdir"]:
+            fix = "Leave the store empty to use the snapshot's own"
+        elif ctx.env.get(stores.WORKDIR_ENV):
+            fix = f"{stores.WORKDIR_ENV} in .env chooses that folder: remove it to use {stores.store_name(ref)}"
+        else:
+            fix = ""
+        raise FormError(f"LightRAG store: {problem}." + (f" {fix}." if fix else ""))
+
+    return check
 
 
 def _registry(kind: str) -> Callable[[Context], list[tuple[str, str]]]:
@@ -299,15 +312,23 @@ def _registry(kind: str) -> Callable[[Context], list[tuple[str, str]]]:
     return choices
 
 
-def _one_of(*names: str, message: str) -> Callable[[Values], None]:
-    def check(values: Values) -> None:
+def _one_of(*names: str, message: str) -> Callable[[Values, Context], None]:
+    def check(values: Values, ctx: Context) -> None:
         if sum(bool(values.get(n)) for n in names) != 1:
             raise FormError(message)
 
     return check
 
 
-def _window(values: Values) -> None:
+def _all(*checks: Callable[[Values, Context], None]) -> Callable[[Values, Context], None]:
+    def check(values: Values, ctx: Context) -> None:
+        for one in checks:
+            one(values, ctx)
+
+    return check
+
+
+def _window(values: Values, ctx: Context) -> None:
     if values["end_date"] < values["start_date"]:
         raise FormError("To: on or after From.")
 
@@ -441,18 +462,15 @@ CATALOGUE: tuple[Command, ...] = (
         fields=(
             Field("claims_job", "Claims from a C02 trial", "job", source="evaluation.trial", either=True),
             Field("claims_path", "Or a folder of review files", "path", must="dir", either=True),
-            Field(
-                "procedures", "Snapshot", required=True, default=_store_ref, help="The one the store was built from."
-            ),
-            Field("workdir", "LightRAG store", "path", required=True, default=_workdir, must="dir"),
+            Field("procedures", "Snapshot", required=True, default=_release_snapshot, help=SNAPSHOT_HELP),
+            _store_field(STORE_HELP),
             Field("verticals", "Verticals document", "path", required=True, default=VERTICALS_DOCUMENT, must="file"),
             Field("cases", "Cases", "int", minimum=1, help="Only the first N cases; otherwise all."),
             Field("concurrency", "Claims at once", "int", required=True, default=4, minimum=1, maximum=32),
         ),
         args=lambda v, folder: [
             v["procedures"],
-            "--workdir",
-            str(v["workdir"]),
+            *_store_args(v),
             "--verticals",
             str(v["verticals"]),
             "--claims-from",
@@ -463,7 +481,10 @@ CATALOGUE: tuple[Command, ...] = (
             "--out",
             _out(folder, "router_trial"),
         ],
-        check=_one_of("claims_job", "claims_path", message="Claims: choose a C02 trial or type a folder, not both."),
+        check=_all(
+            _one_of("claims_job", "claims_path", message="Claims: choose a C02 trial or type a folder, not both."),
+            _store_check(build=False),
+        ),
         job_title=lambda v: "Router trial" + (f" · {v['cases']} cases" if v["cases"] else ""),
         summarize=_wrote("router_trial", "file"),
         action="Route the claims",
@@ -493,15 +514,14 @@ CATALOGUE: tuple[Command, ...] = (
             Field("count_only", "Count only", "check", default=True, help="Runs and claims; no model calls."),
             Field("limit", "Runs", "int", minimum=1, help="Only the first N still to do; otherwise all."),
             Field("concurrency", "Runs at once", "int", required=True, default=4, minimum=1, maximum=32),
-            Field("workdir", "LightRAG store", "path", required=True, default=_workdir, must="dir"),
+            _store_field("Empty: the store of the snapshot the current release pins, as the worker uses."),
             Field("resume", "Continue from", "job", source="routing.backfill", help="Skips the runs it routed."),
         ),
         args=lambda v, folder: [
             "backfill",
             "--from-release",
             v["from_release"],
-            "--workdir",
-            str(v["workdir"]),
+            *_store_args(v),
             *_opt("--limit", v["limit"]),
             "--concurrency",
             str(v["concurrency"]),
@@ -564,26 +584,18 @@ CATALOGUE: tuple[Command, ...] = (
         module="cfr_v2.procedures",
         fields=(
             Field("procedures", "Snapshot", required=True, default=_latest_snapshot),
-            Field(
-                "workdir",
-                "LightRAG store",
-                "path",
-                required=True,
-                default=_build_workdir,
-                help="Created if missing. A store holds one snapshot: a new snapshot needs a new folder.",
-            ),
+            _store_field(STORE_HELP + " Created if missing."),
             Field("concurrency", "Passages at once", "int", required=True, default=16, minimum=1, maximum=64),
         ),
-        check=_store_takes,
+        check=_store_check(build=True),
         args=lambda v, folder: [
             "lightrag-build",
             v["procedures"],
-            "--workdir",
-            str(v["workdir"]),
+            *_store_args(v),
             "--concurrency",
             str(v["concurrency"]),
         ],
-        job_title=lambda v: f"LightRAG build · {v['workdir'].name}",
+        job_title=lambda v: f"LightRAG build · {v['procedures'][:19]}…",
         summarize=_printed(r"^(\d+ of \d+ passages in the graph; \d+ failed)"),
         action="Build",
     ),
@@ -596,10 +608,8 @@ CATALOGUE: tuple[Command, ...] = (
         module="cfr_v2.procedures",
         fields=(
             Field("query", "Query", required=True),
-            Field(
-                "procedures", "Snapshot", required=True, default=_store_ref, help="The one the store was built from."
-            ),
-            Field("workdir", "LightRAG store", "path", required=True, default=_workdir, must="dir"),
+            Field("procedures", "Snapshot", required=True, default=_release_snapshot, help=SNAPSHOT_HELP),
+            _store_field(STORE_HELP),
             Field("limit", "Results", "int", required=True, default=8, minimum=1, maximum=50),
             Field("text", "Show the passages", "check"),
         ),
@@ -607,13 +617,13 @@ CATALOGUE: tuple[Command, ...] = (
             "search",
             v["procedures"],
             v["query"],
-            "--workdir",
-            str(v["workdir"]),
+            *_store_args(v),
             "--limit",
             str(v["limit"]),
             *_flag(v["text"], "--text"),
         ],
         job_title=lambda v: "Search",
+        check=_store_check(build=False),
         action="Search",
     ),
     # --- Evaluation -----------------------------------------------------------------------------

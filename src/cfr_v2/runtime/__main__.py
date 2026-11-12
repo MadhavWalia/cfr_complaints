@@ -16,11 +16,9 @@ comes from the environment (see ``.env.example``).
 from __future__ import annotations
 
 import argparse
-import os
 import signal
 import threading
 from collections.abc import Callable
-from pathlib import Path
 
 from cfr_v2.artifacts import S3ArtifactStore, S3Settings
 from cfr_v2.contracts import AuthorizationContext, Lane
@@ -41,7 +39,7 @@ def stage_handlers(store: S3ArtifactStore, on_stop: list[Callable[[], None]] | N
     Pass 2's evidence source taxonomy is the one the run's pinned release manifest names
     (``evidence-sources-1`` when it names none); each claim set records the version used.
     C04 routes with the knowledge document and procedure snapshot the manifest pins, over the
-    LightRAG store in ``CFR_LIGHTRAG_WORKDIR``, opened on first use (LDR-0021). ``on_stop`` gets
+    snapshot's own LightRAG store (or ``CFR_LIGHTRAG_WORKDIR``), opened on first use (LDR-0021). ``on_stop`` gets
     what must be closed when the worker stops.
     """
     from cfr_v2.llm import GatewayEmbeddingClient, GatewayModelClient, GatewaySettings
@@ -58,11 +56,10 @@ def stage_handlers(store: S3ArtifactStore, on_stop: list[Callable[[], None]] | N
     client = GatewayModelClient(settings)
     lm = gateway_lm(client, settings.model_id)
     taxonomies = PinnedTaxonomies(store, db=lambda: context.current().db)  # the pool opens with the runtime
-    workdir = os.environ.get("CFR_LIGHTRAG_WORKDIR")
     routing = PinnedRouting(
         store,
         lambda ref: load_pinned(ref, store=store, db=context.current().db, authorization=_ROUTING_READER),
-        lightrag_opener(store, Path(workdir) if workdir else None, GatewayEmbeddingClient(), client),
+        lightrag_opener(store, None, GatewayEmbeddingClient(), client),
     )
     if on_stop is not None:
         on_stop.append(routing.close)

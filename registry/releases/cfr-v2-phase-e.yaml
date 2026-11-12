@@ -25,6 +25,6 @@ evidence_sources: evidence-sources-1
 # C04 (LDR-0021). The knowledge document defining the verticals, as stored by
 # `python -m cfr_v2.routing publish-verticals <path>` (the document itself is never committed).
 routing_verticals: sha256:be1e7ad1946693ff2a0efa1440a9f2d4db0532eb083d5dbca01dd42cb1d60f7b
-# The procedure snapshot searched. The worker's LightRAG store (CFR_LIGHTRAG_WORKDIR) must have
-# been built from it: `python -m cfr_v2.procedures lightrag-build <this ref> --workdir <store>`.
+# The procedure snapshot searched, in its own LightRAG store, lightrag_store_<first 12 of its hash>:
+# `python -m cfr_v2.procedures lightrag-build <this ref>` builds it.
 procedure_snapshot: sha256:6a0cca3f151989fd45643da48f97aa664200a12cc0f79519cf5760251c82ac75

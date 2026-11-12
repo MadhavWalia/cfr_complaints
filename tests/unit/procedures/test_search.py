@@ -23,6 +23,7 @@ from cfr_v2.contracts import (
 from cfr_v2.llm import FakeEmbeddingClient, FakeModelClient
 from cfr_v2.procedures import __main__ as cli
 from cfr_v2.procedures import corpus_passages
+from cfr_v2.procedures.stores import store_name
 
 _ANY = AuthorizationContext(principal="test", purpose="check")
 
@@ -127,11 +128,20 @@ def test_build_then_search_from_the_command_line(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_embedder", lambda *_: embedder)
     monkeypatch.setattr(cli, "_chat_client", lambda: FakeModelClient(responder=_extraction))
     monkeypatch.setattr(cli, "_masker", lambda: type("M", (), {"mask": lambda self, text: text})())
-    ref, workdir = _snapshot(store, _corpus()), str(tmp_path / "store")
-    assert cli.main(["lightrag-build", ref, "--workdir", workdir, "--concurrency", "2"]) == 0
-    assert "3 of 3 passages in the graph; 0 failed" in capsys.readouterr().out
-    assert cli.main(["search", ref, "late fees waived", "--workdir", workdir, "--limit", "1"]) == 0
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CFR_LIGHTRAG_WORKDIR", raising=False)
+    ref = _snapshot(store, _corpus())
+    assert cli.main(["lightrag-build", ref, "--concurrency", "2"]) == 0  # into the snapshot's own folder
+    printed = capsys.readouterr().out
+    assert f"store: {store_name(ref)}" in printed and "3 of 3 passages in the graph; 0 failed" in printed
+    assert (tmp_path / store_name(ref)).is_dir()
+    assert cli.main(["search", ref, "late fees waived", "--limit", "1"]) == 0
     printed = capsys.readouterr().out
     assert "Collections.pdf / Late fees" in printed and "How late fees" not in printed
+    workdir = str(tmp_path / store_name(ref))
     assert cli.main(["search", ref, "late fees waived", "--workdir", workdir, "--text"]) == 0
     assert "How late fees" in capsys.readouterr().out
+    # a store holds one snapshot: another ref is refused, before any model call
+    other = "sha256:" + "e" * 64
+    assert cli.main(["search", other, "late fees", "--workdir", workdir]) == 2
+    assert "was built from" in capsys.readouterr().err
