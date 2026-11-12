@@ -29,6 +29,8 @@ from pathlib import Path
 
 from cfr_v2.telemetry import get_logger
 
+from .diagnosis import failure_reason
+
 logger = get_logger("cfr_v2.console.jobs")
 ADOPTED_POLL_SEC = 2.0
 
@@ -59,6 +61,8 @@ class Job:
     pid: int | None = None
     stop_requested: bool = False
     summary: str | None = None  # one line for the journal's output column, set by the command
+    reason: str | None = None  # why it failed, from the end of its log (diagnosis.failure_reason)
+    form: dict[str, str] | None = None  # the form it was started from, for "Run again" (no files)
 
     @property
     def finished(self) -> bool:
@@ -173,6 +177,7 @@ class JobRunner:
         argv: Callable[[Path], Sequence[str]],
         *,
         summarize: Callable[[Path, int], str | None] | None = None,
+        form: Mapping[str, str] | None = None,
     ) -> Job:
         """Start a new job. ``argv(folder)`` builds the arguments once the job's folder exists,
         so uploads can be saved into ``inputs/`` and outputs pointed at ``outputs/``.
@@ -181,7 +186,9 @@ class JobRunner:
         folder = self.folder(job_id)
         (folder / "inputs").mkdir(parents=True)
         (folder / "outputs").mkdir()
-        job = Job(job_id, command, title, tuple(argv(folder)), JobStatus.RUNNING, _now())
+        job = Job(
+            job_id, command, title, tuple(argv(folder)), JobStatus.RUNNING, _now(), form=dict(form) if form else None
+        )
         argv = list(job.argv)
         log = (folder / "log.txt").open("wb")
         try:
@@ -197,7 +204,8 @@ class JobRunner:
         except OSError as exc:
             log.write(f"could not start: {type(exc).__name__}\n".encode())
             log.close()
-            job = replace(job, status=JobStatus.FAILED, ended_at=_now(), exit_code=-1)
+            reason = f"could not start: {type(exc).__name__}"
+            job = replace(job, status=JobStatus.FAILED, ended_at=_now(), exit_code=-1, reason=reason)
             self._save(job)
             return job
         log.close()  # the child holds its own copy
@@ -243,7 +251,8 @@ class JobRunner:
                 summary = summarize(self.folder(job_id), code)
             except Exception as exc:  # noqa: BLE001 - a summary is a nicety; the job's outcome stands
                 logger.warning("console: job %s summary failed: %s", job_id, type(exc).__name__)
-        self._save(replace(job, status=status, ended_at=_now(), exit_code=code, summary=summary))
+        reason = failure_reason(self.log_path(job_id)) if status is JobStatus.FAILED else None
+        self._save(replace(job, status=status, ended_at=_now(), exit_code=code, summary=summary, reason=reason))
         with self._lock:
             self._tracked.pop(job_id, None)
         logger.info("console: job %s %s (exit %d)", job_id, status.value, code)

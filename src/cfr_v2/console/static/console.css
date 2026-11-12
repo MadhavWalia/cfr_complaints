@@ -168,6 +168,12 @@ tr.lit td, tr.lit a, tr.lit .muted, tr.lit td::before { color: var(--on-lit); }
 .pager { display: flex; gap: var(--s5); align-items: center; margin-top: var(--s4); }
 .note { margin-top: var(--s3); font-size: 13px; }
 .last-error { margin-top: var(--s4); overflow-wrap: anywhere; }
+/* A failed job: why, and what to do (LDR-0025 step 1). */
+.failure { margin-top: var(--s4); padding-top: var(--s4); border-top: 1px solid var(--line); display: grid; gap: var(--s2); max-width: 80ch; }
+.failure h2 { font-size: 15px; margin: 0; }
+.failure p { margin: 0; }
+.failure .reason { color: var(--heading); font-size: 14px; overflow-wrap: anywhere; }
+.filled-from { color: var(--text-2); max-width: var(--measure); }
 .last-error strong { color: var(--heading); margin-right: var(--s2); }
 
 .timeline { list-style: none; margin: 0; padding: 0 0 0 8px; display: grid; gap: 0; max-width: 760px; }

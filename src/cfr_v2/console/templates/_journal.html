@@ -11,7 +11,10 @@
         <td data-label="Job"><span><a href="/jobs/{{ job.id }}">{{ job.title }}</a></span></td>
         <td data-label="Status"><span><span class="pill {{ job.status.pill }}">{{ job.status.value }}</span></span></td>
         <td data-label="Took" class="num"><span>{{ job.seconds | took }}</span></td>
-        <td data-label="Outcome"><span class="{% if not job.summary %}muted{% endif %}">{{ job.summary or ("exit " ~ job.exit_code if job.exit_code not in (None, 0) else "—" if job.finished else "") }}</span></td>
+        <td data-label="Outcome">{% if job.summary %}<span class="outcome">{{ job.summary }}</span>
+          {% elif job.reason %}<span class="outcome reason" title="{{ job.reason }}">{{ job.reason | truncate(110) }}</span>
+          {% elif job.status.value == "lost" %}<span class="muted">outcome unknown</span>
+          {% else %}<span class="muted">{{ "exit " ~ job.exit_code if job.exit_code not in (None, 0) else "—" if job.finished else "" }}</span>{% endif %}</td>
       </tr>
       {% endfor %}
       </tbody>

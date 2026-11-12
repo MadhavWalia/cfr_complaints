@@ -29,6 +29,7 @@ from cfr_v2.telemetry import get_logger
 
 from . import cases, commands, formats
 from . import status as pipeline
+from .diagnosis import diagnose
 from .jobs import Job, JobRunner, JobStatus
 from .settings import ConsoleSettings, display_value
 
@@ -223,6 +224,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             outputs=runner.files(job_id, "outputs"),
             inputs=runner.files(job_id, "inputs"),
             command=commands.BY_ID.get(job.command),
+            diagnosis=diagnose(job.reason),
         )
 
     @app.get("/jobs/{job_id}/head", response_class=HTMLResponse)
@@ -234,6 +236,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             job=job,
             outputs=runner.files(job_id, "outputs"),
             command=commands.BY_ID.get(job.command),
+            diagnosis=diagnose(job.reason),
         )
 
     @app.get("/jobs/{job_id}/log", response_class=EventSourceResponse)
@@ -430,10 +433,13 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         label: str,
         *,
         error: str | None = None,
-        failed: str | None = None,
+        filled: str | None = None,
         values: dict | None = None,
+        again: Job | None = None,
         status_code: int = 200,
     ):
+        """An area's commands. ``filled`` names the command whose form shows ``values`` (a form sent
+        back with ``error``, or an earlier job's form for "Run again", ``again``)."""
         found = commands.for_area(area)
         response = page(
             request,
@@ -443,8 +449,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             commands=found,
             plan=LEDES["/" + area],
             error=error,
-            failed=failed,
+            filled=filled,
             values=values or {},
+            again=again,
             ctx=form_context,
             recent=listed(area=area),
             status=read_status() if area == "system" else None,  # the queue, before starting a worker
@@ -457,8 +464,14 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         if path in ("/jobs", "/cases", "/releases"):
             continue
 
-        def show(request: Request, area: str = path[1:], label: str = label):
-            return area_page(request, area, label)
+        def show(request: Request, again: str | None = None, area: str = path[1:], label: str = label):
+            if again is None:
+                return area_page(request, area, label)
+            job = _job(again)
+            command = commands.BY_ID.get(job.command)
+            if command is None or command.area != area or job.form is None:
+                raise HTTPException(status_code=404, detail="That job can't be run again from here.")
+            return area_page(request, area, label, filled=command.id, values=job.form, again=job)
 
         app.add_api_route(path, show, methods=["GET"], response_class=HTMLResponse, name=label.lower())
 
@@ -474,7 +487,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         except commands.FormError as exc:
             raw = {k: v for k, v in form.multi_items() if isinstance(v, str) and k != "csrf"}
             return area_page(
-                request, command.area, label, error=str(exc), failed=command.id, values=raw, status_code=422
+                request, command.area, label, error=str(exc), filled=command.id, values=raw, status_code=422
             )
 
         def argv(folder: Path) -> list[str]:
@@ -485,7 +498,8 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
                     values[f.name] = [commands.save_upload(u, folder) for u in values[f.name]]
             return command.argv(values, folder)
 
-        job = runner.start(command.id, command.describe(values), argv, summarize=command.summarize)
+        sent = {k: v for k, v in form.multi_items() if isinstance(v, str) and k != "csrf"}
+        job = runner.start(command.id, command.describe(values), argv, summarize=command.summarize, form=sent)
         return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 
     return app

@@ -24,6 +24,7 @@
 // A job's log, live: appended as the job writes it; the head refreshes once it ends.
 (() => {
   const pre = document.querySelector("pre[data-log]");
+  if (pre) pre.scrollTop = pre.scrollHeight;  // the end of a log says how it went
   if (!pre || pre.dataset.finished === "true" || !("EventSource" in window)) return;
   const nearBottom = () => pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
   pre.scrollTop = pre.scrollHeight;

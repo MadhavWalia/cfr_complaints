@@ -9,6 +9,24 @@
       {% if job.summary %}<div><dt>Outcome</dt><dd>{{ job.summary }}</dd></div>{% endif %}
     </dl>
   </div>
+  {% if job.status.value == "failed" %}
+  <div class="failure" role="status">
+    <h2>Why it failed</h2>
+    {% if job.reason %}<p class="reason mono">{{ job.reason }}</p>{% endif %}
+    {% if diagnosis %}<p>{{ diagnosis.explanation }}</p>
+    {% elif job.reason %}<p class="muted">The line above is the last error in the log; the log below has the rest.</p>
+    {% else %}<p class="muted">It exited with code {{ job.exit_code }} without naming an error. The end of the log below is the best clue.</p>{% endif %}
+    {% if diagnosis and diagnosis.href %}<p><a class="btn secondary" href="{{ diagnosis.href }}">{{ diagnosis.action }}</a></p>{% endif %}
+  </div>
+  {% elif job.status.value == "lost" %}
+  <div class="failure" role="status">
+    <h2>Outcome unknown</h2>
+    <p>The console was restarted while this job ran, and its process had ended by the time it came back, so its exit code was never seen. The end of the log is the best clue.</p>
+  </div>
+  {% endif %}
+  {% if job.finished and command and job.form is not none %}
+  <p class="actions"><a class="btn secondary" href="/{{ command.area }}?again={{ job.id }}#{{ command.id }}">Run again</a><span class="muted">Opens its form with the same values, to check before starting.</span></p>
+  {% endif %}
   <details class="cmdline"><summary>Command</summary><p class="mono">{{ job.argv | shell }}</p></details>
   {% if job.status.value == "running" %}
   <form method="post" action="/jobs/{{ job.id }}/stop" class="actions">

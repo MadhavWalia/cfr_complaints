@@ -156,3 +156,43 @@ def test_the_lines_counts_open_those_cases(tmp_path, monkeypatch):
     _, client = _client(tmp_path, _status(failed=7), monkeypatch)
     page = client.get("/").text
     assert 'href="/cases?state=PLAN_READY"' in page and 'href="/cases?state=FAILED"' in page
+
+
+def test_a_failed_job_says_why_and_offers_the_fix(tmp_path):
+    from dataclasses import replace
+
+    from cfr_v2.console.jobs import Job, JobStatus
+
+    app, client = _client(tmp_path)
+    runner = app.state.runner
+    job = Job(
+        "20261112-123053-63f6",
+        "procedures.build",
+        "LightRAG build · lightrag_store",
+        ("python", "-m", "cfr_v2.procedures"),
+        JobStatus.FAILED,
+        "2026-11-12T12:30:53+00:00",
+        ended_at="2026-11-12T12:30:58+00:00",
+        exit_code=1,
+        reason="StoreMismatchError: lightrag_store was built from sha256:6a0c: build sha256:b724 in a new directory",
+        form={"procedures": "sha256:b724", "workdir": "lightrag_store", "concurrency": "16"},
+    )
+    (runner.folder(job.id)).mkdir(parents=True)
+    runner._save(job)
+    runner.log_path(job.id).write_text("Traceback …\n")
+
+    page = client.get(f"/jobs/{job.id}").text
+    assert "Why it failed" in page and "StoreMismatchError: lightrag_store was built from" in page
+    assert "a store holds only one" in page and 'href="/procedures#procedures.build">Build the store' in page
+    assert f'href="/procedures?again={job.id}#procedures.build">Run again' in page
+    journal = client.get("/partials/journal").text
+    assert "StoreMismatchError: lightrag_store was built" in journal and "exit 1" not in journal
+    again = client.get(f"/procedures?again={job.id}").text
+    assert 'value="lightrag_store"' in again and "Filled in from" in again
+
+    lost = replace(job, id="20261112-130000-aaaa", status=JobStatus.LOST, reason=None, form=None)
+    runner.folder(lost.id).mkdir()
+    runner._save(lost)
+    lost_page = client.get(f"/jobs/{lost.id}").text
+    assert "Outcome unknown" in lost_page and "Run again" not in lost_page
+    assert "outcome unknown" in client.get("/partials/journal").text

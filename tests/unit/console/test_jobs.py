@@ -61,6 +61,15 @@ def test_a_failing_job_is_failed_and_a_stopped_one_stopped(runner):
     assert _wait(runner, slow.id).status is JobStatus.STOPPED
 
 
+def test_a_failed_job_records_why_and_the_form_it_was_started_from(runner):
+    code = "raise RuntimeError('the store was built from another snapshot')"
+    job = runner.start("t", "Fails", _python(code), form={"procedures": "sha256:new", "workdir": ""})
+    failed = _wait(runner, job.id)
+    assert failed.reason == "RuntimeError: the store was built from another snapshot"
+    assert failed.form == {"procedures": "sha256:new", "workdir": ""}
+    assert _wait(runner, runner.start("t", "Fine", _python("print(1)")).id).reason is None  # only on failure
+
+
 def test_force_stop_kills_a_job_that_ignores_sigterm(runner):
     stubborn = runner.start(
         "t",
@@ -171,6 +180,18 @@ def test_a_form_starts_a_real_job_whose_log_streams_and_whose_output_downloads(t
     assert job.title in client.get("/partials/journal").text and job.title in client.get("/jobs?status=done").text
     assert job.title not in client.get("/jobs?status=failed").text
     assert "Intake query" in client.get("/intake").text  # recent jobs under the area's commands
+
+    # Run again: the form opens filled in from the job; a failed job says why, with the fix
+    assert "Run again" in page and f'href="/intake?again={job_id}#intake.sql"' in page
+    again = client.get(f"/intake?again={job_id}").text
+    assert "Filled in from" in again and 'id="intake.sql" open' in again
+    assert client.get(f"/routing?again={job_id}").status_code == 404  # another area's command
+    failed = client.post(
+        "/commands/procedures.search",
+        data={"csrf": app.state.csrf, "query": "fees", "procedures": "sha256:" + "a" * 64, "workdir": str(tmp_path)},
+        follow_redirects=False,
+    )
+    assert failed.status_code == 422 and "LightRAG store:" in failed.text  # refused in the form: no job
 
 
 def test_stamps_carry_the_full_time():
