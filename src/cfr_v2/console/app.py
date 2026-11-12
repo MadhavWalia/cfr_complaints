@@ -117,6 +117,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             current=request.url.path,
             release_id=settings.release_id,
             grafana_url=settings.grafana_url,
+            updated=formats.clock(),
         )
         return templates.TemplateResponse(request, name, context)
 
@@ -163,15 +164,30 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         outputs=lambda job_id: runner.folder(job_id) / "outputs",
     )
 
+    def console_worker(jobs: list[Job]) -> Job | None:
+        return next((j for j in jobs if j.command == "system.worker" and j.status is JobStatus.RUNNING), None)
+
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request):
         jobs = runner.list()
-        worker = next((j for j in jobs if j.command == "system.worker" and j.status is JobStatus.RUNNING), None)
-        return page(request, "pipeline.html", status=read_status(), jobs=jobs[:JOURNAL_ROWS], worker=worker)
+        status, worker = read_status(), console_worker(jobs)
+        return page(
+            request,
+            "pipeline.html",
+            status=status,
+            attention=pipeline.attention(status, jobs, worker_job=worker),
+            jobs=jobs[:JOURNAL_ROWS],
+            worker=worker,
+        )
 
     @app.get("/partials/pipeline-status", response_class=HTMLResponse)
-    def pipeline_status(request: Request):
-        return page(request, "_pipeline_status.html", status=read_status())
+    def pipeline_status(request: Request, attention: bool = False):
+        status = read_status()
+        found = None
+        if attention:  # the home page's copy also lists what needs attention
+            jobs = runner.list()
+            found = pipeline.attention(status, jobs, worker_job=console_worker(jobs))
+        return page(request, "_pipeline_status.html", status=status, attention=found)
 
     def listed(*, area: str | None = None, status: str | None = None, everything: bool = False) -> list[Job]:
         jobs = runner.list(None if everything or area else JOURNAL_ROWS)

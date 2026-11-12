@@ -40,9 +40,8 @@
   });
 })();
 
-// Rows whose status changed since you last saw them (jobs and case runs) stay highlighted
-// until they have been on screen for two seconds (the gate board's changed row). On a first
-// visit only what needs attention is highlighted: running, failed, lost. Per browser.
+// Jobs whose status changed since you last saw them carry a "new" tag until they have been on
+// screen for two seconds. A first visit marks nothing: everything is new then. Per browser.
 (() => {
   const KEY = "cfr-seen";
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { return {}; } };
@@ -57,11 +56,10 @@
       }, 2000);
     }
   });
-  const NEWS = new Set(["running", "failed", "lost", "FAILED"]);
   const mark = (scope) => {
     const seen = load();
     scope.querySelectorAll("tr[data-job]").forEach((row) => {
-      if (first && !NEWS.has(row.dataset.status)) { seen[row.dataset.job] = row.dataset.status; return; }  // first visit: only what needs attention
+      if (first) { seen[row.dataset.job] = row.dataset.status; return; }
       row.classList.toggle("lit", seen[row.dataset.job] !== row.dataset.status);
       if (row.classList.contains("lit")) watch.observe(row);
     });
@@ -90,5 +88,15 @@
   });
   addEventListener("pageshow", (event) => {  // back to a cached page: sendable again
     if (event.persisted) document.querySelectorAll("button[data-sent]").forEach((b) => { delete b.dataset.sent; b.removeAttribute("aria-disabled"); });
+  });
+})();
+
+// A panel that refreshes itself says when it last did, and when it can't (the console stopped).
+(() => {
+  document.body.addEventListener("htmx:sendError", (event) => {
+    const stamp = event.target.querySelector?.("[data-updated]");
+    if (!stamp || stamp.classList.contains("stale")) return;
+    stamp.classList.add("stale");
+    stamp.textContent = stamp.textContent.replace("Updated", "Not updated since") + ": can't reach the console";
   });
 })();

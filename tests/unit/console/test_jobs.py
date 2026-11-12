@@ -139,7 +139,12 @@ def test_files_outside_a_jobs_inputs_and_outputs_are_refused(runner):
 def test_formats():
     now = datetime(2026, 11, 12, 18, 0, tzinfo=UTC).astimezone()
     assert formats.when(now.isoformat(), now) == f"{now:%H:%M}"
-    assert formats.when((now - timedelta(days=1)).isoformat(), now).endswith(f"{now - timedelta(days=1):%H:%M}")
+    assert formats.when((now - timedelta(days=1)).isoformat(), now) == f"yesterday {now - timedelta(days=1):%H:%M}"
+    earlier = now - timedelta(days=3)
+    assert formats.when(earlier.isoformat(), now) == f"{earlier:%-d %b %H:%M}"
+    last_year = now - timedelta(days=400)
+    assert formats.when(last_year.isoformat(), now) == f"{last_year:%-d %b %Y}"
+    assert formats.clock(now) == f"{now:%H:%M:%S}"
     assert [formats.took(s) for s in (14, 480, 34500)] == ["14 s", "8 min", "9 h 35 min"]
     assert [formats.size(n) for n in (512, 2048, 5 * 1024**2)] == ["512 bytes", "2.0 KB", "5.0 MB"]
     assert (

@@ -5,16 +5,25 @@ from __future__ import annotations
 import shlex
 import sys
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from markupsafe import Markup
 
 
 def when(iso: str, now: datetime | None = None) -> str:
-    """Local time: ``16:50`` today, ``11 Nov 16:50`` before."""
+    """Local time: ``16:50`` today, ``yesterday 16:50``, ``11 Nov 16:50`` this year, ``11 Nov 2025`` before."""
     moment = datetime.fromisoformat(iso).astimezone()
     today = (now or datetime.now().astimezone()).date()
-    return f"{moment:%H:%M}" if moment.date() == today else f"{moment:%-d %b %H:%M}"
+    if moment.date() == today:
+        return f"{moment:%H:%M}"
+    if moment.date() == today - timedelta(days=1):
+        return f"yesterday {moment:%H:%M}"
+    return f"{moment:%-d %b %H:%M}" if moment.year == today.year else f"{moment:%-d %b %Y}"
+
+
+def clock(now: datetime | None = None) -> str:
+    """The local time to the second, for "updated 16:50:05"."""
+    return f"{(now or datetime.now().astimezone()):%H:%M:%S}"
 
 
 def stamp(iso: str) -> Markup:

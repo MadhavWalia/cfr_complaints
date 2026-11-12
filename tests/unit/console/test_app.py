@@ -196,3 +196,51 @@ def test_a_failed_job_says_why_and_offers_the_fix(tmp_path):
     lost_page = client.get(f"/jobs/{lost.id}").text
     assert "Outcome unknown" in lost_page and "Run again" not in lost_page
     assert "outcome unknown" in client.get("/partials/journal").text
+
+
+def test_what_needs_attention_comes_first_with_its_action(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from cfr_v2.console.jobs import Job, JobStatus
+    from cfr_v2.runtime.release_check import Mismatch
+
+    now = datetime(2026, 11, 12, 20, 0, tzinfo=UTC)
+
+    def job(job_id, status, at, reason=None):
+        return Job(job_id, "procedures.build", f"Build {job_id[-4:]}", ("x",), status, at, reason=reason)
+
+    jobs = [
+        job("20261112-193000-aaaa", JobStatus.FAILED, "2026-11-12T19:30:00+00:00", "StoreMismatchError: built from x"),
+        job("20261112-190000-bbbb", JobStatus.DONE, "2026-11-12T19:00:00+00:00"),
+        job("20261110-090000-cccc", JobStatus.FAILED, "2026-11-10T09:00:00+00:00"),  # older than a day
+    ]
+    blocked = QueuedRelease(
+        "cfr-v2-phase-d@a220ea87891f", 12, 0, (Mismatch("c04.routing", "route-1", "placeholder-0"),)
+    )
+    ready = QueuedRelease("cfr-v2-phase-e@6ff69ff5259b", 6, 0, ())
+    items = pipeline.attention(_status(failed=8602, releases=(ready, blocked)), jobs, worker_job=None, now=now)
+    assert [(i.label, i.href) for i in items] == [
+        ("blocked", "/releases#cfr-v2-phase-d"),
+        ("failed", "/jobs/20261112-193000-aaaa"),
+        ("failed", "/cases?state=FAILED"),
+    ]
+    assert items[0].text.startswith("12 runs queued under cfr-v2-phase-d can't run: it doesn't match this code")
+    assert items[1].text == "Build aaaa failed: StoreMismatchError: built from x"
+    assert items[2].text == "8,602 case runs failed or were cancelled."
+    # runnable runs and no worker: start one; a worker running, or nothing wrong: nothing to say
+    waiting = pipeline.attention(_status(releases=(ready,)), [], worker_job=None, now=now)
+    assert [(i.text, i.href) for i in waiting] == [
+        ("6 runs are queued and no worker is running.", "/system#system.worker")
+    ]
+    busy = _status(releases=(ready,), workers=(("mac:1", 1),))
+    assert pipeline.attention(busy, [], worker_job=None, now=now) == []
+    assert pipeline.attention(pipeline.unavailable("OperationalError"), jobs, worker_job=None, now=now) == []
+
+    _, client = _client(tmp_path, _status(failed=8602, releases=(ready, blocked)), monkeypatch)
+    page = client.get("/").text
+    assert "Needs attention" in page and 'href="/releases#cfr-v2-phase-d">See the release' in page
+    assert 'hx-get="/partials/pipeline-status?attention=true"' in page and "Updated " in page
+    partial = client.get("/partials/pipeline-status?attention=true").text
+    assert "Needs attention" in partial and "Needs attention" not in client.get("/partials/pipeline-status").text
+    system = client.get("/system").text
+    assert "Needs attention" not in system and 'hx-get="/partials/pipeline-status"' in system
