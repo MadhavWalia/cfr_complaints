@@ -88,7 +88,7 @@ MAX_FAILED_JOBS = 3
 
 @dataclass(frozen=True)
 class Attention:
-    kind: str  # the pill: "failed" or "waiting"
+    kind: str  # the pill: "failed", "blocked" (Caution) or "waiting"
     label: str  # the pill's text
     text: str  # one sentence, the count first when there is one
     action: str
@@ -117,7 +117,7 @@ def attention(
         why = "it was never pinned" if r.unknown else "it doesn't match this code"
         items.append(
             Attention(
-                "failed",
+                "blocked",
                 "blocked",
                 f"{r.queued:,} runs queued under {release_id(r.manifest_ref)} can't run: {why}. "
                 "A worker won't start while they wait.",
