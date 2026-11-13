@@ -9,6 +9,7 @@
   {% include "_pipeline_status.html" %}
 </section>
 {% endif %}
+{% if prompt_rows is defined %}{% include "_optimize.html" %}{% endif %}
 <div class="commands">
 {% for command in commands %}
 <details class="command" id="{{ command.id }}"{% if filled == command.id or commands | length == 1 %} open{% endif %}>
@@ -23,7 +24,7 @@
     {% if filled == command.id and again %}<p class="filled-from" role="status">Filled in from <a href="/jobs/{{ again.id }}">{{ again.title }}</a>, {{ again.created_at | stamp }}.{% if command.fields | selectattr("kind", "in", ["file", "files"]) | list %} Choose its files again: they aren't kept for this.{% endif %} Check, then start it.</p>
     {% elif filled == command.id and source %}<p class="filled-from" role="status">Filled in from <a href="/jobs/{{ source.id }}">{{ source.title }}</a>. Check, then start it.</p>{% endif %}
     {% for f in command.fields %}
-    {{ fields.field(f, values.get(f.name) if filled == command.id else f.initial(ctx), ctx, command.id ~ "-" ~ f.name) }}
+    {{ fields.field(f, values.get(f.name) if filled == command.id else (defaults or {}).get(f.name, f.initial(ctx)), ctx, command.id ~ "-" ~ f.name) }}
     {% endfor %}
     {% set est = command.estimate(ctx) if command.estimate else none %}
     {% if est %}<p class="estimate" data-text="{{ est.text }}" data-per="{{ est.per }}"{% if est.field %} data-field="{{ command.id }}-{{ est.field }}"{% endif %}>{{ est.render() }}</p>{% endif %}
@@ -53,6 +54,7 @@
   {% endif %}
 </section>
 {% endif %}
+{% if prompt_rows is defined %}{% include "_optimize_results.html" %}{% endif %}
 {% if recent %}
 <section class="section" aria-labelledby="recent-h">
   <h2 id="recent-h">Recent {{ title | lower }} jobs</h2>

@@ -27,7 +27,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from cfr_v2.telemetry import get_logger
 
-from . import cases, commands, formats, release_files
+from . import cases, commands, formats, optimize_view, release_files
 from . import status as pipeline
 from .diagnosis import diagnose
 from .jobs import Job, JobRunner, JobStatus, read_progress
@@ -53,6 +53,7 @@ AREAS = (
     ("/routing", "Routing"),
     ("/procedures", "Procedures"),
     ("/evaluation", "Evaluation"),
+    ("/optimize", "Optimize"),
     ("/system", "System"),
     ("/help", "Help"),
 )
@@ -61,6 +62,8 @@ LEDES = {  # one line under an area's title: what it's for
     "/routing": "The router trial and routing.xlsx, publishing the vertical definitions, and the backfill.",
     "/procedures": "Inspect, extract and snapshot procedure PDFs; build and search the LightRAG store.",
     "/evaluation": "The C02 and C03 trial, gold-set templates and scoring, and the evidence-source workbook.",
+    "/optimize": "Improve a prompt's instructions with DSPy against a gold set: write the template, check the "
+    "filled workbooks, score the baseline, optimize, and review the patch.",
     "/system": "Start and stop the worker, check the gateway, run migrations and tests, and see the settings in use.",
 }
 ERROR_TITLES = {
@@ -527,6 +530,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         """An area's commands. ``filled`` names the command whose form shows ``values`` (a form sent
         back with ``error``, or an earlier job's form for "Run again", ``again``)."""
         found = commands.for_area(area)
+        extra = optimize_page(request) if area == "optimize" else {}
         response = page(
             request,
             "area.html",
@@ -544,9 +548,39 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             status=read_status() if area == "system" else None,  # the queue, before starting a worker
             view="queue",
             environment=environment() if area == "system" else None,
+            **extra,
         )
         response.status_code = status_code
         return response
+
+    def optimize_page(request: Request) -> dict[str, Any]:
+        """The prompts, the runs and one run's results; the chosen prompt fills every form."""
+        rows = optimize_view.overview(runner)
+        by_id = {r.prompt.prompt_id: r for r in rows}
+        query = request.query_params
+        chosen = by_id.get(query.get("prompt", ""))
+        runs = [run for r in rows for run in r.runs]
+        runs.sort(key=lambda run: run.job.created_at, reverse=True)
+        if chosen is not None:
+            runs = [run for run in runs if run.prompt_id == chosen.prompt.prompt_id]
+        shown = next((run for run in runs if run.job.id == query.get("run")), runs[0] if runs else None)
+        defaults = {}
+        if chosen is not None:
+            defaults["prompt"] = chosen.prompt.prompt_id
+            if chosen.gold_sets:
+                defaults["gold"] = chosen.gold_sets[0].id
+        diff = []
+        if shown is not None and shown.report is not None and shown.report.instructions_after:
+            diff = optimize_view.instruction_diff(shown.report.instructions_before, shown.report.instructions_after)
+        return {
+            "prompt_rows": rows,
+            "chosen": chosen,
+            "runs": runs,
+            "shown": shown,
+            "shown_files": runner.files(shown.job.id, "outputs") if shown else [],
+            "diff": diff,
+            "defaults": defaults,
+        }
 
     for path, label in AREAS[1:]:
         if path in ("/jobs", "/cases", "/releases", "/help"):

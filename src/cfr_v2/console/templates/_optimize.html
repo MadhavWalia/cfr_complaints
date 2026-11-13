@@ -1,0 +1,23 @@
+{# Optimize: the pipeline's prompts; choosing one fills it into every form below (LDR-0027). #}
+<section class="section prompts" aria-labelledby="prompts-h">
+  <h2 id="prompts-h">Prompts</h2>
+  <div class="table-wrap">
+    <table class="stack">
+      <caption class="visually-hidden">The pipeline's prompts, their gold sets and last runs</caption>
+      <thead><tr><th scope="col">Prompt</th><th scope="col">Version</th><th scope="col">Gold sets</th><th scope="col">Last run</th><th scope="col"><span class="visually-hidden">Choose</span></th></tr></thead>
+      <tbody>
+      {% for row in prompt_rows %}
+      {% set current = chosen is not none and chosen.prompt.prompt_id == row.prompt.prompt_id %}
+      <tr{% if current %} class="chosen" aria-current="true"{% endif %}>
+        <td data-label="Prompt"><span><a href="/optimize?prompt={{ row.prompt.prompt_id }}">{{ row.prompt.title }}</a><span class="detail">{{ row.prompt.does }}</span></span></td>
+        <td data-label="Version"><span class="mono">{{ row.version }}</span></td>
+        <td data-label="Gold sets"><span>{% if row.gold_sets %}{{ row.gold_sets | length }}<span class="detail">latest: {{ row.gold_sets[0].summary or "checked" }}</span>{% else %}<span class="muted">none yet</span>{% endif %}</span></td>
+        <td data-label="Last run"><span>{% if row.last_run %}<span class="pill {{ row.last_run.job.status.pill }}">{{ row.last_run.job.status.value }}</span><span class="detail">{{ row.last_run.job.summary or row.last_run.job.created_at | stamp }}</span>{% else %}<span class="muted">none yet</span>{% endif %}</span></td>
+        <td data-label=""><span>{% if current %}<span class="muted">chosen</span>{% else %}<a class="btn secondary" href="/optimize?prompt={{ row.prompt.prompt_id }}">Choose</a>{% endif %}</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted note">{% if chosen %}The forms below are set to {{ chosen.prompt.title }}{% if chosen.gold_sets %} and its latest gold set{% endif %}. {% endif %}The steps, in order: write the gold template, label it, check the filled workbooks, score the baseline, optimize. Gold workbooks hold case text: keep them on this machine.</p>
+</section>

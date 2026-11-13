@@ -1,0 +1,85 @@
+{% import "_fields.html" as fields %}
+{# Optimize: the runs, and one run's results (LDR-0027). #}
+<section class="section" id="runs" aria-labelledby="runs-h">
+  <h2 id="runs-h">Runs{% if chosen %} of {{ chosen.prompt.title }}{% endif %}</h2>
+  {% if runs %}
+  <div class="table-wrap">
+    <table class="stack">
+      <caption class="visually-hidden">Optimization runs, newest first</caption>
+      <thead><tr><th scope="col">When</th><th scope="col">Run</th><th scope="col">Status</th><th scope="col" class="num">Baseline</th><th scope="col" class="num">Candidate</th><th scope="col">Result</th></tr></thead>
+      <tbody>
+      {% for run in runs %}
+      <tr data-job="{{ run.job.id }}" data-status="{{ run.job.status.value }}">
+        <td data-label="When"><span>{{ run.job.created_at | stamp }}</span></td>
+        <td data-label="Run"><span><a href="/optimize?prompt={{ run.prompt_id }}&amp;run={{ run.job.id }}#results">{{ run.job.title }}</a></span></td>
+        <td data-label="Status"><span><span class="pill {{ run.job.status.pill }}">{{ run.job.status.value }}</span></span></td>
+        <td data-label="Baseline" class="num"><span>{{ "%.3f" | format(run.baseline) if run.baseline is not none else "—" }}</span></td>
+        <td data-label="Candidate" class="num"><span>{{ "%.3f" | format(run.candidate) if run.candidate is not none else "—" }}</span></td>
+        <td data-label="Result"><span>{% if run.report and run.report.better %}better: patch ready{% elif run.report and run.report.stopped %}stopped{% elif run.report and run.candidate is not none %}not better{% elif run.job.status.value == "running" %}<span class="muted">running</span>{% else %}<span class="muted">—</span>{% endif %}</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty"><h3>No runs yet</h3><p>Check a gold set, then Optimize: the run's results appear here, with the instructions it found and the patch to review.</p></div>
+  {% endif %}
+</section>
+
+{% if shown %}
+{% set report = shown.report %}
+<section class="section results" id="results" aria-labelledby="results-h">
+  <h2 id="results-h">Results: <a href="/jobs/{{ shown.job.id }}">{{ shown.job.title }}</a></h2>
+  {% if report is none %}
+  <div class="panel"><p>{% if shown.job.status.value == "running" %}Still running: <a href="/jobs/{{ shown.job.id }}">follow its progress</a>. The results appear here when it ends.{% else %}This run wrote no report: <a href="/jobs/{{ shown.job.id }}">see why</a>.{% endif %}</p></div>
+  {% else %}
+  {% set mean, low, high = report.difference %}
+  {% set up, down = report.changed() %}
+  <div class="panel">
+    <div class="compare" role="img" aria-label="Test score: baseline {{ '%.3f' | format(shown.baseline or 0) }}{% if shown.candidate is not none %}, candidate {{ '%.3f' | format(shown.candidate) }}{% endif %}, out of 1">
+      {% for name, value, kind in [("Baseline", shown.baseline, "base"), ("Candidate", shown.candidate, "cand")] %}
+      {% if value is not none %}
+      <div class="compare-row"><span class="compare-name">{{ name }}</span><span class="compare-track"><span class="compare-bar {{ kind }}" style="width: {{ (value * 100) | round(1) }}%" title="{{ name }}: {{ '%.3f' | format(value) }}"></span></span><span class="compare-value">{{ "%.3f" | format(value) }}</span></div>
+      {% endif %}
+      {% endfor %}
+      <p class="compare-axis muted">Mean test score per case, 0 to 1</p>
+    </div>
+    <p class="verdict">
+      {% if report.better %}<strong>Better on test: {{ "%+.3f" | format(mean) }}</strong> (95% interval {{ "%+.3f" | format(low) }} to {{ "%+.3f" | format(high) }}). The patch is ready to review.
+      {% elif report.stopped %}<strong>Stopped early:</strong> {{ report.stopped }}
+      {% else %}<strong>Not better on test:</strong> {{ "%+.3f" | format(mean) }} (95% interval {{ "%+.3f" | format(low) }} to {{ "%+.3f" | format(high) }}). No patch.{% endif %}
+    </p>
+    <dl class="pins">
+      <div><dt>Prompt</dt><dd><span class="mono">{{ report.prompt_id }}</span> {{ report.program_version }}</dd></div>
+      <div><dt>Method</dt><dd>{{ report.method }}, {{ report.budget }} budget, seed {{ report.seed }}, model <span class="mono">{{ report.model_id }}</span></dd></div>
+      <div><dt>Examples</dt><dd>{{ report.sizes.get("train", 0) }} train, {{ report.sizes.get("val", 0) }} validation, {{ report.sizes.get("test", 0) }} test</dd></div>
+      <div><dt>Cases on test</dt><dd>{{ up | length }} better, {{ down | length }} worse, {{ (report.baseline | length) - (up | length) - (down | length) }} the same</dd></div>
+      <div><dt>Model calls</dt><dd>{{ "{:,}".format(report.calls_used) }} of {{ "{:,}".format(report.calls_cap) }}, {{ report.seconds | took }}</dd></div>
+      <div><dt>Dataset</dt><dd>{{ fields.copy(report.dataset) }}</dd></div>
+    </dl>
+  </div>
+
+  {% if diff %}
+  <h3>Instructions</h3>
+  <p class="muted lede-sm">What the candidate added (marked +) and removed (marked −), line by line.</p>
+  <ol class="instructions">
+    {% for line in diff %}<li class="{{ line.kind }}"><span class="mark" aria-hidden="true">{{ "+" if line.kind == "added" else "−" if line.kind == "removed" else "" }}</span><span class="visually-hidden">{{ "Added: " if line.kind == "added" else "Removed: " if line.kind == "removed" else "" }}</span>{{ line.text or " " }}</li>{% endfor %}
+  </ol>
+  {% endif %}
+
+  {% if shown_files %}
+  <h3>Files</h3>
+  <ul class="plain files-list">{% for name, size in shown_files %}<li><a href="/jobs/{{ shown.job.id }}/files/outputs/{{ name }}" download>{{ name }}</a> <span class="muted">{{ size | size }}</span></li>{% endfor %}</ul>
+  {% endif %}
+
+  {% if report.better %}
+  <h3>Ship it</h3>
+  <ol class="howto-steps">
+    <li>Download <span class="mono">patch.diff</span>, read it, and apply it in the repository: {{ fields.copy("git apply patch.diff", short=false) }}</li>
+    <li>Run the tests, then commit: the program's version is bumped in the patch.</li>
+    <li>Add a release that pins the new version: <a href="/releases#new-release">copy the current one</a>, change the stage's <span class="mono">version</span> in the new file to the patch's, commit it, and Make current.</li>
+  </ol>
+  {% endif %}
+  {% endif %}
+</section>
+{% endif %}

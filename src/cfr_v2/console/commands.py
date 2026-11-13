@@ -406,6 +406,82 @@ def _backfill_estimate(ctx: Context) -> Estimate | None:
     return None
 
 
+# --- prompt optimization (LDR-0027) --------------------------------------------------------------
+
+
+def _prompts(ctx: Context) -> list[tuple[str, str]]:
+    from cfr_v2.optimize.prompts import PROMPTS
+
+    return [(p.prompt_id, f"{p.title} ({p.source_version()})") for p in PROMPTS]
+
+
+def _prompt_title(prompt_id: str) -> str:
+    from cfr_v2.optimize.prompts import BY_ID
+
+    return BY_ID[prompt_id].title if prompt_id in BY_ID else prompt_id
+
+
+def gold_set(outputs: Path) -> tuple[str, list[Path]]:
+    """A check job's prompt and the workbooks it was given (its ``inputs/``), from its outputs folder."""
+    folder = outputs.parent
+    try:
+        form = json.loads((folder / "job.json").read_text(encoding="utf-8")).get("form") or {}
+    except (OSError, ValueError):
+        form = {}
+    inputs = folder / "inputs"
+    return form.get("prompt", ""), sorted(p for p in inputs.iterdir() if p.is_file()) if inputs.is_dir() else []
+
+
+def _same_prompt(values: Values, ctx: Context) -> None:
+    prompt, files = gold_set(values["gold"])
+    if prompt != values["prompt"]:
+        raise FormError(
+            f"Gold set: it was checked for {_prompt_title(prompt)}, not {_prompt_title(values['prompt'])}. "
+            "Choose one of this prompt's, or check its workbooks first."
+        )
+    if not files:
+        raise FormError("Gold set: its workbooks are no longer there (the job was deleted). Check them again.")
+
+
+def _check_summary(folder: Path, code: int) -> str | None:
+    log = _log(folder)
+    examples = re.findall(r"^(\d+ examples: .*)$", log, flags=re.MULTILINE)
+    problems = re.findall(r"^(\d+) problems$", log, flags=re.MULTILINE)
+    if not examples:
+        return None
+    return examples[-1] + (f"; {problems[-1]} problems" if problems else "")
+
+
+def _run_summary(folder: Path, code: int) -> str | None:
+    from cfr_v2.optimize.report import Report
+
+    path = folder / "outputs" / "run" / "report.json"
+    if not path.is_file():
+        return None
+    report = Report.from_json(path.read_text(encoding="utf-8"))
+    if report.stopped and not report.candidate:
+        return "stopped: " + report.stopped
+    if not report.candidate:
+        return None
+    mean, low, high = report.difference
+    before = sum(report.baseline.values()) / len(report.baseline)
+    verdict = "better: patch ready" if report.better else "not better"
+    return f"{before:.3f} → {before + mean:.3f} ({mean:+.3f}; 95% {low:+.3f} to {high:+.3f}); {verdict}"
+
+
+def _gold_args(values: Values) -> list[str]:
+    prompt, files = gold_set(values["gold"])
+    return [prompt, *map(str, files)]
+
+
+METHODS = (
+    ("gepa", "GEPA: learns from what went wrong (recommended)"),
+    ("miprov2", "MIPROv2: searches proposed instructions"),
+    ("copro", "COPRO: cheapest, a reference point"),
+)
+BUDGETS = (("light", "Light"), ("medium", "Medium"), ("heavy", "Heavy"))
+
+
 def _ref_after(job: Any, word: str) -> str:
     """The argument after ``word`` in a job's command line (e.g. the snapshot after lightrag-build)."""
     argv = list(job.argv)
@@ -1053,6 +1129,189 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Tests · {v['suite']}",
         summarize=_printed(r"^=*\s*(\d+ (?:passed|failed|errors?)\b.*?)\s*=*$"),
         action="Run the tests",
+    ),
+    # --- Optimize (LDR-0027) --------------------------------------------------------------------
+    Command(
+        id="optimize.template",
+        area="optimize",
+        title="Gold template",
+        effect="Writes the prompt's gold workbook for the cases listed: its inputs taken from their committed "
+        "results and locked, the answers to fill, with dropdowns. Reads the state database and the artifact store. "
+        f"The workbook holds case text. {KEEP_LOCAL}",
+        module="cfr_v2.optimize",
+        fields=(
+            Field("prompt", "Prompt", "choice", required=True, default="c02.pass1", choices=_prompts),
+            Field("case_nos", "Case numbers", "lines", help="One per line.", either=True),
+            Field("cases_file", "Or a text file of them", "file", accept=".txt,.csv", either=True),
+        ),
+        args=lambda v, folder: [
+            "template",
+            v["prompt"],
+            *[a for c in v["case_nos"] for a in ("--case-no", c)],
+            *_opt("--cases-file", v["cases_file"]),
+            "--out",
+            _out(folder, f"gold_{v['prompt']}.xlsx"),
+        ],
+        check=_one_of("case_nos", "cases_file", message="Cases: type case numbers or choose a file, not both."),
+        job_title=lambda v: (
+            f"Gold template · {_prompt_title(v['prompt'])}"
+            + (f" · {len(v['case_nos'])} cases" if v["case_nos"] else "")
+        ),
+        summarize=_printed(r"^(wrote .*)$"),
+        action="Write the workbook",
+        next=(
+            Next(
+                "Check the filled workbooks",
+                "optimize.check",
+                lambda job: {"prompt": (job.form or {}).get("prompt", "")},
+            ),
+        ),
+        tags=("changes nothing", "keep output local"),
+    ),
+    Command(
+        id="optimize.check",
+        area="optimize",
+        title="Check the gold set",
+        effect="Reads filled workbooks back into examples, lists what to fix (by case and row) and shows the "
+        "train, validation and test split. Fewer than 20 examples is refused. Keeps the workbooks for the runs.",
+        module="cfr_v2.optimize",
+        fields=(
+            Field("prompt", "Prompt", "choice", required=True, default="c02.pass1", choices=_prompts),
+            Field("gold", "Filled workbooks", "files", required=True, accept=".xlsx"),
+            Field("seed", "Split seed", "int", required=True, default=1, minimum=0),
+        ),
+        args=lambda v, folder: ["check", v["prompt"], *map(str, v["gold"]), "--seed", str(v["seed"])],
+        job_title=lambda v: (
+            f"Gold set · {_prompt_title(v['prompt'])} · {len(v['gold'])} workbook"
+            + ("" if len(v["gold"]) == 1 else "s")
+        ),
+        summarize=_check_summary,
+        action="Check",
+        next=(
+            Next(
+                "Optimize", "optimize.run", lambda job: {"prompt": (job.form or {}).get("prompt", ""), "gold": job.id}
+            ),
+            Next(
+                "Score the baseline",
+                "optimize.baseline",
+                lambda job: {"prompt": (job.form or {}).get("prompt", ""), "gold": job.id},
+            ),
+        ),
+        tags=("changes nothing", "keep output local"),
+    ),
+    Command(
+        id="optimize.baseline",
+        area="optimize",
+        title="Baseline",
+        effect="Scores the prompt as it is on the gold set's validation and test splits: one model call per "
+        "example. Changes nothing.",
+        module="cfr_v2.optimize",
+        fields=(
+            Field("prompt", "Prompt", "choice", required=True, default="c02.pass1", choices=_prompts),
+            Field(
+                "gold",
+                "Gold set",
+                "job",
+                required=True,
+                source="optimize.check",
+                help="A gold set this prompt's workbooks were checked into.",
+            ),
+            Field(
+                "cap",
+                "At most this many model calls",
+                "int",
+                required=True,
+                default=500,
+                minimum=10,
+                maximum=20000,
+                help="The run stops here, whatever the method's budget.",
+            ),
+        ),
+        args=lambda v, folder: ["baseline", *_gold_args(v), "--cap", str(v["cap"])],
+        check=_same_prompt,
+        job_title=lambda v: f"Baseline · {_prompt_title(v['prompt'])}",
+        summarize=_printed(r"^baseline: (test .*?) \("),
+        action="Score",
+        tags=("calls gpt-5",),
+        estimate=lambda ctx: Estimate("At most {calls} model calls: it stops at the cap.", 500, 1, field="cap"),
+    ),
+    Command(
+        id="optimize.run",
+        area="optimize",
+        title="Optimize",
+        effect="Rewrites the prompt's instructions on the gold set's train and validation splits, then scores the "
+        "prompt as it is and the candidate on the held-out test split. Instructions only: no examples go into the "
+        "prompt. When the candidate is better on test, it writes a patch to review and commit.",
+        module="cfr_v2.optimize",
+        fields=(
+            Field("prompt", "Prompt", "choice", required=True, default="c02.pass1", choices=_prompts),
+            Field(
+                "gold",
+                "Gold set",
+                "job",
+                required=True,
+                source="optimize.check",
+                help="A gold set this prompt's workbooks were checked into.",
+            ),
+            Field("method", "Method", "choice", required=True, default="gepa", choices=METHODS),
+            Field(
+                "budget",
+                "Budget",
+                "choice",
+                required=True,
+                default="light",
+                choices=BUDGETS,
+                help="How hard the method searches; the cap below is the limit either way.",
+            ),
+            Field(
+                "cap",
+                "At most this many model calls",
+                "int",
+                required=True,
+                default=500,
+                minimum=10,
+                maximum=20000,
+                help="The run stops here, whatever the method's budget.",
+            ),
+            Field(
+                "seed",
+                "Seed",
+                "int",
+                required=True,
+                default=1,
+                minimum=0,
+                help="The split's seed: keep the gold set's to compare runs.",
+            ),
+        ),
+        args=lambda v, folder: [
+            "run",
+            *_gold_args(v),
+            "--method",
+            v["method"],
+            "--budget",
+            v["budget"],
+            "--cap",
+            str(v["cap"]),
+            "--seed",
+            str(v["seed"]),
+            "--out",
+            _out(folder, "run"),
+        ],
+        check=_same_prompt,
+        job_title=lambda v: f"Optimize · {_prompt_title(v['prompt'])} · {v['method']}, {v['budget']}",
+        summarize=_run_summary,
+        action="Optimize",
+        next=(
+            Next(
+                "See the results",
+                page=lambda job: (
+                    f"/optimize?{urlencode({'prompt': (job.form or {}).get('prompt', ''), 'run': job.id})}#results"
+                ),
+                when=lambda job: job.finished,
+            ),
+        ),
+        tags=("calls gpt-5", "long-running", "keep output local"),
+        estimate=lambda ctx: Estimate("At most {calls} model calls: the run stops at the cap.", 500, 1, field="cap"),
     ),
 )
 

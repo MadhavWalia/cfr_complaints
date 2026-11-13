@@ -12,6 +12,7 @@ checks, program and metric (``specs.py``).
 from __future__ import annotations
 
 import importlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +33,12 @@ class Prompt:
     @property
     def path(self) -> Path:
         return self.source or SRC / Path(*self.module.split(".")[1:]).with_suffix(".py")
+
+    def source_version(self) -> str:
+        """The version as written in the source, without importing the program (and DSPy)."""
+        text = self.path.read_text(encoding="utf-8")
+        found = re.search(rf'^{self.version_constant} = "([^"]+)"', text, re.MULTILINE)
+        return found.group(1) if found else "?"
 
     def current_version(self) -> str:
         return getattr(importlib.import_module(self.module), self.version_constant)

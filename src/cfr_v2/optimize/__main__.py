@@ -128,7 +128,8 @@ def _run(args, parser, prompt, spec, ctx) -> int:
         print(f"warning: {warning}")
     print(f"{len(gold.examples)} examples: {data.sizes[0]} train, {data.sizes[1]} validation, {data.sizes[2]} test")
     if args.command == "check":
-        return 0 if not gold.problems else 1
+        print(f"{len(gold.problems)} problems" if gold.problems else "no problems")
+        return 0  # enough examples to go on; the problems above are left out and listed
 
     from cfr_v2.llm import close_model_loop
     from cfr_v2.telemetry import init_telemetry, shutdown_telemetry

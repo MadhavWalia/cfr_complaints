@@ -128,6 +128,9 @@ the pipeline by stage, each case run with its timeline and stage results, and th
 - **Before a job starts,** each command shows what it does as tags (calls gpt-5, writes the
   database, keep output local …) and, where it can, how many model calls it will make. Long jobs
   show their progress (`n of N`, time left) and can send a browser notification when they end.
+- **Optimize** (LDR-0027): choose a prompt, write its gold template, check the filled
+  workbooks, score the baseline, optimize; each run's results show the baseline and the
+  candidate on the test split, the instructions it changed, and the patch to review.
 - **The Pipeline page opens with what needs attention** (failed jobs and runs, blocked
   releases, runs waiting with no worker), each with its action. **Help** has the recurring tasks
   step by step and the glossary.
@@ -257,6 +260,7 @@ against a gold set: C02 Pass 1 and Pass 2, C03 and C04.
 
 ```bash
 .venv/bin/python -m pip install -e ".[optimize]" "opentelemetry-api==1.39.1" "opentelemetry-sdk==1.39.1"
+# or from the console's Optimize area; on the command line:
 python -m cfr_v2.optimize prompts                                    # the prompts, versions, readiness
 python -m cfr_v2.optimize template c03.primary_selection --cases-file cases.txt --out gold_c03.xlsx
 python -m cfr_v2.optimize check c03.primary_selection gold_c03_*.xlsx    # examples, problems, the split

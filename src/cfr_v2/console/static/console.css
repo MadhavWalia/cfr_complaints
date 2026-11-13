@@ -312,7 +312,7 @@ tr.lit td:first-child > span::after, tr.lit td:first-child > time::after {
 }
 .command[open] > summary h2::after { transform: translateY(1px) rotate(-135deg); }
 .command > summary:focus-visible { outline-offset: -2px; }
-.effect { margin: 6px 0 0; max-width: var(--measure); color: var(--text-2); font-size: 13px; }
+.effect { margin: 6px 0 0; max-width: 62ch; color: var(--text-2); font-size: 13px; }
 .command .form { padding: var(--s2) var(--s4) var(--s5); border-top: 1px solid var(--line); padding-top: var(--s4); }
 .none { margin: 0; font-size: 13px; }
 
@@ -407,6 +407,30 @@ pre.log::selection { background: var(--light-blue); color: var(--deep); }
 .written ul { margin: 0; }
 .new-release .form { max-width: var(--measure); }
 
+/* ---- Optimize: prompts, runs and one run's results (LDR-0027) ----------------------------- */
+
+tr.chosen td { background: var(--hover); }
+tr.chosen td:first-child a { color: var(--title); }
+.compare { display: grid; gap: var(--s2); max-width: 640px; }
+.compare-row { display: grid; grid-template-columns: 6em minmax(0, 1fr) 4em; align-items: center; gap: var(--s3); }
+.compare-name { font-size: 13px; color: var(--text-2); }
+.compare-track { height: 10px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.compare-bar { display: block; height: 100%; border-radius: 0 4px 4px 0; background: var(--seg-wait); }
+.compare-bar.cand { background: var(--accent); }
+.compare-value { font-weight: 600; color: var(--heading); text-align: right; }
+.compare-axis { font-size: 12px; margin-left: calc(6em + var(--s3)); }
+.verdict { margin-top: var(--s4); max-width: var(--measure); }
+.results h3 { margin: var(--s5) 0 var(--s2); }
+.results .pins { margin-top: var(--s4); }
+.instructions { list-style: none; margin: 0; padding: var(--s3) 0; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); max-width: 900px; font-size: 13px; }
+.instructions li { display: grid; grid-template-columns: 2em minmax(0, 1fr); padding: 2px var(--s4) 2px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.instructions .mark { text-align: center; color: var(--text-2); font-weight: 600; }
+.instructions li.added { background: var(--lit); color: var(--on-lit); }
+.instructions li.added .mark { color: var(--on-lit); }
+.instructions li.removed { color: var(--text-2); text-decoration: line-through; text-decoration-color: var(--g4); }
+.howto-steps { margin: 0; padding-left: var(--s5); display: grid; gap: var(--s2); max-width: var(--measure); }
+.files-list { gap: var(--s1); }
+
 /* ---- Help ------------------------------------------------------------------------------- */
 
 .toc { margin: 0 0 var(--s5); }
@@ -461,3 +485,5 @@ pre.log::selection { background: var(--light-blue); color: var(--deep); }
 @media (prefers-reduced-motion: no-preference) {
   .btn, .rail a.area, .filters a, button.copy, .command > summary, .table-wrap td { transition: background-color 120ms ease-out, color 120ms ease-out, filter 120ms ease-out; }
 }
+.prompts td[data-label="Version"] .mono { white-space: nowrap; }
+.prompts .note { max-width: 60ch; }
