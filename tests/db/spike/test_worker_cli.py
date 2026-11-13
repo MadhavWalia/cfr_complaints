@@ -55,7 +55,10 @@ def test_worker_cli_refuses_to_start_on_runs_of_an_older_release(runtime_setting
     out, _ = proc.communicate(timeout=60)
     assert proc.returncode == 2, out.decode()
     text = out.decode()
-    assert "under cfr-v2-phase-d" in text and "c04.routing" in text and "not starting" in text  # digits may be masked
+    # Only digit-free parts: with ee-logging's redaction on, digits in a log line may be masked
+    # ("cfr-v***-phase-d", "c***.routing"), so the full release id and task id can't be matched.
+    for part in ("-phase-d", ".routing", "doesn't match this code", "not starting"):
+        assert part in text, text
     db = Database(runtime_settings.state_database_url, max_connections=1)
     try:
         with db.transaction() as tx:
