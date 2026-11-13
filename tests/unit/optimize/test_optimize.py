@@ -199,15 +199,14 @@ def test_a_patch_puts_the_instructions_in_and_bumps_the_version(tmp_path):
 # --- the command ------------------------------------------------------------------------------
 
 
-def test_the_prompts_are_listed_and_the_rest_waits_for_their_gold_specs(capsys):
+def test_the_prompts_are_listed_and_unknown_ones_refused(capsys):
     assert cli.main(["prompts"]) == 0
     out = capsys.readouterr().out
     for prompt in PROMPTS:
         assert prompt.prompt_id in out and prompt.current_version() in out
-    assert "no gold spec yet (phase 2)" in out
-    with pytest.raises(SystemExit) as stopped:
-        cli.main(["check", "c02.pass1", "gold.xlsx"])
-    assert stopped.value.code == 2 and "arrives in phase 2" in capsys.readouterr().err
+    assert out.count(": ready") == len(PROMPTS)
+    with pytest.raises(SystemExit, match="no prompt 'c99.nothing'"):
+        cli.main(["check", "c99.nothing", "gold.xlsx"])
 
 
 def test_failed_examples_never_reach_the_logs(toy, tmp_path, caplog, capfd):

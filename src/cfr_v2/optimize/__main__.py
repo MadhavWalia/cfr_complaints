@@ -21,31 +21,14 @@ from __future__ import annotations
 
 import argparse
 import sys
-from functools import cached_property
 from pathlib import Path
 
+from .context import Context
 from .gold import NotEnoughExamples, split, warnings
 from .prompts import BY_ID, PROMPTS
 from .report import Report
 from .runner import BUDGETS, METHODS
 from .specs import SPECS
-
-
-class Context:
-    """What gold specs read from: the artifact store and the state database, opened on first use."""
-
-    @cached_property
-    def store(self):
-        from cfr_v2.artifacts import S3ArtifactStore, S3Settings
-
-        return S3ArtifactStore(S3Settings.from_env())
-
-    @cached_property
-    def db(self):
-        from cfr_v2.runtime.settings import RuntimeSettings
-        from cfr_v2.state import Database
-
-        return Database(RuntimeSettings.from_env().state_database_url, max_connections=4)
 
 
 def _spec(prompt_id: str):
@@ -54,7 +37,7 @@ def _spec(prompt_id: str):
         raise SystemExit(f"error: no prompt {prompt_id!r}; see `python -m cfr_v2.optimize prompts`")
     spec = SPECS.get(prompt_id)
     if spec is None:
-        print(f"error: {prompt.title} has no gold spec yet: it arrives in phase 2 (LDR-0027)", file=sys.stderr)
+        print(f"error: {prompt.title} has no gold spec yet (LDR-0027)", file=sys.stderr)
         raise SystemExit(2)
     return prompt, spec
 
@@ -109,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "prompts":
         for prompt in PROMPTS:
-            state = "ready" if prompt.prompt_id in SPECS else "no gold spec yet (phase 2)"
+            state = "ready" if prompt.prompt_id in SPECS else "no gold spec yet"
             print(f"{prompt.prompt_id:24} {prompt.current_version():10} {prompt.title}: {state}")
         return 0
     if args.command == "report":
@@ -119,6 +102,13 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt, spec = _spec(args.prompt)
     ctx = Context()
+    try:
+        return _run(args, parser, prompt, spec, ctx)
+    finally:
+        ctx.close()
+
+
+def _run(args, parser, prompt, spec, ctx) -> int:
     if args.command == "template":
         cases = _cases(args)
         if not cases:

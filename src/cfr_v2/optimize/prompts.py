@@ -6,7 +6,7 @@ constant) and which constant carries the program version tell ``report.patch`` h
 candidate back as a reviewable change.
 
 A prompt can be optimized once it has a **gold spec** (``gold.GoldSpec``): its template, reader,
-checks, program and metric. Phase 1 builds the machinery; the specs arrive in phase 2.
+checks, program and metric (``specs.py``).
 """
 
 from __future__ import annotations

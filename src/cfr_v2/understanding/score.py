@@ -69,7 +69,7 @@ def case_text(store, transcript_ref: str) -> CaseText:
     return CaseText(tuple(segments), tuple(originals))
 
 
-def _latest_runs(db: Database, case_nos: list[str]) -> dict[str, tuple[str, str, str]]:
+def latest_runs(db: Database, case_nos: list[str]) -> dict[str, tuple[str, str, str]]:
     """case_no -> (case_run_id, request_ref, release_manifest_ref) of its latest ingestion revision."""
     with db.transaction() as tx:
         rows = tx.all(
@@ -80,7 +80,7 @@ def _latest_runs(db: Database, case_nos: list[str]) -> dict[str, tuple[str, str,
     return {row[0]: (row[1], row[2], row[3]) for row in rows}
 
 
-def _committed(db: Database, store, run_id: str, task: str, model):
+def committed_result(db: Database, store, run_id: str, task: str, model):
     """The run's committed result for ``task`` (latest), parsed as ``model``; None if there is none."""
     with db.transaction() as tx:
         done = [c for c in CaseStateRepository(tx).committed_results(run_id) if c.logical_task_id == task]
@@ -137,10 +137,10 @@ def score(
     db = db or Database(RuntimeSettings.from_env().state_database_url, max_connections=2)
     store = OverlayArtifactStore(store or S3ArtifactStore(S3Settings.from_env()))  # --run-missing writes nothing
     try:
-        runs = _latest_runs(db, sorted(labelled))
+        runs = latest_runs(db, sorted(labelled))
         predictions: dict[str, Pass1Result] = {}
         for case_no, (run_id, _, _) in runs.items():
-            result = _committed(db, store, run_id, "c02.pass1", Pass1Result)
+            result = committed_result(db, store, run_id, "c02.pass1", Pass1Result)
             if result is not None:
                 predictions[case_no] = result
         missing = sorted(c for c in labelled if c in runs and c not in predictions)
@@ -167,8 +167,8 @@ def score(
             report.add_case(case_no, score_sides(primary, predicted, min_overlap), category, result)
             # C03: needs the committed claim set and selection (workers, or a full trial run).
             run_id = runs[case_no][0]
-            claim_set = _committed(db, store, run_id, "c02.pass2", ClaimSetRevision)
-            selection = _committed(db, store, run_id, "c03.primary_selection", PrimarySelection)
+            claim_set = committed_result(db, store, run_id, "c02.pass2", ClaimSetRevision)
+            selection = committed_result(db, store, run_id, "c03.primary_selection", PrimarySelection)
             if versions[0].primary is not None:
                 if claim_set is None or selection is None or claim_set.allegations != result.allegations:
                     report.cases_without_selection.append(case_no)

@@ -258,7 +258,9 @@ against a gold set: C02 Pass 1 and Pass 2, C03 and C04.
 ```bash
 .venv/bin/python -m pip install -e ".[optimize]" "opentelemetry-api==1.39.1" "opentelemetry-sdk==1.39.1"
 python -m cfr_v2.optimize prompts                                    # the prompts, versions, readiness
-python -m cfr_v2.optimize run <prompt> gold_*.xlsx --method gepa --budget light --cap 500 --out run1
+python -m cfr_v2.optimize template c03.primary_selection --cases-file cases.txt --out gold_c03.xlsx
+python -m cfr_v2.optimize check c03.primary_selection gold_c03_*.xlsx    # examples, problems, the split
+python -m cfr_v2.optimize run c03.primary_selection gold_c03_*.xlsx --method gepa --budget light --cap 500 --out run1
 ```
 
 - **Instructions only.** GEPA, MIPROv2 without demos, or COPRO rewrite the instructions; no
@@ -273,8 +275,15 @@ python -m cfr_v2.optimize run <prompt> gold_*.xlsx --method gepa --budget light 
   run writes `patch.diff` (the new instructions and the bumped program version). Apply and commit
   it, then make a release that pins the new version.
 - **Gold workbooks and run folders hold case text:** keep them local and delete them after review.
-- Gold specs (templates, readers, metrics) per prompt arrive in phase 2; until then the commands
-  other than `prompts` and `report` say so.
+- **Templates freeze the prompt's inputs.** Pass 1's is the existing gold workbook. Pass 2's lists
+  each case's committed Pass 1 items; C03's its committed claims; C04's each claim with the
+  procedure sections the router was shown (rebuilt from the snapshot it searched). Those sheets
+  are locked; the labeller fills the answer columns, with dropdowns from the current release's
+  taxonomy and verticals. A workbook filled against an older result is refused on upload.
+- **Metrics:** Pass 1, F1 by quote overlap (as `score run`); Pass 2, claims matched by the
+  allegations they group, then their fields and evidence sources; C03, the main complaint (and
+  AMBIGUOUS on unclear cases); C04, the vertical. Feedback for GEPA holds counts, types and ids,
+  never gold text.
 
 ## Model gateway (P5)
 
