@@ -29,3 +29,14 @@ logs/
 hld/
 lld/
 cfr-v1/
+
+# Impeccable design context (product record, surface briefs, decision mocks): local only
+PRODUCT.md
+DESIGN.md
+.impeccable/
+
+# CFR console workspace: job logs, uploads and outputs (may hold case content)
+var/
+
+# Playwright MCP session files
+.playwright-mcp/

@@ -1,0 +1,64 @@
+<div id="pipeline-status" hx-get="/partials/pipeline-status?view={{ view }}" hx-trigger="every 5s" hx-swap="outerHTML">
+{% if attention %}
+<section class="attention" aria-labelledby="attention-h">
+  <h2 id="attention-h">Needs attention</h2>
+  <ul>
+    {% for item in attention %}
+    <li><span class="pill {{ item.kind }}">{{ item.label }}</span><span class="text">{{ item.text }}</span><a href="{{ item.href }}">{{ item.action }}</a></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+<section class="panel" aria-labelledby="line-h">
+  <h2 id="line-h" class="visually-hidden">Cases by stage</h2>
+  {% if status.error %}
+  <div class="error-box" role="status">
+    <strong>Can't read the state database ({{ status.error }}).</strong>
+    <p class="muted">Is Postgres running? Start it with <span class="mono">docker compose up -d</span>. This panel tries again every 5 seconds.</p>
+  </div>
+  {% else %}
+  <p class="caption"><span>{% if view == "queue" %}Queued and running case runs, by release.{% else %}Case runs at each stage now, across releases. <a href="/help#stages">What the stages do</a>{% endif %}</span> <span class="updated" data-updated>Updated {{ updated }}</span></p>
+  {% if view != "queue" %}
+  {% set total = status.line | sum(attribute="count") %}
+  <div class="bar{% if not total %} empty{% endif %}" role="img" aria-label="{% if total %}Case runs by stage: {% for stop in status.line %}{{ '{:,}'.format(stop.count) }} {{ stop.label }}{{ ', ' if not loop.last }}{% endfor %}{% else %}No case runs yet{% endif %}">
+    {% for stop in status.line %}<span class="seg {{ 'wait' if stop.state == 'ADMITTED' else 'done' if stop.state == 'PLAN_READY' else 'busy' }}" style="flex-grow: {{ stop.count }}"></span>{% endfor %}
+  </div>
+  <ol class="line">
+    {% for stop in status.line %}
+    <li class="{{ 'wait' if stop.state == 'ADMITTED' else 'done' if stop.state == 'PLAN_READY' else 'busy' }}">
+      <a class="n" href="/cases?state={{ stop.state }}" aria-label="{{ '{:,}'.format(stop.count) }} {{ stop.label }}: show these cases">{{ "{:,}".format(stop.count) }}</a>
+      <span class="label">{{ stop.label }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+  <div class="queue{% if view == 'queue' %} alone{% endif %}">
+    {% if status.releases %}
+    <table class="compact stack">
+      <caption class="visually-hidden">Queued and running case runs by release</caption>
+      <thead><tr><th scope="col">Release</th><th scope="col" class="num">Queued</th><th scope="col" class="num">Running</th><th scope="col">Can a worker run it?</th></tr></thead>
+      <tbody>
+      {% for r in status.releases %}
+      <tr>
+        <td data-label="Release"><span><a class="mono" href="/releases#{{ r.manifest_ref.split('@')[0] }}" title="{{ r.manifest_ref }}">{{ r.manifest_ref.split('@')[0] }}</a></span></td>
+        <td class="num" data-label="Queued"><span>{{ "{:,}".format(r.queued) }}</span></td>
+        <td class="num" data-label="Running"><span>{{ "{:,}".format(r.running) }}</span></td>
+        <td data-label="Can a worker run it?"><span>{% if r.compatible %}Yes, it matches this code
+          {% elif r.unknown %}<strong>No:</strong> the release was never pinned
+          {% else %}<strong>No:</strong> it doesn't match this code<span class="detail">{{ r.mismatches | map('string') | join('; ') }}</span>{% endif %}</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Nothing is queued or running.</p>
+    {% endif %}
+    <p class="facts">
+      {% if status.workers %}{% for owner, held in status.workers %}<span>Worker <span class="mono">{{ owner }}</span> is running {{ held }} case{{ "" if held == 1 else "s" }}</span>{% endfor %}
+      {% else %}<span class="muted">No worker is running a case right now.</span>{% endif %}
+      {% if status.failed and view == "queue" %}<span><span class="pill failed">failed</span> <a href="/cases?state=FAILED">{{ "{:,}".format(status.failed) }} case runs failed</a> or were cancelled</span>{% endif %}
+    </p>
+  </div>
+  {% endif %}
+</section>
+</div>

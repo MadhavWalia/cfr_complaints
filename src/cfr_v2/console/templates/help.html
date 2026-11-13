@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="head"><h1>Help</h1></div>
+<p class="lede muted">The tasks that come up most often, step by step, and the words the console uses. Each step links to its form; a finished job also offers its next step itself.</p>
+
+<nav class="toc" aria-label="On this page">
+  <ul class="plain">
+    <li><a href="#new-procedures">Use a new set of procedures</a></li>
+    <li><a href="#run-cases">Run a few cases through the pipeline</a></li>
+    <li><a href="#trial">Try the models on cases, outside the workflow</a></li>
+    <li><a href="#failed">Find out why something failed</a></li>
+    <li><a href="#stages">The stages</a> · <a href="#words">Words</a></li>
+  </ul>
+</nav>
+
+<section class="section howto" id="new-procedures" aria-labelledby="new-procedures-h">
+  <h2 id="new-procedures-h">Use a new set of procedures</h2>
+  <ol>
+    <li><a href="/procedures#procedures.snapshot">Take a snapshot</a> of the folder of procedure PDFs. Give it the previous snapshot so unchanged PDFs aren't read again. Read its log's checks before going on.</li>
+    <li><a href="/procedures#procedures.build">Build its LightRAG store</a>, from the snapshot's job page (Next). It takes hours and about three gpt-5 calls per section; it resumes if stopped.</li>
+    <li><a href="/releases#new-release">Make a release</a> with the new snapshot, from the build's job page (Next), then commit the new file with git.</li>
+    <li>On <a href="/releases">Releases</a>, <strong>Make current</strong> the new release: new cases are admitted under it from then on.</li>
+    <li>Restart the worker once the runs queued under the old release are done: a worker serves one snapshot.</li>
+  </ol>
+</section>
+
+<section class="section howto" id="run-cases" aria-labelledby="run-cases-h">
+  <h2 id="run-cases-h">Run a few cases through the pipeline</h2>
+  <ol>
+    <li><a href="/intake#intake.synthetic">Admit synthetic cases</a> (no customer data), or a list of case numbers. Nothing calls a model yet.</li>
+    <li>Check the queue on <a href="/system">System</a>: a worker takes every queued run, not only yours.</li>
+    <li><a href="/system#system.worker">Start a worker</a> with a small cap on queued runs. It calls the models for every run.</li>
+    <li>Follow them on <a href="/cases">Cases</a>; each case shows its timeline and every stage's result.</li>
+    <li>Stop the worker from its job page when they're done. It finishes the cases it holds first.</li>
+  </ol>
+</section>
+
+<section class="section howto" id="trial" aria-labelledby="trial-h">
+  <h2 id="trial-h">Try the models on cases, outside the workflow</h2>
+  <ol>
+    <li><a href="/evaluation#evaluation.trial">Run the C02 and C03 trial</a> on a few admitted cases. It writes nothing to the database; the form counts its model calls.</li>
+    <li>From its job page, <strong>Route these claims</strong> (Next) to try C04 on the same claims, and download <span class="mono">routing.xlsx</span> to judge.</li>
+    <li>Review files hold case text: keep them on this machine, and delete the jobs once reviewed.</li>
+  </ol>
+</section>
+
+<section class="section howto" id="failed" aria-labelledby="failed-h">
+  <h2 id="failed-h">Find out why something failed</h2>
+  <ol>
+    <li>Start from <strong>Needs attention</strong> on the <a href="/">Pipeline</a> page: failed jobs, blocked releases and failed case runs, each with a link.</li>
+    <li>A failed job's page opens with <strong>Why it failed</strong>: the error, what it usually means and what to do; <strong>Run again</strong> reopens its form.</li>
+    <li>A failed case's page shows its last error and timeline; <strong>Trace</strong> and <strong>Logs</strong> open the run in Grafana.</li>
+  </ol>
+</section>
+
+<section class="section" id="stages" aria-labelledby="stages-h">
+  <h2 id="stages-h">The stages</h2>
+  <dl class="glossary">
+    <div><dt>Admitted</dt><dd>C01 intake: the case was read from the source and queued under the current release. No model has seen it yet.</dd></div>
+    <div><dt>C02 understanding</dt><dd>Pass 1 lists the customer's allegations, requests and the agent's statements from the redacted transcript; Pass 2 turns them into claims, with the account, the time window and the evidence each one needs.</dd></div>
+    <div><dt>C03 selection</dt><dd>Chooses the primary claim: the one the customer most wants put right.</dd></div>
+    <div><dt>C04 routing</dt><dd>Sends each claim to one vertical (the team or product area that owns it), from the vertical definitions and the procedure sections LightRAG finds.</dd></div>
+    <div><dt>C05 planning</dt><dd>The investigation plan. A placeholder for now.</dd></div>
+    <div><dt>Plan ready</dt><dd>Every stage finished.</dd></div>
+  </dl>
+</section>
+
+<section class="section" id="words" aria-labelledby="words-h">
+  <h2 id="words-h">Words</h2>
+  <dl class="glossary">
+    <div><dt>Case run</dt><dd>One pass of one case through the pipeline. A case can have several, under different releases.</dd></div>
+    <div><dt>Release</dt><dd>A file in <span class="mono">registry/releases/</span> naming the stage versions, the procedure snapshot and the knowledge document a run is processed with. Each run keeps the release it was admitted under.</dd></div>
+    <div><dt>Snapshot</dt><dd>The procedure PDFs, extracted, redacted and stored together, named by a <span class="mono">sha256:</span> ref.</dd></div>
+    <div><dt>LightRAG store</dt><dd>The search index built from one snapshot, in the folder <span class="mono">lightrag_store_</span> and the start of the snapshot's hash. C04 searches it.</dd></div>
+    <div><dt>Knowledge document</dt><dd>The definitions of the verticals, published as a ref for a release to pin. It stays out of git.</dd></div>
+    <div><dt>Vertical</dt><dd>Where a claim is routed: one of the areas the knowledge document defines.</dd></div>
+    <div><dt>Worker</dt><dd>The process that takes queued runs through the stages. It refuses to start over runs whose release doesn't match the code.</dd></div>
+    <div><dt>Lane</dt><dd>Batch or realtime: a worker can serve either or both.</dd></div>
+    <div><dt>Job</dt><dd>One command started from the console, with its log and files under <span class="mono">var/console/jobs/</span>.</dd></div>
+    <div><dt>INTERNAL, RESTRICTED</dt><dd>How stored data is classified. The console shows INTERNAL results; RESTRICTED data (transcripts, source records) is never shown.</dd></div>
+  </dl>
+</section>
+{% endblock %}

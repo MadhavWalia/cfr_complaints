@@ -5,17 +5,18 @@
     python -m cfr_v2.procedures extract /path/to/pdfs --out extract_trial
     python -m cfr_v2.procedures snapshot /path/to/pdfs [--previous sha256:...]
     python -m cfr_v2.procedures snapshot --confluence
-    python -m cfr_v2.procedures lightrag-build sha256:<snapshot> --workdir lightrag_store
-    python -m cfr_v2.procedures search sha256:<snapshot> "fee charged after the card was cancelled" \
-        --workdir lightrag_store
+    python -m cfr_v2.procedures lightrag-build sha256:<snapshot>
+    python -m cfr_v2.procedures search sha256:<snapshot> "fee charged after the card was cancelled"
 
 ``inspect`` and the printed output of ``extract`` and ``snapshot`` carry file names, dates, counts
 and flags only, never document text, so they can be shared. ``extract`` is a trial: it stores
 nothing, and ``--out`` writes the redacted text for reading locally. **Those files are document
 text: keep them local.** ``snapshot`` stores the originals and the redacted sections.
 ``lightrag-build`` builds the LightRAG graph and vectors from the snapshot's current procedures:
-about three gpt-5 calls per passage, and it can resume. A ref from the ``index`` command this
-replaced also works. ``search`` is for trying queries against that store: **it prints section
+about three gpt-5 calls per passage, and it can resume. Each snapshot gets its own store,
+``lightrag_store_<first 12 of its hash>`` (``stores.py``), where the worker looks for it;
+``--workdir`` puts it elsewhere. A ref from the ``index`` command this replaced also works.
+``search`` is for trying queries against that store: **it prints section
 titles, and passages with ``--text``, so keep its output local too.**
 """
 
@@ -32,6 +33,7 @@ from .corpus import SnapshotResult, build_snapshot, load_snapshot, same_name_dif
 from .extract import MAX_SECTION_CHARS
 from .inspect import FRONT_LABELS, DocumentReport, inspect_pdf
 from .sources import ConfluenceSettings, ConfluenceSource, ManualPdfSource, ProcedureSource, ProcedureSourceError
+from .stores import override_hint, store_dir
 
 MAX_PDF_BYTES = 200 * 1024 * 1024  # procedure PDFs with images are larger than case artifacts
 
@@ -302,15 +304,21 @@ def run_search(args: argparse.Namespace) -> int:
     from cfr_v2.contracts import ProcedureSearchRequest
     from cfr_v2.llm import model_loop
 
-    from .lightrag_engine import GatewayLlm, LightRagProcedureSearch, open_rag
+    from .lightrag_engine import GatewayLlm, LightRagProcedureSearch, StoreMismatchError, check_store, open_rag
     from .search import corpus_passages
 
+    workdir = args.workdir or store_dir(args.procedures)
+    try:
+        check_store(workdir, args.procedures)
+    except StoreMismatchError as exc:
+        print(f"error: {exc}{'' if args.workdir else override_hint(args.procedures)}", file=sys.stderr)
+        return 2
     passages = corpus_passages(_store(), args.procedures)
     request = ProcedureSearchRequest(query=_masker().mask(args.query), limit=args.limit, redacted=True)
 
     async def search():
         llm = GatewayLlm(_chat_client())
-        async with open_rag(args.workdir, _embedder(), llm) as rag:
+        async with open_rag(workdir, _embedder(), llm) as rag:
             return await LightRagProcedureSearch(rag, args.procedures, passages, llm).search(request)
 
     print_hits(model_loop().run(search()), show_text=args.text)
@@ -326,20 +334,26 @@ def _chat_client():
 def run_lightrag_build(args: argparse.Namespace) -> int:
     from cfr_v2.llm import model_loop
 
-    from .lightrag_engine import build_lightrag
+    from .lightrag_engine import StoreMismatchError, build_lightrag
     from .search import corpus_passages
 
+    workdir = args.workdir or store_dir(args.procedures)
+    print(f"store: {workdir}")
     passages = corpus_passages(_store(), args.procedures)
-    build = model_loop().run(
-        build_lightrag(
-            args.workdir,
-            passages,
-            _build_embedder(),
-            _chat_client(),
-            concurrency=args.concurrency,
-            procedures_ref=args.procedures,
+    try:
+        build = model_loop().run(
+            build_lightrag(
+                workdir,
+                passages,
+                _build_embedder(),
+                _chat_client(),
+                concurrency=args.concurrency,
+                procedures_ref=args.procedures,
+            )
         )
-    )
+    except StoreMismatchError as exc:
+        print(f"error: {exc}{'' if args.workdir else override_hint(args.procedures)}", file=sys.stderr)
+        return 2
     print(f"{build.processed} of {build.passages} passages in the graph; {build.failed} failed")
     print(
         f"model calls this run: {build.model_calls}; blocked by the gateway: "
@@ -368,12 +382,12 @@ def main(argv: list[str] | None = None) -> int:
             step.add_argument("--previous", help="snapshot ref: unchanged PDFs are not read again")
     step = sub.add_parser("lightrag-build", help="build the LightRAG graph and vectors from a snapshot's procedures")
     step.add_argument("procedures", help="snapshot ref (or a ref from the old index command)")
-    step.add_argument("--workdir", type=Path, required=True)
+    step.add_argument("--workdir", type=Path, help="the LightRAG store (default: the snapshot's own folder)")
     step.add_argument("--concurrency", type=int, default=16, help="passages processed at once (default 16)")
     step = sub.add_parser("search", help="try a query against a LightRAG store")
     step.add_argument("procedures", help="the ref the store was built from: snapshot, or old index")
     step.add_argument("query")
-    step.add_argument("--workdir", type=Path, required=True, help="the LightRAG working directory")
+    step.add_argument("--workdir", type=Path, help="the LightRAG store (default: the snapshot's own folder)")
     step.add_argument("--limit", type=int, default=8)
     step.add_argument("--text", action="store_true", help="print the passages too")
     args = parser.parse_args(argv)

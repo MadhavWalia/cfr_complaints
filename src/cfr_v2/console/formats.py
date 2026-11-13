@@ -1,0 +1,59 @@
+"""How the console writes times, durations, sizes and commands."""
+
+from __future__ import annotations
+
+import shlex
+import sys
+from collections.abc import Sequence
+from datetime import datetime, timedelta
+
+from markupsafe import Markup
+
+
+def when(iso: str, now: datetime | None = None) -> str:
+    """Local time: ``16:50`` today, ``yesterday 16:50``, ``11 Nov 16:50`` this year, ``11 Nov 2025`` before."""
+    moment = datetime.fromisoformat(iso).astimezone()
+    today = (now or datetime.now().astimezone()).date()
+    if moment.date() == today:
+        return f"{moment:%H:%M}"
+    if moment.date() == today - timedelta(days=1):
+        return f"yesterday {moment:%H:%M}"
+    return f"{moment:%-d %b %H:%M}" if moment.year == today.year else f"{moment:%-d %b %Y}"
+
+
+def clock(now: datetime | None = None) -> str:
+    """The local time to the second, for "updated 16:50:05"."""
+    return f"{(now or datetime.now().astimezone()):%H:%M:%S}"
+
+
+def stamp(iso: str) -> Markup:
+    """``when`` as a ``<time>``, with the full local date and time on hover."""
+    moment = datetime.fromisoformat(iso).astimezone()
+    return Markup('<time datetime="{}" title="{}">{}</time>').format(
+        moment.isoformat(timespec="seconds"), f"{moment:%-d %B %Y, %H:%M:%S %Z}", when(iso)
+    )
+
+
+def took(seconds: float) -> str:
+    """``14 s``, ``8 min``, ``9 h 35 min``."""
+    seconds = round(seconds)
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} min"
+    return f"{minutes // 60} h {minutes % 60} min"
+
+
+def size(n: int) -> str:
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:,} {unit}" if unit == "bytes" else f"{n:,.1f} {unit}"
+        n /= 1024
+    return f"{n:,.1f} GB"
+
+
+def shell(argv: Sequence[str]) -> str:
+    """The command as it would be typed: ``python -m …`` rather than the interpreter's full path."""
+    parts = ["python" if i == 0 and a == sys.executable else a for i, a in enumerate(argv)]
+    return shlex.join(parts)

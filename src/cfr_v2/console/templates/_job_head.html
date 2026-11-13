@@ -1,0 +1,70 @@
+{% import "_fields.html" as fields %}
+<section id="job-head" class="panel" hx-get="/jobs/{{ job.id }}/head" hx-trigger="job-ended from:body{% if job.status.value == 'running' %}, every 5s{% endif %}" hx-swap="outerHTML" data-status="{{ job.status.value }}" data-title="{{ job.title }}">
+  <div class="job-facts">
+    <p><span class="pill {{ job.status.pill }}">{{ job.status.value }}</span>
+      {% if job.status.value == "running" and job.stop_requested %}<span class="muted">stopping…</span>{% endif %}</p>
+    <dl>
+      <div><dt>Started</dt><dd>{{ job.created_at | stamp }}</dd></div>
+      <div><dt>{{ "Running for" if job.status.value == "running" else "Took" }}</dt><dd>{{ job.seconds | took }}</dd></div>
+      {% if job.status.value == "running" %}{% set pr = progress_of(job) %}{% if pr %}<div class="progress-fact"><dt>Progress</dt><dd><progress max="{{ pr.total }}" value="{{ pr.done }}" aria-label="{{ pr.done }} of {{ pr.total }}"></progress> {{ "{:,}".format(pr.done) }} of {{ "{:,}".format(pr.total) }} ({{ pr.percent }}%){% if pr.left %} · about {{ pr.left }} left{% endif %}</dd></div>{% endif %}{% endif %}
+      {% if job.exit_code is not none %}<div><dt>Exit code</dt><dd>{{ job.exit_code }}</dd></div>{% endif %}
+      {% if job.summary %}<div><dt>Outcome</dt><dd>{% if job.summary.startswith("sha256:") %}{{ fields.copy(job.summary, short=false) }}{% else %}{{ job.summary }}{% endif %}</dd></div>{% endif %}
+    </dl>
+  </div>
+  {% if job.status.value == "failed" %}
+  <div class="failure" role="status">
+    <h2>Why it failed</h2>
+    {% if job.reason %}<p class="reason mono">{{ job.reason }}</p>{% endif %}
+    {% if diagnosis %}<p>{{ diagnosis.explanation }}</p>
+    {% elif job.reason %}<p class="muted">The line above is the last error in the log; the log below has the rest.</p>
+    {% else %}<p class="muted">It exited with code {{ job.exit_code }} without naming an error. The end of the log below is the best clue.</p>{% endif %}
+    {% if diagnosis and diagnosis.href %}<p><a class="btn secondary" href="{{ diagnosis.href }}">{{ diagnosis.action }}</a></p>{% endif %}
+  </div>
+  {% elif job.status.value == "lost" %}
+  <div class="failure" role="status">
+    <h2>Outcome unknown</h2>
+    <p>The console was restarted while this job ran, and its process had ended by the time it came back, so its exit code was never seen. The end of the log is the best clue.</p>
+  </div>
+  {% endif %}
+  {% set steps = command.next_links(job) if command else [] %}
+  {% if steps %}
+  <div class="next">
+    <h2>Next</h2>
+    <p class="actions">{% for label, href in steps %}<a class="btn {{ 'primary' if loop.first else 'secondary' }}" href="{{ href }}">{{ label }}</a>{% endfor %}</p>
+  </div>
+  {% endif %}
+  {% if job.finished and command and job.form is not none %}
+  <p class="actions"><a class="btn secondary" href="/{{ command.area }}?again={{ job.id }}#{{ command.id }}">Run again</a><span class="muted">Opens its form with the same values, to check before starting.</span></p>
+  {% endif %}
+  <details class="cmdline"><summary>Command</summary><p class="mono">{{ job.argv | shell }}</p></details>
+  {% if job.status.value == "running" %}
+  <p class="notify" hidden><button type="button" class="btn secondary" data-notify>Tell me when it ends</button><span class="muted" data-notify-note>A browser notification, while this tab stays open.</span></p>
+  <form method="post" action="/jobs/{{ job.id }}/stop" class="actions">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if job.stop_requested %}
+    <input type="hidden" name="force" value="1">
+    <button class="btn secondary" type="submit">Force stop</button>
+    <span class="muted">Ends it at once, without letting it finish its current step.</span>
+    {% else %}
+    <button class="btn secondary" type="submit">Stop</button>
+    {% if command and command.long_running %}<span class="muted">A worker finishes the cases it holds first.</span>{% endif %}
+    {% endif %}
+  </form>
+  {% endif %}
+  {% if outputs %}
+  <div class="files">
+    <h2>Files it wrote</h2>
+    <ul>{% for name, size in outputs %}<li><a href="/jobs/{{ job.id }}/files/outputs/{{ name }}" download>{{ name }}</a> <span class="muted">{{ size | size }}</span></li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% if job.finished %}
+  <details class="danger">
+    <summary>Delete this job</summary>
+    <form method="post" action="/jobs/{{ job.id }}/delete" class="actions">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn secondary" type="submit">Delete the job and its files</button>
+      <span class="muted">Its log, uploads and outputs. This can't be undone.</span>
+    </form>
+  </details>
+  {% endif %}
+</section>

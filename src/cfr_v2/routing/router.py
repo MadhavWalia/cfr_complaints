@@ -156,8 +156,11 @@ def claim_inputs(claim: ClaimInput, sections: Sequence[Section]) -> dict[str, st
     }
 
 
-def make_signature(catalog: VerticalCatalog, section_ids: Sequence[str]) -> type[dspy.Signature]:
-    """Per call: the verticals and the section ids become enums in the output schema."""
+def make_signature(
+    catalog: VerticalCatalog, section_ids: Sequence[str], instructions: str = INSTRUCTIONS
+) -> type[dspy.Signature]:
+    """Per call: the verticals and the section ids become enums in the output schema.
+    ``instructions`` is the part an optimizer may rewrite; the vertical definitions follow it (LDR-0027)."""
     vertical = Literal[catalog.ids]
     section = Literal[tuple(section_ids)] if section_ids else str
     answer = create_model(
@@ -186,17 +189,26 @@ def make_signature(catalog: VerticalCatalog, section_ids: Sequence[str]) -> type
             ),
             "routing": (answer, dspy.OutputField(desc="Where the claim goes, and why.")),
         },
-        INSTRUCTIONS + catalog.text,
+        f"{instructions.rstrip()}\n\n{catalog.text}",  # DSPy trims stored instructions: the break lives here
     )
 
 
 class Router(dspy.Module):
+    """``route`` holds the instructions; the definitions and section ids are added per call."""
+
     def __init__(self, catalog: VerticalCatalog) -> None:
         super().__init__()
         self.catalog = catalog
+        self.route = dspy.Predict(make_signature(catalog, []).with_instructions(INSTRUCTIONS))
+
+    def signature(self, section_ids: Sequence[str]) -> type[dspy.Signature]:
+        return make_signature(self.catalog, section_ids, self.route.signature.instructions)
 
     async def aforward(self, claim: str, sections: str, section_ids: Sequence[str]) -> dspy.Prediction:
-        return await dspy.Predict(make_signature(self.catalog, section_ids)).acall(claim=claim, sections=sections)
+        return await self.route.acall(signature=self.signature(section_ids), claim=claim, sections=sections)
+
+    def forward(self, claim: str, sections: str, section_ids: Sequence[str]) -> dspy.Prediction:
+        return self.route(signature=self.signature(section_ids), claim=claim, sections=sections)
 
 
 def build_routing(

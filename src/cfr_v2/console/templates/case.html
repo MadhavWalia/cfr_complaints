@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% import "_fields.html" as fields %}
+{% macro claim_text(id) %}{% set c = claims.get(id) %}{% if c %}{{ c.statement }}{% else %}<span class="mono">{{ id }}</span>{% endif %}{% endmacro %}
+{% macro words(value) %}{{ (value or "") | replace("_", " ") | lower | capitalize }}{% endmacro %}
+{% block main %}
+<div class="head">
+  <h1>Case <span class="mono-h">{{ run.row.case_no }}</span></h1>
+  {% if trace_url %}
+  <div class="actions">
+    <a class="btn secondary" href="{{ trace_url }}" target="_blank" rel="noopener">Trace <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden">in Grafana (opens a new tab)</span></a>
+    <a class="btn secondary" href="{{ logs_url }}" target="_blank" rel="noopener">Logs <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden">in Grafana (opens a new tab)</span></a>
+  </div>
+  {% endif %}
+</div>
+
+<section class="panel" aria-label="Case run">
+  <div class="job-facts">
+    <p><span class="pill {{ run.row.pill }}">{{ run.row.state_label }}</span></p>
+    <dl>
+      <div><dt>Release</dt><dd>{% if run.row.release_id %}<a class="mono" href="/releases#{{ run.row.release_id }}">{{ run.row.release_id }}</a>{% else %}<span class="muted">not pinned</span>{% endif %}</dd></div>
+      <div><dt>Lane</dt><dd>{{ run.row.lane }}</dd></div>
+      <div><dt>Admitted</dt><dd>{{ run.row.admitted_at.isoformat() | stamp }}</dd></div>
+      {% if run.job %}<div><dt>Attempts</dt><dd>{{ run.job.attempts }} of {{ run.job.max_attempts }}</dd></div>{% endif %}
+      {% if run.job and run.job.lease_owner %}<div><dt>Worker</dt><dd class="mono">{{ run.job.lease_owner }}</dd></div>{% endif %}
+    </dl>
+  </div>
+  {% if run.job and run.job.last_error %}<p class="last-error"><strong>Last error</strong> <span class="mono">{{ run.job.last_error }}</span></p>{% endif %}
+  {% if not trace_url %}<p class="muted note">No trace was recorded for this run, so there are no Grafana links.</p>{% endif %}
+  <p class="run-id"><span class="muted">Run id</span> {{ fields.copy(run.row.case_run_id, short=false) }}</p>
+</section>
+
+<section class="section" aria-labelledby="timeline-h">
+  <h2 id="timeline-h">Timeline</h2>
+  {% if run.events %}
+  <ol class="timeline">
+    {% for e in run.events %}
+    <li class="{{ 'failed' if e.state in ('FAILED', 'CANCELLED') else '' }}">
+      <span class="t">{{ e.at.isoformat() | stamp }}{% if loop.previtem %} <span class="gap muted">+{{ (e.at - loop.previtem.at).total_seconds() | took }}</span>{% endif %}</span>
+      <span class="s">{{ e.label }}</span>
+      {% if e.detail %}<span class="d mono">{% for k, v in e.detail.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}<p class="muted">No events yet.</p>{% endif %}
+</section>
+
+<section class="section" aria-labelledby="results-h">
+  <h2 id="results-h">Stage results</h2>
+  {% if not run.stages %}<p class="muted">No stage has finished yet.</p>{% endif %}
+  {% for stage in run.stages %}
+  {% set data = results.get(stage.task) %}
+  <article class="stage" id="{{ stage.task }}">
+    <header>
+      <h3>{{ stage.label }}</h3>
+      <span class="pill {{ stage.pill }}">{{ stage.status_label }}</span>
+      <span class="muted mono">{{ stage.version }}</span>
+      {% if stage.error_code %}<span class="mono">{{ stage.error_code }}</span>{% endif %}
+    </header>
+    {% if data is none %}
+    <p class="muted">No result.</p>
+    {% elif data is mapping and data.placeholder %}
+    <p class="muted">A placeholder: this stage isn't built yet.</p>
+    {% elif data is mapping %}
+      {% if stage.task == "c02.pass1" %}
+      <h4>Allegations <span class="count">{{ data.allegations | length }}</span></h4>
+      <ul class="items">{% for a in data.allegations %}<li><p>{{ a.text }}</p><p class="tags">{{ words(a.kind) }} · {{ words(a.scope) }}{% if a.ambiguous %} · ambiguous{% endif %}</p></li>{% endfor %}</ul>
+      {% if data.requests %}<h4>Requests <span class="count">{{ data.requests | length }}</span></h4>
+      <ul class="items">{% for r in data.requests %}<li><p>{{ r.text }}</p><p class="tags">{{ words(r.request_type) }}</p></li>{% endfor %}</ul>{% endif %}
+      {% if data.agent_statements %}<h4>Agent statements <span class="count">{{ data.agent_statements | length }}</span></h4>
+      <ul class="items">{% for s in data.agent_statements %}<li><p>{{ s.text }}</p><p class="tags">{{ words(s.kind) }}</p></li>{% endfor %}</ul>{% endif %}
+      {% if data.dropped %}<p class="muted">{{ data.dropped | length }} item{{ "" if data.dropped | length == 1 else "s" }} dropped by the checks.</p>{% endif %}
+      {% elif stage.task == "c02.pass2" %}
+      <h4>Claims <span class="count">{{ data.claims | length }}</span></h4>
+      <ul class="items">{% for c in data.claims %}<li>
+        <p>{{ c.statement }}</p>
+        <p class="tags">{{ words(c.grounding_status) }} · account {{ (c.account_resolution or "") | replace("_", " ") | lower }}{% if c.event_window_start %} · <span class="nowrap">{{ c.event_window_start }}</span> to <span class="nowrap">{{ c.event_window_end or "?" }}</span>{% endif %}</p>
+        {% if c.evidence_needs %}<ul class="needs">{% for n in c.evidence_needs %}<li>{{ n.description }} <span class="mono muted">{{ n.source_type }}</span></li>{% endfor %}</ul>{% endif %}
+      </li>{% endfor %}</ul>
+      {% if data.other_checks %}<h4>Other checks <span class="count">{{ data.other_checks | length }}</span></h4>
+      <ul class="items">{% for o in data.other_checks %}<li><p>{{ o.description }}</p><p class="tags mono">{{ o.source_types | join(", ") }}</p></li>{% endfor %}</ul>{% endif %}
+      {% if data.findings %}<p class="muted">Corrected by the checks: {% for f in data.findings %}{{ words(f.issue) }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
+      {% elif stage.task == "c03.primary_selection" %}
+      <p class="tags">{{ words(data.status) }}</p>
+      {% if data.claim_id %}<p class="lead">{{ claim_text(data.claim_id) }}</p>{% endif %}
+      {% if data.candidate_claim_ids %}<p class="muted">Between:</p><ul class="items">{% for id in data.candidate_claim_ids %}<li>{{ claim_text(id) }}</li>{% endfor %}</ul>{% endif %}
+      <p class="why">{{ data.rationale }}</p>
+      {% elif stage.task == "c04.routing" %}
+      <ul class="items">{% for c in data.claims %}<li>
+        <p>{{ claim_text(c.claim_id) }}</p>
+        {% if c.outcome == "ROUTED" %}
+          {% for v in c.candidates %}
+          <p class="route"><span class="vertical">{{ v.vertical_id }}</span> <span class="muted">{{ "%.0f" | format(v.confidence * 100) }}% · source: {{ (v.source or "") | lower }}</span></p>
+          {% if v.rationale %}<p class="why">{{ v.rationale }}</p>{% endif %}
+          {% if v.procedures %}<ul class="needs">{% for p in v.procedures %}<li>{{ p.file_name }} · {{ p.section_title }} <span class="muted">p. {{ p.page_start }}{% if p.page_end != p.page_start %}–{{ p.page_end }}{% endif %}</span></li>{% endfor %}</ul>{% endif %}
+          {% endfor %}
+        {% else %}
+          <p class="route"><span class="vertical">{{ words(c.outcome) }}</span></p>
+        {% endif %}
+        {% if c.rationale %}<p class="why">{{ c.rationale }}</p>{% endif %}
+        {% if c.sections_seen %}<p class="muted">Shown {{ c.sections_seen | length }} section{{ "" if c.sections_seen | length == 1 else "s" }}.</p>{% endif %}
+      </li>{% endfor %}</ul>
+      {% endif %}
+      <details class="raw"><summary>JSON</summary>
+        <pre class="log">{{ data | tojson(indent=2) }}</pre>
+        <p><a href="/cases/{{ run.row.case_run_id }}/results/{{ stage.refs[0] }}" download>Download</a></p>
+      </details>
+    {% elif data.reason is defined %}
+    <p class="muted">{{ data.reason }}</p>
+    {% else %}
+    <p class="muted">Not JSON. <a href="/cases/{{ run.row.case_run_id }}/results/{{ stage.refs[0] }}" download>Download it</a>.</p>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

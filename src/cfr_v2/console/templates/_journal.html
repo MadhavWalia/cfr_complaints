@@ -1,0 +1,32 @@
+{% import "_fields.html" as fields %}
+<div id="journal" hx-get="{{ journal_url or '/partials/journal' }}" hx-trigger="every 5s" hx-swap="outerHTML">
+  {% if jobs %}
+  <div class="table-wrap">
+    <table class="stack journal">
+      <caption class="visually-hidden">Jobs started from the console, newest first</caption>
+      <thead><tr><th scope="col">When</th><th scope="col">Job</th><th scope="col">Status</th><th scope="col" class="num">Took</th><th scope="col">Outcome</th></tr></thead>
+      <tbody>
+      {% for job in jobs %}
+      <tr data-job="{{ job.id }}" data-status="{{ job.status.value }}">
+        <td data-label="When"><span>{{ job.created_at | stamp }}</span></td>
+        <td data-label="Job"><span><a href="/jobs/{{ job.id }}">{{ job.title }}</a></span></td>
+        <td data-label="Status"><span><span class="pill {{ job.status.pill }}">{{ job.status.value }}</span></span></td>
+        <td data-label="Took" class="num"><span>{{ job.seconds | took }}</span></td>
+        <td data-label="Outcome">{% if job.summary and job.summary.startswith("sha256:") %}<span class="outcome">{{ fields.copy(job.summary) }}</span>
+          {% elif job.summary %}<span class="outcome">{{ job.summary }}</span>
+          {% elif job.reason %}<span class="outcome reason" title="{{ job.reason }}">{{ job.reason | truncate(110) }}</span>
+          {% elif job.status.value == "lost" %}<span class="muted">outcome unknown</span>
+          {% elif job.status.value == "running" and progress_of(job) %}{% set pr = progress_of(job) %}<span class="progress-cell"><progress max="{{ pr.total }}" value="{{ pr.done }}" aria-label="{{ job.title }}: {{ pr.done }} of {{ pr.total }}"></progress><span>{{ "{:,}".format(pr.done) }} of {{ "{:,}".format(pr.total) }}{% if pr.left %} · about {{ pr.left }} left{% endif %}</span></span>
+          {% else %}<span class="muted">{{ "exit " ~ job.exit_code if job.exit_code not in (None, 0) else "—" if job.finished else "" }}</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <h3>No jobs yet</h3>
+    <p>Everything you start here, from admitting cases to a LightRAG build, appears in this journal, newest first, with its live log and its files.</p>
+  </div>
+  {% endif %}
+</div>

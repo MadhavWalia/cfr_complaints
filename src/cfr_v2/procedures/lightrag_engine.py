@@ -34,6 +34,7 @@ from cfr_v2.llm.embeddings import EmbeddingSettings, embed_allowing_blocks
 from cfr_v2.telemetry import get_logger, record_passages, record_stage, set_attributes, span
 
 from .search import Passage
+from .stores import STORE_MARKER
 
 logger = get_logger(__name__)
 
@@ -67,9 +68,6 @@ SAFE_LIGHTRAG_ERRORS = (
 )
 
 
-STORE_MARKER = "cfr_store.json"  # in the working directory: the snapshot a store was built from (LDR-0021)
-
-
 class StoreMismatchError(RuntimeError):
     """A LightRAG store used with, or built from, a snapshot other than its own."""
 
@@ -83,6 +81,8 @@ def check_store(workdir: Path, procedures_ref: str) -> dict[str, Any]:
     """The store's marker, if it was built from ``procedures_ref``; otherwise ``StoreMismatchError``.
     A store without a marker predates it: rebuild it from the snapshot (passages already in the
     graph are skipped), which writes one."""
+    if not workdir.is_dir():
+        raise StoreMismatchError(f"no LightRAG store at {workdir}: run lightrag-build {procedures_ref} to build it")
     marker = read_store_marker(workdir)
     if marker is None:
         raise StoreMismatchError(

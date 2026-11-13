@@ -170,6 +170,9 @@ class Pass1(dspy.Module):
     async def aforward(self, transcript: str) -> dspy.Prediction:
         return await self.extract.acall(transcript=transcript)
 
+    def forward(self, transcript: str) -> dspy.Prediction:  # optimizers call programs synchronously (LDR-0027)
+        return self.extract(transcript=transcript)
+
 
 def transcript_text(segments: Sequence[tuple[str, str]]) -> str:
     """Model input: the interactions' redacted texts in order (V1 has one concatenated interaction)."""

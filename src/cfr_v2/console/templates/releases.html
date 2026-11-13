@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% import "_fields.html" as fields %}
+{% block main %}
+<div class="head"><h1>Releases</h1><div class="actions"><a class="btn secondary" href="#new-release">New release</a></div></div>
+{% if written %}
+<div class="panel written" role="status">
+  <p><strong>Wrote <span class="mono">registry/releases/{{ written.release_id }}.yaml</span></strong>{% if base %}, from {{ base.release_id }}{% endif %}.</p>
+  {% if changed %}<ul class="plain">{% for key, old, new in changed %}<li><span class="mono">{{ key }}</span>: {{ fields.copy(old) if old else "none" }} → {{ fields.copy(new) }}</li>{% endfor %}</ul>{% endif %}
+  <p>It's a change to the repository: review and commit it. {{ fields.copy("git add registry/releases/" ~ written.release_id ~ ".yaml && git commit -m \"Add release " ~ written.release_id ~ "\"", short=false) }}</p>
+  <p class="muted">Make it current below once its snapshot's LightRAG store is built.</p>
+</div>
+{% endif %}
+<p class="lede muted">Releases are files in <span class="mono">registry/releases/</span>, changed through git. A release is pinned when the first case is admitted under it; each case run keeps the version it was admitted with. Making one current sets <span class="mono">CFR_RELEASE_ID</span> in <span class="mono">.env</span>: new cases are admitted under it, and the next jobs use it. A running worker keeps the procedure snapshot it opened, so if the snapshot changes, restart it once the old release's runs are done.</p>
+{% if error %}
+<div class="panel error-box" role="status">
+  <strong>Can't read the state database ({{ error }}).</strong>
+  <p class="muted">The pins and case counts need Postgres. Start it with <span class="mono">docker compose up -d</span>, then reload.</p>
+</div>
+{% endif %}
+{% for r in releases %}
+<section class="release-card panel" id="{{ r.release_id }}" aria-labelledby="{{ r.release_id }}-h">
+  <header>
+    <h2 id="{{ r.release_id }}-h" class="mono-h">{{ r.release_id }}</h2>
+    {% if r.release_id == release_id %}<span class="current">New cases use it</span>{% endif %}
+    {% if r.problem %}<span class="pill failed">can't read the file</span>
+    {% elif not r.manifest %}<span class="pill waiting">no file</span>
+    {% elif r.mismatches %}<span class="pill waiting">doesn't match this code</span>
+    {% else %}<span class="muted">Matches this code</span>{% endif %}
+  </header>
+  {% if r.release_id != release_id and r.manifest %}
+  {% if r.blockers %}
+  <p class="muted blocked">Can't be made current: {{ r.blockers | join("; ") }}.</p>
+  {% else %}
+  <form method="post" action="/releases/{{ r.release_id }}/current" class="actions">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="btn secondary" type="submit">Make current</button>
+    <span class="muted">New cases are then admitted under <span class="mono">{{ r.release_id }}</span>, instead of <span class="mono">{{ release_id }}</span>.</span>
+  </form>
+  {% endif %}
+  {% endif %}
+  {% if r.problem %}<p class="last-error mono">{{ r.problem }}</p>{% endif %}
+  {% if not r.manifest and not r.problem %}<p class="muted">Pinned in the database, but its file is no longer in the registry.</p>{% endif %}
+  {% if r.manifest %}
+  {% set m = r.manifest %}
+  <dl class="pins">
+    <div><dt>Stages</dt><dd>
+      <ul class="plain">
+      {% for p in m.programs %}{% set miss = r.mismatches | selectattr("stage", "equalto", p.program_id) | first %}
+        <li><span class="mono">{{ p.program_id }}</span> {{ p.version }}{% if miss %} <span class="flag">this code runs {{ miss.code_version }}</span>{% endif %}</li>
+      {% endfor %}
+      {% for miss in r.mismatches if miss.release_version is none %}<li><span class="mono">{{ miss.stage }}</span> <span class="flag">not pinned; this code runs {{ miss.code_version }}</span></li>{% endfor %}
+      </ul>
+    </dd></div>
+    <div><dt>Evidence sources</dt><dd class="mono">{{ m.evidence_sources or "—" }}</dd></div>
+    <div><dt>Knowledge document</dt><dd>{{ fields.copy(m.routing_verticals) if m.routing_verticals else "—" }}</dd></div>
+    <div><dt>Procedure snapshot</dt><dd>{{ fields.copy(m.procedure_snapshot) if m.procedure_snapshot else "—" }}</dd></div>
+    <div><dt>This file's ref</dt><dd class="mono ref">{{ m.ref }}</dd></div>
+  </dl>
+  {% endif %}
+  {% if r.pinned %}
+  <h3>Pinned versions</h3>
+  <table class="compact stack">
+    <caption class="visually-hidden">Versions of {{ r.release_id }} pinned in the database</caption>
+    <thead><tr><th scope="col">Ref</th><th scope="col">Pinned</th><th scope="col" class="num">Case runs</th></tr></thead>
+    <tbody>
+    {% for p in r.pinned %}
+    <tr>
+      <td data-label="Ref"><span class="mono ref">{{ p.manifest_ref }}</span>{% if p.manifest_ref == r.current_ref %} <span class="muted">the file as it is now</span>{% elif r.manifest %} <span class="muted">an earlier version of the file</span>{% endif %}</td>
+      <td data-label="Pinned"><span>{{ p.pinned_at.isoformat() | stamp }}</span></td>
+      <td data-label="Case runs" class="num"><span>{% if p.runs %}<a href="/cases?release={{ r.release_id }}">{{ "{:,}".format(p.runs) }}</a>{% else %}0{% endif %}</span></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% elif not error %}
+  <p class="muted">Not pinned yet: no case has been admitted under it.</p>
+  {% endif %}
+</section>
+{% else %}
+<div class="empty"><h3>No releases</h3><p>Add a manifest to <span class="mono">registry/releases/</span>.</p></div>
+{% endfor %}
+
+<section class="section new-release" id="new-release" aria-labelledby="new-release-h">
+  <h2 id="new-release-h">New release</h2>
+  <p class="muted lede-sm">Copies a release's file and changes only its id and its routing inputs: the procedure snapshot and the knowledge document. Stage versions follow the code. The file is written to <span class="mono">registry/releases/</span> for you to review and commit; nothing is pinned until a case is admitted under it.</p>
+  <form method="post" action="/releases/new" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if form_error %}<p class="form-error" role="alert">{{ form_error }}</p>{% endif %}
+    {% for f in new_release %}{{ fields.field(f, values.get(f.name), ctx, "release-" ~ f.name) }}{% endfor %}
+    <button class="btn primary" type="submit">Write the file</button>
+  </form>
+</section>
+{% endblock %}

@@ -5,8 +5,8 @@ request, transcript, baseline or case categories. Routes every claim (LDR-0020) 
 ``RoutingResult`` bound to the claim set's hash; a later claim-set revision makes it stale.
 
 What a decision depends on outside the code comes from the run's pinned release manifest: the
-knowledge document (an artifact) and the procedure snapshot. The LightRAG store is a local
-directory (``CFR_LIGHTRAG_WORKDIR``) that must have been built from that snapshot.
+knowledge document (an artifact) and the procedure snapshot. The LightRAG store is the local
+folder named after that snapshot (``cfr_v2.procedures.stores``), and must have been built from it.
 
 Any failed claim fails the stage, so the runner retries it: a case never moves on with a partial
 routing. A search the gateway blocks is not a failure: that claim is routed without sections.
@@ -210,7 +210,8 @@ class PinnedRouting:
 
 
 def lightrag_opener(store: ArtifactStore, workdir: Path | None, embedder: Any, client: Any):
-    """Opens LightRAG over ``workdir`` for a snapshot, after checking the store was built from it."""
+    """Opens LightRAG for a snapshot, after checking the store was built from it. The store is
+    ``workdir`` when given, else the snapshot's own folder (or ``CFR_LIGHTRAG_WORKDIR``)."""
 
     async def open_search(procedures_ref: str, stack: AsyncExitStack) -> Any:
         from cfr_v2.procedures import corpus_passages
@@ -221,16 +222,17 @@ def lightrag_opener(store: ArtifactStore, workdir: Path | None, embedder: Any, c
             check_store,
             open_rag,
         )
+        from cfr_v2.procedures.stores import override_hint, store_dir
 
-        if workdir is None:
-            raise RoutingSetupError("CFR_LIGHTRAG_WORKDIR is not set: no LightRAG store to search")
+        folder = workdir if workdir is not None else store_dir(procedures_ref)
         try:
-            check_store(workdir, procedures_ref)
+            check_store(folder, procedures_ref)
         except StoreMismatchError as exc:
-            raise RoutingSetupError(str(exc)) from exc
+            hint = "" if workdir is not None else override_hint(procedures_ref)
+            raise RoutingSetupError(f"{exc}{hint}") from exc
         passages = corpus_passages(store, procedures_ref)
         llm = GatewayLlm(client)
-        rag = await stack.enter_async_context(open_rag(workdir, embedder, llm))
+        rag = await stack.enter_async_context(open_rag(folder, embedder, llm))
         return LightRagProcedureSearch(rag, procedures_ref, passages, llm)
 
     return open_search

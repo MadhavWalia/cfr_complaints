@@ -26,6 +26,8 @@ src/cfr_v2/
   selection/    C03 (DSPy): the customer's main complaint (primary claim), bound to the claim-set hash
   procedures/   Operating procedure PDFs: inspect, extract, redact, snapshot; LightRAG store and procedure.search
   routing/      C04 (DSPy): one vertical per claim from LightRAG sections and the vertical definitions
+  optimize/     prompt optimization with DSPy against gold sets (GEPA, MIPROv2, COPRO); patches to review
+  console/      the CFR console: a localhost website that runs every command below as a job (LDR-0023)
 registry/       release manifests (releases/<id>.yaml), evidence source taxonomy (evidence_sources/<version>.yaml)
 config/         ee-config template (config_gpt.example.yml); your config_gpt.yml and config/verticals/ are gitignored
 tests/
@@ -94,6 +96,51 @@ set -a; source .env; set +a
 
 Run this after every pull that adds a migration. Intake and workers check the schema
 at startup and refuse to run with `pending migrations: ...` until it is current.
+
+## The console
+
+Everything below can also be done from a website on your machine: admit cases, start and stop
+the worker, run the trials, snapshots and LightRAG builds, score, route, check the gateway,
+migrate and run the tests, then read each job's live log and download its files. It also shows
+the pipeline by stage, each case run with its timeline and stage results, and the releases.
+
+```bash
+.venv/bin/python -m pip install -e ".[console]" "opentelemetry-api==1.39.1" "opentelemetry-sdk==1.39.1"
+.venv/bin/python -m cfr_v2.console          # http://127.0.0.1:8765  (--port to change it)
+```
+
+- **Localhost only.** It listens on 127.0.0.1, refuses other host names, and every action
+  carries a token from the page, so another website can't start jobs.
+- **Settings come from `.env`,** read once at start and passed to every job; restart the
+  console after editing it. The System page lists them, secrets hidden. **Make current** on
+  Releases is the one setting the console writes (`CFR_RELEASE_ID`); it applies at once.
+- **Releases:** **New release** copies a release's file with a new snapshot or knowledge
+  document (stage versions stay as they are) and writes it to `registry/releases/` for you to
+  commit; Make current is offered once its snapshot's LightRAG store is built.
+- **Each action is the terminal command,** run as a job under `var/console/jobs/<id>/`: its
+  `log.txt`, `inputs/` (uploads) and `outputs/` (files it wrote). The job page shows the exact
+  command line. Jobs run in their own process session, so restarting the console doesn't stop
+  a worker or a build; a restarted console picks them up again.
+- **Stop** sends SIGTERM (a worker finishes the cases it holds); **Force stop** sends SIGKILL.
+- **A failed job says why:** the error line from its log, what it usually means and what to do,
+  and **Run again** reopens its form. A finished job links to its usual next step (a snapshot to
+  its build, a build to a release, a trial to routing its claims), filled in.
+- **Before a job starts,** each command shows what it does as tags (calls gpt-5, writes the
+  database, keep output local …) and, where it can, how many model calls it will make. Long jobs
+  show their progress (`n of N`, time left) and can send a browser notification when they end.
+- **Optimize** (LDR-0027): choose a prompt, write its gold template, check the filled
+  workbooks, score the baseline, optimize; each run's results show the baseline and the
+  candidate on the test split, the instructions it changed, and the patch to review.
+- **The Pipeline page opens with what needs attention** (failed jobs and runs, blocked
+  releases, runs waiting with no worker), each with its action. **Help** has the recurring tasks
+  step by step and the glossary.
+- **The worker form needs a cap** on queued runs and shows the queue first, so a worker can't
+  start over a backlog by accident.
+- **Case pages show INTERNAL stage results only** (claims, the selection, routing decisions).
+  RESTRICTED artifacts (transcripts, source records) are never read. Trace and log links open
+  Grafana (`CFR_GRAFANA_URL`, default `http://localhost:3000`).
+- **Trial review files hold case or procedure text.** They stay in the job's `outputs/`
+  (gitignored `var/`); delete the job from its page once reviewed.
 
 ## Running intake
 
@@ -173,7 +220,7 @@ definitions (LDR-0019, LDR-0020, LDR-0021). Prepare once per update, in this ord
 
 ```bash
 python -m cfr_v2.procedures snapshot /path/to/pdfs                         # extract, redact, store; prints the snapshot ref
-python -m cfr_v2.procedures lightrag-build sha256:<snapshot> --workdir lightrag_store   # ~3 gpt-5 calls per section; resumable
+python -m cfr_v2.procedures lightrag-build sha256:<snapshot>                         # ~3 gpt-5 calls per section; resumable
 python -m cfr_v2.routing publish-verticals config/verticals/knowledge_document.txt      # prints the document's ref
 ```
 
@@ -181,18 +228,20 @@ python -m cfr_v2.routing publish-verticals config/verticals/knowledge_document.t
   `procedure_snapshot` in `registry/releases/<release>.yaml`. A run is routed with what its release
   names, so updating either means a new release.
 - **The knowledge document is internal:** keep it in `config/verticals/` (gitignored), never in git.
-- **The worker searches the store in `CFR_LIGHTRAG_WORKDIR`.** `lightrag-build` writes
-  `cfr_store.json` there, naming the snapshot it was built from, and the worker refuses a store
-  whose marker doesn't match the release. A build into a store made from another snapshot is
-  refused too.
+- **Each snapshot has its own store, named after it:** `lightrag_store_<first 12 of its hash>`.
+  `lightrag-build` creates it, and the worker finds it from the release's `procedure_snapshot`, so
+  moving to a new snapshot means building it, then changing the release; nothing else. The store's
+  `cfr_store.json` names the snapshot it was built from, and a store that doesn't match is refused,
+  for search and for a build alike. `CFR_LIGHTRAG_WORKDIR` (or `--workdir`) overrides the folder,
+  for a store kept somewhere else.
 - **A claim set with no claims is routed without any of this.** Any failed claim fails the stage,
   and the worker retries it. A search the gateway blocks routes that claim without sections.
 
 Outside the workflow:
 
 ```bash
-python -m cfr_v2.procedures search sha256:<snapshot> "a query" --workdir lightrag_store   # try searches
-python -m cfr_v2.routing sha256:<snapshot> --workdir lightrag_store \
+python -m cfr_v2.procedures search sha256:<snapshot> "a query"                            # try searches
+python -m cfr_v2.routing sha256:<snapshot> \
   --verticals config/verticals/knowledge_document.txt --claims-from c02_trial --out router_trial   # trial + routing.xlsx
 python -m cfr_v2.routing backfill --from-release <old release> --count-only               # route stored claim sets of failed runs
 ```
@@ -203,6 +252,42 @@ after review.
 **Changing a stage's version** (any `STAGES` entry): add a release pinning the new version and make
 it the default (`IntakeSettings.release_id`, `.env.example`). A unit test fails until you do, and
 workers refuse to start while runs of the old release are queued (LDR-0022).
+
+## Prompt optimization (LDR-0027)
+
+Every model prompt is a DSPy program with one predictor whose instructions can be optimized
+against a gold set: C02 Pass 1 and Pass 2, C03 and C04.
+
+```bash
+.venv/bin/python -m pip install -e ".[optimize]" "opentelemetry-api==1.39.1" "opentelemetry-sdk==1.39.1"
+# or from the console's Optimize area; on the command line:
+python -m cfr_v2.optimize prompts                                    # the prompts, versions, readiness
+python -m cfr_v2.optimize template c03.primary_selection --cases-file cases.txt --out gold_c03.xlsx
+python -m cfr_v2.optimize check c03.primary_selection gold_c03_*.xlsx    # examples, problems, the split
+python -m cfr_v2.optimize run c03.primary_selection gold_c03_*.xlsx --method gepa --budget light --cap 500 --out run1
+```
+
+- **Instructions only.** GEPA, MIPROv2 without demos, or COPRO rewrite the instructions; no
+  examples go into the prompt, so nothing from a case can reach the repository.
+- **Honest comparison.** The gold set is split by case (train, validation, test; fixed seed);
+  the baseline and the candidate are scored on the held-out test split, with the difference and
+  a 95% interval. Fewer than 20 examples is refused; fewer than 50 is warned about.
+- **Capped.** Every model call goes through the gateway client and counts against `--cap`;
+  progress prints as `[n/N]`. DSPy's own logs are silenced during a run: they would print whole
+  examples.
+- **Shipping a better prompt** is a reviewed change: when the candidate is better on test, the
+  run writes `patch.diff` (the new instructions and the bumped program version). Apply and commit
+  it, then make a release that pins the new version.
+- **Gold workbooks and run folders hold case text:** keep them local and delete them after review.
+- **Templates freeze the prompt's inputs.** Pass 1's is the existing gold workbook. Pass 2's lists
+  each case's committed Pass 1 items; C03's its committed claims; C04's each claim with the
+  procedure sections the router was shown (rebuilt from the snapshot it searched). Those sheets
+  are locked; the labeller fills the answer columns, with dropdowns from the current release's
+  taxonomy and verticals. A workbook filled against an older result is refused on upload.
+- **Metrics:** Pass 1, F1 by quote overlap (as `score run`); Pass 2, claims matched by the
+  allegations they group, then their fields and evidence sources; C03, the main complaint (and
+  AMBIGUOUS on unclear cases); C04, the vertical. Feedback for GEPA holds counts, types and ids,
+  never gold text.
 
 ## Model gateway (P5)
 

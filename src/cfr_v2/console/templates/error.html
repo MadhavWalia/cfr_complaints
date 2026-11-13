@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="head"><h1>{{ title }}</h1></div>
+<div class="panel error-box" role="alert">
+  {% if detail %}<p>{{ detail }}</p>{% endif %}
+  {% if code == 403 %}
+  <p class="muted">The console was restarted since this page was loaded, so its form is no longer accepted. Reload the page, then try again.</p>
+  {% elif code == 503 %}
+  <p class="muted">Is Postgres running? Start it with <span class="mono">docker compose up -d</span>, then reload.</p>
+  {% endif %}
+  <p class="actions-line"><a href="/">Pipeline</a> · <a href="/jobs">Jobs</a> · <a href="/cases">Cases</a></p>
+</div>
+{% endblock %}

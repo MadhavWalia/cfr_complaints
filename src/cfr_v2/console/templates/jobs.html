@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="head"><h1>Jobs</h1></div>
+<nav class="filters" aria-label="Filter by status">
+  <a href="/jobs"{% if not filter %} aria-current="page"{% endif %}>All</a>
+  {% for s in statuses %}<a href="/jobs?status={{ s.value }}"{% if filter == s.value %} aria-current="page"{% endif %}>{{ s.value | capitalize }}</a>{% endfor %}
+</nav>
+{% with journal_url = "/partials/journal?all=1" ~ ("&status=" ~ filter if filter else "") %}{% include "_journal.html" %}{% endwith %}
+{% endblock %}

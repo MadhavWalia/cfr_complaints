@@ -28,6 +28,12 @@ dependencies = [
 # LightRAG, the engine behind procedure.search (LDR-0019). Install alongside the pinned opentelemetry-api:
 # on its own it upgrades it past what ee-logging supports.
 lightrag = ["lightrag-hku>=1.5.7"]
+# The CFR console (LDR-0023): python -m cfr_v2.console. Install alongside the pinned
+# opentelemetry-api, as for lightrag: newer fastapi releases otherwise pull a newer one.
+console = ["fastapi>=0.135", "uvicorn>=0.32", "python-multipart>=0.0.18"]
+# Prompt optimization (LDR-0027): MIPROv2 searches candidates with optuna. Install alongside the
+# pinned opentelemetry-api, as for the console.
+optimize = ["optuna>=3.4.0"]
 # Hosts without libpq: psycopg2-binary bundles it (select with CFR_DB_DRIVER=psycopg2).
 psycopg2 = ["psycopg2-binary>=2.9"]
 # Private packages from the internal Artifactory; the code degrades gracefully without them.

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "_fields.html" as fields %}
+{% block main %}
+<div class="head"><h1>{{ title }}</h1></div>
+<p class="lede muted">{{ plan }}</p>
+{% if status is not none %}
+<section class="section" aria-labelledby="queue-h">
+  <h2 id="queue-h">Queue</h2>
+  {% include "_pipeline_status.html" %}
+</section>
+{% endif %}
+{% if prompt_rows is defined %}{% include "_optimize.html" %}{% endif %}
+<div class="commands">
+{% for command in commands %}
+<details class="command" id="{{ command.id }}"{% if filled == command.id or commands | length == 1 %} open{% endif %}>
+  <summary>
+    <h2>{{ command.title }}</h2>
+    {% if command.tags %}<ul class="badges" aria-label="What it does">{% for t in command.tags %}<li class="badge{% if t == 'calls gpt-5' %} cost{% endif %}" title="{{ tag_help[t] }}">{{ t }}</li>{% endfor %}</ul>{% endif %}
+    <p class="effect">{{ command.effect }}</p>
+  </summary>
+  <form method="post" action="/commands/{{ command.id }}" enctype="multipart/form-data" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if filled == command.id and error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+    {% if filled == command.id and again %}<p class="filled-from" role="status">Filled in from <a href="/jobs/{{ again.id }}">{{ again.title }}</a>, {{ again.created_at | stamp }}.{% if command.fields | selectattr("kind", "in", ["file", "files"]) | list %} Choose its files again: they aren't kept for this.{% endif %} Check, then start it.</p>
+    {% elif filled == command.id and source %}<p class="filled-from" role="status">Filled in from <a href="/jobs/{{ source.id }}">{{ source.title }}</a>. Check, then start it.</p>{% endif %}
+    {% for f in command.fields %}
+    {{ fields.field(f, values.get(f.name) if filled == command.id else (defaults or {}).get(f.name, f.initial(ctx)), ctx, command.id ~ "-" ~ f.name) }}
+    {% endfor %}
+    {% set est = command.estimate(ctx) if command.estimate else none %}
+    {% if est %}<p class="estimate" data-text="{{ est.text }}" data-per="{{ est.per }}"{% if est.field %} data-field="{{ command.id }}-{{ est.field }}"{% endif %}>{{ est.render() }}</p>{% endif %}
+    <button class="btn primary" type="submit">{{ command.action }}</button>
+  </form>
+</details>
+{% endfor %}
+</div>
+{% if environment is not none %}
+<section class="section" aria-labelledby="env-h">
+  <h2 id="env-h">Settings in use</h2>
+  {% if environment %}
+  <p class="muted lede-sm">Read from <span class="mono">.env</span> when the console started, and passed to every job. Making a release current (on Releases) writes <span class="mono">CFR_RELEASE_ID</span> there and takes effect at once; after editing <span class="mono">.env</span> by hand, restart the console.</p>
+  <div class="table-wrap">
+    <table class="compact stack env">
+      <caption class="visually-hidden">Settings from .env</caption>
+      <thead><tr><th scope="col">Setting</th><th scope="col">Value</th></tr></thead>
+      <tbody>
+      {% for key, value in environment %}
+      <tr><td data-label="Setting"><span class="mono">{{ key }}</span></td><td data-label="Value"><span class="mono{% if value in ('set, hidden', 'empty') %} muted{% endif %}">{{ value }}</span></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No <span class="mono">.env</span> file: the console uses the environment it was started in. Copy <span class="mono">.env.example</span> to <span class="mono">.env</span> to set them here.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% if prompt_rows is defined %}{% include "_optimize_results.html" %}{% endif %}
+{% if recent %}
+<section class="section" aria-labelledby="recent-h">
+  <h2 id="recent-h">Recent {{ title | lower }} jobs</h2>
+  {% with jobs = recent, journal_url = "/partials/journal?area=" ~ area %}{% include "_journal.html" %}{% endwith %}
+</section>
+{% endif %}
+{% endblock %}

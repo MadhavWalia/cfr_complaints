@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Pipeline{% endblock %}
+{% block main %}
+<div class="head">
+  <h1>Pipeline</h1>
+  <div class="actions">
+    <a class="btn secondary" href="/intake">Admit cases</a>
+    {% if worker %}<a class="btn primary" href="/jobs/{{ worker.id }}">Stop worker</a>
+    {% else %}<a class="btn primary" href="/system#system.worker">Start worker</a>{% endif %}
+  </div>
+</div>
+{% include "_pipeline_status.html" %}
+<section class="section" aria-labelledby="journal-h">
+  <h2 id="journal-h">Journal</h2>
+  {% include "_journal.html" %}
+  <p class="more"><a href="/jobs">All jobs</a></p>
+</section>
+{% endblock %}

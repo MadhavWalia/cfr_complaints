@@ -1,6 +1,6 @@
 """C04 trial: route the claims of C02 trial review files, outside the workflow.
 
-    python -m cfr_v2.routing sha256:<snapshot> --workdir lightrag_store \\
+    python -m cfr_v2.routing sha256:<snapshot> \\
         --verticals config/verticals/knowledge_document.txt --claims-from c02_trial --out router_trial
     python -m cfr_v2.routing publish-verticals config/verticals/knowledge_document.txt
     python -m cfr_v2.routing backfill --from-release cfr-v2-phase-d --count-only   # see backfill.py
@@ -29,6 +29,7 @@ from pathlib import Path
 
 from cfr_v2.contracts import ClaimRouting, ClaimRoutingOutcome
 from cfr_v2.llm import ModelError, ModelRequest, ModelResponse
+from cfr_v2.procedures.stores import store_dir
 from cfr_v2.telemetry import get_logger
 
 from . import route
@@ -293,7 +294,7 @@ def run(args: argparse.Namespace) -> int:
     router = Router(catalog)
 
     async def go() -> list[Routed]:
-        async with open_rag(args.workdir, GatewayEmbeddingClient(), llm) as rag:
+        async with open_rag(args.workdir or store_dir(args.procedures), GatewayEmbeddingClient(), llm) as rag:
             search = LightRagProcedureSearch(rag, args.procedures, passages, llm)
             return await route_all(cases, search, router, lm, args.concurrency)
 
@@ -368,7 +369,7 @@ def run_backfill(argv: list[str]) -> int:
         "--from-release", required=True, help="release id whose failed runs to route, e.g. cfr-v2-phase-d"
     )
     parser.add_argument("--release", help="release whose routing pins to use (default: CFR_RELEASE_ID)")
-    parser.add_argument("--workdir", type=Path, help="LightRAG store (default: CFR_LIGHTRAG_WORKDIR)")
+    parser.add_argument("--workdir", type=Path, help="LightRAG store (default: the release snapshot's own)")
     parser.add_argument("--limit", type=int, help="route only the first N runs still to do")
     parser.add_argument("--concurrency", type=int, default=4, help="runs routed at once (default 4)")
     parser.add_argument("--out", type=Path, help="JSON lines, one per run: ids, refs, counts; resumes from it")
@@ -400,14 +401,11 @@ def run_backfill(argv: list[str]) -> int:
         settings = IntakeSettings.from_env()
         manifest = ReleaseRegistry(settings.registry_dir).load(args.release or settings.release_id)
         require_compatible(manifest)
-        workdir = args.workdir or (
-            Path(os.environ["CFR_LIGHTRAG_WORKDIR"]) if os.environ.get("CFR_LIGHTRAG_WORKDIR") else None
-        )
         gateway = GatewaySettings.from_env()
         client = GatewayModelClient(gateway)
         metered = Metered(client)
         pinned = PinnedRouting(
-            store, lambda _: manifest, lightrag_opener(store, workdir, GatewayEmbeddingClient(), client)
+            store, lambda _: manifest, lightrag_opener(store, args.workdir, GatewayEmbeddingClient(), client)
         )
 
         def register_one(stored) -> None:
@@ -465,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
             shutdown_telemetry()
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.routing", description=__doc__.splitlines()[0])
     parser.add_argument("procedures", help="the ref the LightRAG store was built from: snapshot, or old index")
-    parser.add_argument("--workdir", type=Path, required=True, help="the LightRAG working directory")
+    parser.add_argument("--workdir", type=Path, help="the LightRAG store (default: the snapshot's own)")
     parser.add_argument("--verticals", type=Path, required=True, help="the knowledge document defining the verticals")
     parser.add_argument("--claims-from", type=Path, required=True, help="folder of C02 trial review files")
     parser.add_argument("--cases", type=int, help="route only the first N cases")
