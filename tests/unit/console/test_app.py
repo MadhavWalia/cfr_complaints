@@ -219,6 +219,7 @@ def test_what_needs_attention_comes_first_with_its_action(tmp_path, monkeypatch)
     )
     ready = QueuedRelease("cfr-v2-phase-e@6ff69ff5259b", 6, 0, ())
     items = pipeline.attention(_status(failed=8602, releases=(ready, blocked)), jobs, worker_job=None, now=now)
+    assert (items[0].kind, items[0].label) == ("blocked", "blocked")  # a wait, not an error: Caution
     assert [(i.label, i.href) for i in items] == [
         ("blocked", "/releases#cfr-v2-phase-d"),
         ("failed", "/jobs/20261112-193000-aaaa"),

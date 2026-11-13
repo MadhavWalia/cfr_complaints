@@ -18,7 +18,7 @@
     {% if diagnosis %}<p>{{ diagnosis.explanation }}</p>
     {% elif job.reason %}<p class="muted">The line above is the last error in the log; the log below has the rest.</p>
     {% else %}<p class="muted">It exited with code {{ job.exit_code }} without naming an error. The end of the log below is the best clue.</p>{% endif %}
-    {% if diagnosis and diagnosis.href %}<p><a class="btn secondary" href="{{ diagnosis.href }}">{{ diagnosis.action }}</a></p>{% endif %}
+    {% if diagnosis and diagnosis.href %}<p><a class="btn primary" href="{{ diagnosis.href }}">{{ diagnosis.action }}</a></p>{% endif %}
   </div>
   {% elif job.status.value == "lost" %}
   <div class="failure" role="status">

@@ -4,7 +4,7 @@
   <h2 id="attention-h">Needs attention</h2>
   <ul>
     {% for item in attention %}
-    <li><span class="pill {{ item.kind }}">{{ item.label }}</span><span class="text">{{ item.text }}</span><a href="{{ item.href }}">{{ item.action }}</a></li>
+    <li class="{{ item.kind }}"><span class="pill {{ item.kind }}">{{ item.label }}</span><span class="text">{{ item.text }}</span><a href="{{ item.href }}">{{ item.action }}</a></li>
     {% endfor %}
   </ul>
 </section>

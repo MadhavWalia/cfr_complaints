@@ -24,7 +24,7 @@
     {% if r.release_id == release_id %}<span class="current">New cases use it</span>{% endif %}
     {% if r.problem %}<span class="pill failed">can't read the file</span>
     {% elif not r.manifest %}<span class="pill waiting">no file</span>
-    {% elif r.mismatches %}<span class="pill waiting">doesn't match this code</span>
+    {% elif r.mismatches %}<span class="pill blocked">doesn't match this code</span>
     {% else %}<span class="muted">Matches this code</span>{% endif %}
   </header>
   {% if r.release_id != release_id and r.manifest %}
