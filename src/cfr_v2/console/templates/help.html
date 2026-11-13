@@ -8,6 +8,7 @@
     <li><a href="#new-procedures">Use a new set of procedures</a></li>
     <li><a href="#run-cases">Run a few cases through the pipeline</a></li>
     <li><a href="#trial">Try the models on cases, outside the workflow</a></li>
+    <li><a href="#fresh">Start over on new cases, leaving earlier runs behind</a></li>
     <li><a href="#failed">Find out why something failed</a></li>
     <li><a href="#stages">The stages</a> · <a href="#words">Words</a></li>
   </ul>
@@ -41,6 +42,16 @@
     <li><a href="/evaluation#evaluation.trial">Run the C02 and C03 trial</a> on a few admitted cases. It writes nothing to the database; the form counts its model calls.</li>
     <li>From its job page, <strong>Route these claims</strong> (Next) to try C04 on the same claims, and download <span class="mono">routing.xlsx</span> to judge.</li>
     <li>Review files hold case text: keep them on this machine, and delete the jobs once reviewed.</li>
+  </ol>
+</section>
+
+<section class="section howto" id="fresh" aria-labelledby="fresh-h">
+  <h2 id="fresh-h">Start over on new cases, leaving earlier runs behind</h2>
+  <ol>
+    <li><a href="/releases#new-release">Make a release</a> based on the current one, with the same pins and a new id. Commit the new file with git.</li>
+    <li>On <a href="/releases">Releases</a>, <strong>Make current</strong> the new release. Pipeline and Cases show only the release new cases use; <strong>All releases</strong> shows every run.</li>
+    <li><a href="/system#system.cancel">Cancel the queued runs</a> of the earlier releases, so a worker can start. Nothing is deleted: their results stay, for labelling gold sets.</li>
+    <li><a href="/intake">Admit the new cases</a>, check the queue on <a href="/system">System</a>, then start a worker.</li>
   </ol>
 </section>
 

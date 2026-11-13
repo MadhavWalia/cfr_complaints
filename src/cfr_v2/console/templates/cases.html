@@ -16,7 +16,7 @@
   <div class="field">
     <label for="release">Release</label>
     <select id="release" name="release">
-      <option value="">Any</option>
+      <option value=""{% if not filters.release %} selected{% endif %}>All releases</option>
       {% for r in releases %}<option value="{{ r }}"{% if filters.release == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
     </select>
   </div>
@@ -52,8 +52,10 @@
   <span class="muted">{{ offset + 1 }}–{{ offset + rows | length }}</span>
   {% if more %}<a href="/cases?offset={{ offset + page_rows }}{{ query }}">Older</a>{% endif %}
 </nav>
+{% elif only_current %}
+<div class="empty"><h3>No case runs under {{ filters.release }} yet</h3><p>It's the release new cases use. <a href="/intake">Admit cases</a>, or <a href="/cases?release=">show every release</a>.</p></div>
 {% elif filters.q or filters.state or filters.release or offset %}
-<div class="empty"><h3>No case runs match</h3><p>Try part of a case number, or clear a filter. <a href="/cases">Show all</a></p></div>
+<div class="empty"><h3>No case runs match</h3><p>Try part of a case number, or clear a filter. <a href="/cases?release=">Show all</a></p></div>
 {% else %}
 <div class="empty"><h3>No case runs yet</h3><p>Cases appear here once they are admitted. <a href="/intake">Admit cases</a> from a date window, a list of case numbers, or synthetic ones.</p></div>
 {% endif %}

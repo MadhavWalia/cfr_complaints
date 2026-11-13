@@ -560,6 +560,11 @@ def _flag(on: Any, *args: str) -> list[str]:
     return list(args) if on else []
 
 
+def _releases(ctx: Context) -> list[tuple[str, str]]:
+    """The release files in ``registry/releases``, by id."""
+    return [(p.stem, p.stem) for p in sorted((ctx.root / "registry" / "releases").glob("*.yaml"))]
+
+
 def _opt(name: str, value: Any) -> list[str]:
     return [] if value in (None, "", ()) else [name, str(value)]
 
@@ -1061,6 +1066,25 @@ CATALOGUE: tuple[Command, ...] = (
         long_running=True,
         action="Start the worker",
         tags=("calls gpt-5", "writes the database", "long-running"),
+    ),
+    Command(
+        id="system.cancel",
+        area="system",
+        title="Cancel queued runs",
+        effect="Takes a release's queued case runs off the queue, so no worker runs them: test intakes, or "
+        "runs under a release that no longer matches the code, which stop a worker from starting. Each "
+        "run records Cancelled; nothing is deleted, and running ones are left alone. To process a case "
+        "after all, admit it again.",
+        module="cfr_v2.runtime.cancel",
+        fields=(
+            Field("release", "Release", "choice", required=True, choices=_releases),
+            Field("dry_run", "Only count them", "check", help="Changes nothing: says how many are queued."),
+        ),
+        args=lambda v, folder: ["--release", v["release"], *_flag(v["dry_run"], "--dry-run")],
+        job_title=lambda v: f"Cancel queued runs · {v['release']}" + (" · count only" if v["dry_run"] else ""),
+        summarize=_printed(r"^([\d,]+ queued runs under [^\s;]+(?: cancelled|; nothing changed \(dry run\)))$"),
+        action="Cancel them",
+        tags=("writes the database",),
     ),
     Command(
         id="system.smoke",

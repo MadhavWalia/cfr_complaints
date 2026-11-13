@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,8 @@ pytest.importorskip("fastapi")
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
+from cfr_v2.console import cases as cases_view
+from cfr_v2.console import commands
 from cfr_v2.console import status as pipeline
 from cfr_v2.console.app import AREAS, create_app, require_csrf
 from cfr_v2.console.settings import ConsoleSettings, is_secret, read_env_file
@@ -26,7 +29,7 @@ def _settings(tmp_path, **env):
 def _client(tmp_path, status=None, monkeypatch=None):
     app = create_app(_settings(tmp_path))
     if monkeypatch is not None:
-        monkeypatch.setattr(pipeline, "read_status", lambda db, resolve: status)
+        monkeypatch.setattr(pipeline, "read_status", lambda db, resolve, release=None: status)
         app.state.db = SimpleNamespace(close=lambda: None)  # never a real connection
     return app, TestClient(app, base_url="http://127.0.0.1:8765")
 
@@ -134,7 +137,7 @@ def test_the_system_page_shows_the_settings_in_use_without_secrets(tmp_path, mon
         },
         env_file_keys=("CFR_GATEWAY_API_KEY", "CFR_RELEASE_ID", "CFR_STATE_DATABASE_URL"),
     )
-    monkeypatch.setattr(pipeline, "read_status", lambda db, resolve: _status())
+    monkeypatch.setattr(pipeline, "read_status", lambda db, resolve, release=None: _status())
     app = create_app(settings)
     app.state.db = SimpleNamespace(close=lambda: None)
     page = TestClient(app, base_url="http://127.0.0.1:8765").get("/system").text
@@ -155,7 +158,7 @@ def test_display_values_hide_secrets_and_url_passwords():
 def test_the_lines_counts_open_those_cases(tmp_path, monkeypatch):
     _, client = _client(tmp_path, _status(failed=7), monkeypatch)
     page = client.get("/").text
-    assert 'href="/cases?state=PLAN_READY"' in page and 'href="/cases?state=FAILED"' in page
+    assert 'href="/cases?state=PLAN_READY&amp;release="' in page and 'href="/cases?state=FAILED&amp;release="' in page
 
 
 def test_a_failed_job_says_why_and_offers_the_fix(tmp_path):
@@ -221,9 +224,9 @@ def test_what_needs_attention_comes_first_with_its_action(tmp_path, monkeypatch)
     items = pipeline.attention(_status(failed=8602, releases=(ready, blocked)), jobs, worker_job=None, now=now)
     assert (items[0].kind, items[0].label) == ("blocked", "blocked")  # a wait, not an error: Caution
     assert [(i.label, i.href) for i in items] == [
-        ("blocked", "/releases#cfr-v2-phase-d"),
+        ("blocked", "/system?fill=system.cancel&release=cfr-v2-phase-d#system.cancel"),
         ("failed", "/jobs/20261112-193000-aaaa"),
-        ("failed", "/cases?state=FAILED"),
+        ("failed", "/cases?state=FAILED&release="),
     ]
     assert items[0].text.startswith("12 runs queued under cfr-v2-phase-d can't run: it doesn't match this code")
     assert items[1].text == "Build aaaa failed: StoreMismatchError: built from x"
@@ -239,13 +242,16 @@ def test_what_needs_attention_comes_first_with_its_action(tmp_path, monkeypatch)
 
     _, client = _client(tmp_path, _status(failed=8602, releases=(ready, blocked)), monkeypatch)
     page = client.get("/").text
-    assert "Needs attention" in page and 'href="/releases#cfr-v2-phase-d">See the release' in page
-    assert 'hx-get="/partials/pipeline-status?view=home"' in page and "Updated " in page
+    assert (
+        "Needs attention" in page
+        and 'href="/system?fill=system.cancel&amp;release=cfr-v2-phase-d#system.cancel">Cancel them' in page
+    )
+    assert 'hx-get="/partials/pipeline-status?view=home&amp;scope=all"' in page and "Updated " in page
     partial = client.get("/partials/pipeline-status?view=home").text
     assert "Needs attention" in partial and 'class="line"' in partial
     # System: the queue only, with the failed count (no attention list there)
     system = client.get("/system").text
-    assert "Needs attention" not in system and 'hx-get="/partials/pipeline-status?view=queue"' in system
+    assert "Needs attention" not in system and 'hx-get="/partials/pipeline-status?view=queue&amp;scope=all"' in system
     assert 'class="line"' not in system and "8,602 case runs failed" in system
     assert 'class="line"' not in client.get("/partials/pipeline-status?view=queue").text
 
@@ -271,3 +277,62 @@ def test_the_help_page_covers_the_recurring_tasks_and_the_words(tmp_path, monkey
     ):
         assert f'href="{link}"' in page, link
     assert '<a class="area" href="/help"' in page and 'href="/help#stages"' in client.get("/").text
+
+
+def test_the_pipeline_and_cases_cover_the_current_release_unless_asked_for_all(tmp_path, monkeypatch):
+    """LDR-0029: a fresh start under a new release isn't buried under earlier test runs."""
+    seen = []
+
+    def read(db, resolve, release=None):
+        seen.append(release)
+        return dataclasses.replace(_status(), release=release)
+
+    app = create_app(_settings(tmp_path))
+    monkeypatch.setattr(pipeline, "read_status", read)
+    app.state.db = SimpleNamespace(close=lambda: None)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+
+    home = client.get("/").text
+    assert seen[-1] == "cfr-v2-phase-e"
+    assert 'under <span class="mono">cfr-v2-phase-e</span>' in home and 'href="/?scope=all">All releases' in home
+    assert "scope=current" in home and 'href="/cases?state=PLAN_READY&amp;release=cfr-v2-phase-e"' in home
+    every = client.get("/?scope=all").text
+    assert seen[-1] is None and "across releases" in every and 'href="/">Only cfr-v2-phase-e' in every
+    assert "scope=all" in every and 'href="/cases?state=PLAN_READY&amp;release="' in every
+    client.get("/partials/pipeline-status?scope=all")
+    assert seen[-1] is None
+    client.get("/system")
+    assert seen[-1] == "cfr-v2-phase-e"
+
+    asked = []
+    monkeypatch.setattr(cases_view, "list_cases", lambda db, **kw: asked.append(kw["release"]) or [])
+    page = client.get("/cases").text
+    assert asked[-1] == "cfr-v2-phase-e" and "No case runs under cfr-v2-phase-e yet" in page
+    client.get("/cases?release=")
+    assert asked[-1] == ""  # every release
+    assert "No case runs match" in client.get("/cases?release=cfr-v2-phase-d").text
+    assert asked[-1] == "cfr-v2-phase-d"
+
+
+def test_cancel_queued_runs_is_a_system_form_over_the_release_files(tmp_path):
+    folder = tmp_path / "registry" / "releases"
+    folder.mkdir(parents=True)
+    for name in ("cfr-v2-phase-d", "cfr-v2-phase-e"):
+        (folder / f"{name}.yaml").write_text("release_id: x\n", encoding="utf-8")
+    command = commands.BY_ID["system.cancel"]
+    ctx = commands.Context(root=tmp_path, env={})
+    assert command.area == "system" and command.tags == ("writes the database",)
+    assert command.fields[0].options(ctx) == [
+        ("cfr-v2-phase-d", "cfr-v2-phase-d"),
+        ("cfr-v2-phase-e", "cfr-v2-phase-e"),
+    ]
+    values = command.parse({"release": "cfr-v2-phase-d"}, ctx)
+    assert command.argv(values, tmp_path)[1:] == ["-m", "cfr_v2.runtime.cancel", "--release", "cfr-v2-phase-d"]
+    with pytest.raises(commands.FormError):
+        command.parse({"release": "not-a-release"}, ctx)
+    page = (
+        TestClient(create_app(_settings(tmp_path)), base_url="http://127.0.0.1:8765")
+        .get("/system?fill=system.cancel&release=cfr-v2-phase-d")
+        .text
+    )
+    assert 'id="system.cancel" open' in page and '<option value="cfr-v2-phase-d" selected' in page

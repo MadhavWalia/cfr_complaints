@@ -150,13 +150,18 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         reader = AuthorizationContext(principal="console", purpose="queued releases")
         return lambda ref: load_pinned(ref, store=artifact_store(), db=db, authorization=reader)
 
-    def read_status() -> pipeline.PipelineStatus:
+    def scoped(scope: str | None) -> str | None:
+        """The release a view covers (LDR-0029): the current one, unless ``scope`` is "all" or
+        there is no current release."""
+        return None if scope == "all" else (settings.release_id or None)
+
+    def read_status(release: str | None = None) -> pipeline.PipelineStatus:
         try:
             db = database()
-            return pipeline.read_status(db, resolver(db))
+            return pipeline.read_status(db, resolver(db), release)
         except Exception as exc:  # noqa: BLE001 - the page shows the type; the message can name hosts
             logger.warning("console: state database unavailable: %s", type(exc).__name__)
-            return pipeline.unavailable(type(exc).__name__)
+            return pipeline.unavailable(type(exc).__name__, release)
 
     runner = JobRunner(settings.workspace / "jobs", cwd=settings.repo_root, env=settings.env)
     app.state.runner = runner
@@ -176,9 +181,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         return next((j for j in jobs if j.command == "system.worker" and j.status is JobStatus.RUNNING), None)
 
     @app.get("/", response_class=HTMLResponse)
-    def home(request: Request):
+    def home(request: Request, scope: str = "current"):
         jobs = runner.list()
-        status, worker = read_status(), console_worker(jobs)
+        status, worker = read_status(scoped(scope)), console_worker(jobs)
         return page(
             request,
             "pipeline.html",
@@ -190,10 +195,10 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         )
 
     @app.get("/partials/pipeline-status", response_class=HTMLResponse)
-    def pipeline_status(request: Request, view: str = "home"):
+    def pipeline_status(request: Request, view: str = "home", scope: str = "current"):
         """The panel, refreshed: the home page's (what needs attention, the stage line and the
         queue), or System's (the queue only)."""
-        status = read_status()
+        status = read_status(scoped(scope))
         if view == "queue":
             return page(request, "_pipeline_status.html", status=status, view="queue")
         jobs = runner.list()
@@ -347,6 +352,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         request: Request, state: str | None = None, release: str | None = None, q: str | None = None, offset: int = 0
     ):
         rows, error = [], None
+        current = release is None  # no release asked for: the current one (LDR-0029); "" is every release
+        if current:
+            release = settings.release_id or ""
         try:
             rows = cases.list_cases(database(), state=state, release=release, q=q, offset=offset)
         except Exception as exc:  # noqa: BLE001 - the page says the database is down
@@ -356,6 +364,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             "release": release or None,
             "q": (q or "").strip(),
         }
+        only_current = current and bool(release) and not (filters["state"] or filters["q"] or offset)
         return page(
             request,
             "cases.html",
@@ -367,6 +376,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             filters=filters,
             states=[(s, cases.STATE_LABELS[s]) for s in cases.STATES],
             releases=[path.stem for path in sorted((settings.repo_root / "registry" / "releases").glob("*.yaml"))],
+            only_current=only_current,
             error=error,
         )
 
@@ -545,7 +555,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             source=source,
             ctx=form_context,
             recent=listed(area=area),
-            status=read_status() if area == "system" else None,  # the queue, before starting a worker
+            status=read_status(scoped(None)) if area == "system" else None,  # the queue, before starting a worker
             view="queue",
             environment=environment() if area == "system" else None,
             **extra,
