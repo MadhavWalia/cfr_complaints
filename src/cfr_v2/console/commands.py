@@ -833,12 +833,23 @@ CATALOGUE: tuple[Command, ...] = (
         area="procedures",
         title="Build the LightRAG store",
         effect="Builds the graph and vectors from a snapshot's current procedures: about three gpt-5 calls per "
-        "passage, hours for a full set. It resumes: passages already in the store are skipped.",
+        "passage, hours for a full set. It resumes: passages already in the store are skipped. Stop saves the "
+        "batch in progress before ending.",
         module="cfr_v2.procedures",
         fields=(
             Field("procedures", "Snapshot", "ref", required=True, default=_latest_snapshot, choices=known_snapshots),
             _store_field(STORE_HELP + " Created if missing."),
             Field("concurrency", "Passages at once", "int", required=True, default=16, minimum=1, maximum=64),
+            Field(
+                "save_every",
+                "Save every … passages",
+                "int",
+                default=64,
+                minimum=1,
+                maximum=1024,
+                help="Each save rewrites the whole store, over a gigabyte late in a build. Fewer saves use far less "
+                "disk; a crash redoes the passages since the last one. 1 saves after each passage.",
+            ),
         ),
         check=_store_check(build=True),
         args=lambda v, folder: [
@@ -847,6 +858,7 @@ CATALOGUE: tuple[Command, ...] = (
             *_store_args(v),
             "--concurrency",
             str(v["concurrency"]),
+            *(["--save-every", str(v["save_every"])] if v.get("save_every") else []),
         ],
         job_title=lambda v: f"LightRAG build · {v['procedures'][:19]}…",
         summarize=_printed(r"^(\d+ of \d+ passages in the graph; \d+ failed)"),

@@ -11,8 +11,10 @@ rebuild is the only update, and a generation artifact comes later.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
@@ -55,6 +57,12 @@ EMBEDDING_BATCH = 64  # as the embedding client's. LightRAG's 10 means several c
 INSERT_BATCH = 32  # two rounds at the default concurrency; a batch ends with its slowest passage
 BUILD_PASSES = 3  # failed passages get this many tries in one build; their extraction is cached
 STUCK_BATCHES = 3  # this many batches in a row adding nothing means something is down: stop spending
+# A save rewrites every store in full: late in a large build, about 1.3 GB a time. Saving after each
+# batch's worth instead of after each passage cuts that by the batch's size (LDR-0030).
+SAVE_EVERY = 64  # passages between saves; a crash or a Force stop redoes at most these. 1: after each
+SAVE_TRIES = 3  # a save makes the vector stores' embedding calls, so it can fail like any call
+SAVE_BACKOFF_SEC = 30.0  # first wait between tries; doubles
+VECTOR_STORES = ("entities_vdb", "relationships_vdb", "chunks_vdb")
 CHUNKS = 50  # chunks LightRAG returns per search, before the per-document cap and the limit
 DEFAULT_INSTRUCTIONS = "Follow the instructions in the message."
 # LightRAG errors known to carry only ids, counts and storage names. Others can quote a model's
@@ -238,6 +246,146 @@ def _trace_flushes(rag: Any) -> None:
     rag._insert_done = traced
 
 
+class SaveError(RuntimeError):
+    """A held batch couldn't be saved. Nothing of it was written: the store is as at its last save."""
+
+
+class BatchedSaves:
+    """Save the store once per batch's worth of passages instead of once per passage (LDR-0030).
+
+    LightRAG 1.5 saves every store in full after each passage (``_insert_done``), and the doc-status
+    store saves itself on each status change. With JSON stores, each save rewrites files that reach
+    a gigabyte; a scanner that holds every deleted copy open fills the disk.
+
+    While holding, every store's ``index_done_callback`` is a no-op, whoever calls it: the commits,
+    LightRAG's own write-ahead saves, and the status store. ``save`` then writes the vector stores
+    first (they make the embedding calls, so they can fail; tried ``SAVE_TRIES`` times), and the other
+    stores, the document statuses among them, only once they succeed. So the disk only ever holds
+    whole save points: a passage on disk as PROCESSED always has its vectors, and a passage whose
+    batch wasn't saved is simply not there, and is inserted again on resume.
+
+    If LightRAG discards its pending buffers while holding (an internal abort), what was held may
+    no longer be whole: the batch is ``tainted`` and never saved.
+    """
+
+    def __init__(self, rag: Any, every: int = SAVE_EVERY) -> None:
+        self.rag, self.every = rag, max(1, every)
+        self.holding = False
+        self.pending = 0  # passages inserted since the last save
+        self.tainted = False
+        self.failed = False
+        self._stores: list[tuple[str, Any, Any]] = []  # (attribute, store, its own callback)
+        if self.every == 1:
+            return  # LightRAG's own saving, unchanged
+        named = {id(getattr(rag, name, None)): name for name in vars(rag) if not name.startswith("_")}
+        for store in rag._index_storages():
+            real = store.index_done_callback
+            store.index_done_callback = self._held(real)
+            self._stores.append((named.get(id(store), type(store).__name__), store, real))
+        commit, discard = rag._insert_done, rag._discard_pending_index_ops
+
+        async def insert_done(*args: Any, **kwargs: Any) -> None:
+            if not self.holding:  # outside a batch (clearing failed passages, draining): as before
+                await commit(*args, **kwargs)
+
+        async def discard_pending(*args: Any, **kwargs: Any) -> None:
+            if self.holding:
+                self.tainted = True
+            await discard(*args, **kwargs)
+
+        rag._insert_done, rag._discard_pending_index_ops = insert_done, discard_pending
+
+    @property
+    def batched(self) -> bool:
+        return bool(self._stores)
+
+    def _held(self, real: Any) -> Any:
+        async def callback(*args: Any, **kwargs: Any) -> Any:
+            if self.holding:
+                return None
+            return await real(*args, **kwargs)
+
+        return callback
+
+    def hold(self) -> None:
+        if self.batched:
+            self.holding = True
+
+    def inserted(self, passages: int) -> bool:
+        """Count passages inserted while holding; True when a save is due."""
+        self.pending += passages
+        return self.pending >= self.every
+
+    async def save(self) -> None:
+        """Write what's held: vector stores first, the rest only if they succeed."""
+        if not self.batched or not self.holding:
+            self.pending = 0
+            return
+        if self.tainted:
+            raise SaveError("LightRAG discarded pending writes during the batch; it was not saved")
+        started, outcome = time.monotonic(), "failed"
+        vectors = [real for name, _, real in self._stores if name in VECTOR_STORES]
+        others = [real for name, _, real in self._stores if name not in VECTOR_STORES]
+        with span("procedures.lightrag.flush", passages=self.pending) as save_span:
+            try:
+                wait = SAVE_BACKOFF_SEC
+                for attempt in range(1, SAVE_TRIES + 1):
+                    errors = [e for e in await asyncio.gather(*(f() for f in vectors), return_exceptions=True) if e]
+                    if not [e for e in errors if isinstance(e, BaseException)]:
+                        break
+                    first = next(e for e in errors if isinstance(e, BaseException))
+                    if isinstance(first, asyncio.CancelledError):
+                        raise first
+                    if attempt == SAVE_TRIES:
+                        self.failed = True
+                        raise SaveError(
+                            f"the vector stores couldn't be saved after {SAVE_TRIES} tries "
+                            f"({type(first).__name__}); nothing since the last save was written"
+                        ) from first
+                    logger.warning(
+                        "lightrag: saving the vectors failed (%s), try %d of %d; again in %.0fs",
+                        type(first).__name__,
+                        attempt,
+                        SAVE_TRIES,
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
+                    wait *= 2
+                errors = [e for e in await asyncio.gather(*(f() for f in others), return_exceptions=True) if e]
+                failures = [e for e in errors if isinstance(e, BaseException)]
+                if failures:
+                    self.failed = True
+                    raise SaveError(f"a store couldn't be saved ({type(failures[0]).__name__})") from failures[0]
+                outcome = "ok"
+            finally:
+                set_attributes(save_span, outcome=outcome)
+                record_stage("flush", time.monotonic() - started, outcome)
+        logger.info(
+            "lightrag: saved the store: %d passages since the last save, in %.0fs",
+            self.pending,
+            time.monotonic() - started,
+        )
+        self.pending, self.holding = 0, False
+
+    async def close(self) -> None:
+        """Save what's pending, unless it can't be trusted; then hand saving back to LightRAG."""
+        try:
+            if self.holding and not (self.tainted or self.failed):
+                try:
+                    await self.save()
+                except Exception as exc:  # noqa: BLE001 - the error that ended the build matters more
+                    logger.error("lightrag: the last batch wasn't saved: %s", exc)
+            elif self.holding:
+                logger.warning(
+                    "lightrag: the last batch wasn't saved (%s): the next run redoes it",
+                    "pending writes were discarded" if self.tainted else "its save failed",
+                )
+        finally:
+            self.holding = False
+            for _, store, real in self._stores:
+                store.index_done_callback = real
+
+
 def _import_lightrag() -> Any:
     """LightRAG's class, imported without its side effect on logging. nano-vectordb, which LightRAG
     loads, calls ``logging.basicConfig(level=INFO)`` on import: on a root logger without handlers that
@@ -324,7 +472,8 @@ class LightRagBuild:
     blocked_calls: int
     blocked_embeddings: int = 0
     duplicates: int = 0
-    stopped: bool = False
+    stopped: bool = False  # batches in a row added nothing
+    asked_to_stop: bool = False  # stopped as asked, after saving the batch in progress
 
 
 @dataclass
@@ -394,8 +543,16 @@ async def _clear_failed(rag: Any) -> int:
     return cleared
 
 
-async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, number: int) -> bool:
-    """Insert what isn't in the graph yet. False if it stopped early.
+async def _insert_pass(
+    rag: Any,
+    passages: Sequence[Passage],
+    llm: GatewayLlm,
+    number: int,
+    saves: BatchedSaves,
+    stop: threading.Event | None = None,
+) -> str | None:
+    """Insert what isn't in the graph yet. None when the pass ran through; else why it stopped early
+    ("stuck", or "asked" when ``stop`` was set: after saving the batch in progress).
 
     ``ainsert`` returns normally even when the pipeline halts, so only the stored statuses say what
     happened. Passages a halt left queued are processed first, and never inserted again.
@@ -439,7 +596,11 @@ async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, n
         with span(
             "procedures.lightrag.batch", new_trace=True, pass_no=number, batch_no=batch_no, passages=len(batch)
         ) as batch_span:
+            saves.hold()
             await rag.ainsert([p.text for p in batch], ids=batch_ids, file_paths=batch_ids)
+            asked = stop is not None and stop.is_set()
+            if saves.inserted(len(batch)) or batch_no == batches or asked:
+                await saves.save()  # inside the batch's trace
             before, state = state, await _progress(rag, ids)
             set_attributes(
                 batch_span,
@@ -482,16 +643,20 @@ async def _insert_pass(rag: Any, passages: Sequence[Passage], llm: GatewayLlm, n
                 state.queued,
                 _sample(lost),
             )
+        if asked:
+            logger.warning("lightrag: stopping as asked, with the batch in progress saved. Run this again to resume")
+            return "asked"
         stuck = 0 if state.processed > before.processed else stuck + 1
         if stuck == STUCK_BATCHES:
+            await saves.save()
             logger.error(
                 "lightrag: stopping: %d batches in a row added nothing (%s). Check the gateway, then run "
                 "this again to resume",
                 stuck,
                 _reasons(state.failed) or "no failures recorded",
             )
-            return False
-    return True
+            return "stuck"
+    return None
 
 
 async def build_lightrag(
@@ -502,9 +667,15 @@ async def build_lightrag(
     *,
     concurrency: int = 16,
     procedures_ref: str | None = None,
+    save_every: int = SAVE_EVERY,
+    stop: threading.Event | None = None,
 ) -> LightRagBuild:
     """Passages already processed are skipped, so an interrupted build can resume. Failed ones are
     tried again, up to ``BUILD_PASSES`` times, and whatever still fails is reported.
+
+    The store is saved every ``save_every`` passages, at the end of a batch (``BatchedSaves``); 1 saves
+    after each passage, as LightRAG does by itself. ``stop``, set from another thread, ends the build
+    after the batch in progress is saved.
 
     Identical passages go in once: LightRAG would fail the second as a duplicate on every try.
     With ``procedures_ref``, the store records the snapshot it was built from, and a store already
@@ -523,15 +694,25 @@ async def build_lightrag(
         logger.warning(
             "lightrag: %d passage(s) repeat another's text and go in once: %s", len(skipped), _sample(skipped)
         )
-    logger.info("lightrag: %d passages to index at concurrency %d", len(distinct), concurrency)
+    logger.info(
+        "lightrag: %d passages to index at concurrency %d, saving every %d",
+        len(distinct),
+        concurrency,
+        save_every,
+    )
     started = time.monotonic()
     llm = GatewayLlm(client)
+    ended: str | None = None
     async with open_rag(workdir, embedder, llm, concurrency=concurrency) as rag:
-        for number in range(1, BUILD_PASSES + 1):
-            stopped = not await _insert_pass(rag, distinct, llm, number)
-            state = await _progress(rag, ids)
-            if stopped or state.processed == len(distinct):
-                break
+        saves = BatchedSaves(rag, save_every)
+        try:
+            for number in range(1, BUILD_PASSES + 1):
+                ended = await _insert_pass(rag, distinct, llm, number, saves, stop)
+                state = await _progress(rag, ids)
+                if ended or state.processed == len(distinct):
+                    break
+        finally:
+            await saves.close()
     missing = len(distinct) - state.processed
     logger.log(
         logging.WARNING if missing else logging.INFO,
@@ -556,7 +737,8 @@ async def build_lightrag(
         llm.blocked,
         llm.blocked_embeddings,
         len(passages) - len(distinct),
-        stopped,
+        ended == "stuck",
+        ended == "asked",
     )
     if procedures_ref is not None:
         _write_store_marker(workdir, procedures_ref, build)

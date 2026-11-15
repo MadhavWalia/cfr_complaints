@@ -24,6 +24,14 @@ from cfr_v2.procedures.search import Passage
 REF = "sha256:" + "0" * 64
 
 
+@pytest.fixture(autouse=True)
+def _no_save_backoff(monkeypatch):
+    """A failed save waits before trying again; not in tests."""
+    from cfr_v2.procedures import lightrag_engine
+
+    monkeypatch.setattr(lightrag_engine, "SAVE_BACKOFF_SEC", 0.0)
+
+
 def test_the_llm_adapter_sends_redacted_turns_and_survives_a_block():
     client = FakeModelClient(responder=lambda request: {"text": "ok"})
     llm = GatewayLlm(client)
@@ -165,6 +173,7 @@ def test_a_failed_vector_flush_is_retried_and_logged_within_the_build(tmp_path, 
             FlakyEmbeddings(failures=2),
             FakeModelClient(responder=_extraction),
             concurrency=2,
+            save_every=1,  # LightRAG's own flush after each passage, and its own recovery
         )
     )
     assert (build.processed, build.failed, build.stopped) == (3, 0, False)
@@ -187,7 +196,9 @@ def test_a_build_stops_when_nothing_gets_through(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(lightrag_engine, "STUCK_BATCHES", 2)
     client, passages = FakeModelClient(responder=_extraction), _passages()
     build = asyncio.run(
-        lightrag_engine.build_lightrag(tmp_path, passages, FlakyEmbeddings(failures=10**6), client, concurrency=2)
+        lightrag_engine.build_lightrag(
+            tmp_path, passages, FlakyEmbeddings(failures=10**6), client, concurrency=2, save_every=1
+        )
     )
     assert build.stopped and build.processed == 0
     assert re.search(r"stopping: 2 batches in a row added nothing \((halted|timeout) \d", caplog.text)
@@ -364,7 +375,9 @@ def test_each_batch_is_a_trace_holding_its_flushes(tmp_path, monkeypatch, spans,
 
     monkeypatch.setattr(lightrag_engine, "INSERT_BATCH", 2)
     client = FakeModelClient(responder=_extraction)
-    asyncio.run(lightrag_engine.build_lightrag(tmp_path, _copies(4), FakeEmbeddingClient(), client, concurrency=2))
+    asyncio.run(
+        lightrag_engine.build_lightrag(tmp_path, _copies(4), FakeEmbeddingClient(), client, concurrency=2, save_every=2)
+    )
     found = spans.get_finished_spans()
     batches = [s for s in found if s.name == "procedures.lightrag.batch"]
     flushes = [s for s in found if s.name == "procedures.lightrag.flush"]
@@ -492,3 +505,205 @@ def test_importing_lightrag_leaves_logging_as_it_was():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert out.split() == ["0", str(logging.WARNING)]
+
+
+# --- saving once per batch's worth of passages (LDR-0030) --------------------------------------
+
+
+def _count_saves(monkeypatch):
+    """Writes that reach disk, by store namespace: vectors and document statuses."""
+    from collections import Counter
+
+    from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
+    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
+
+    saves = Counter()
+    for cls in (NanoVectorDBStorage, JsonDocStatusStorage):
+        real = cls.index_done_callback
+
+        async def counted(self, *args, _real=real, **kwargs):
+            saves[self.namespace] += 1
+            return await _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(cls, "index_done_callback", counted)
+    return saves
+
+
+def _saved(saves, word):
+    return sum(n for namespace, n in saves.items() if word in namespace)
+
+
+def test_a_build_saves_once_per_batch_worth_not_after_each_passage(tmp_path, monkeypatch):
+    pytest.importorskip("lightrag")
+    from lightrag.kg import shared_storage
+
+    from cfr_v2.procedures import lightrag_engine
+
+    monkeypatch.setattr(lightrag_engine, "INSERT_BATCH", 2)
+    client, saves, results = FakeModelClient(responder=_extraction), _count_saves(monkeypatch), {}
+    for every in (1, 4):
+        saves.clear()
+        build = asyncio.run(
+            lightrag_engine.build_lightrag(
+                tmp_path / str(every), _copies(6), FakeEmbeddingClient(), client, concurrency=2, save_every=every
+            )
+        )
+        rows = json.loads((tmp_path / str(every) / "kv_store_doc_status.json").read_text())
+        results[every] = (build.processed, build.failed, sorted(r["status"] for r in rows.values()))
+        results[every, "saves"] = (_saved(saves, "relationships"), _saved(saves, "doc_status"))
+        shared_storage.finalize_share_data()  # LightRAG's stores are process-wide: a second build starts clean
+    assert results[1] == results[4] == (6, 0, ["processed"] * 6)
+    vectors, statuses = results[1, "saves"]
+    assert vectors >= 6 and statuses >= 6 * 3  # LightRAG's own: per passage, and per status change
+    assert results[4, "saves"] == (2, 2)  # after batch 2 (4 passages) and batch 3 (the last), nothing else
+
+
+def test_statuses_never_reach_disk_ahead_of_their_vectors(tmp_path, caplog):
+    """The vectors are saved first; when they can't be, nothing of the batch is written, and a
+    resume does it again."""
+    pytest.importorskip("lightrag")
+    from cfr_v2.procedures import lightrag_engine
+
+    client, passages = FakeModelClient(responder=_extraction), _passages()
+    with pytest.raises(lightrag_engine.SaveError, match="couldn't be saved after 3 tries"):
+        asyncio.run(
+            lightrag_engine.build_lightrag(tmp_path, passages, FlakyEmbeddings(failures=10**6), client, concurrency=2)
+        )
+    status_file = tmp_path / "kv_store_doc_status.json"
+    on_disk = json.loads(status_file.read_text()) if status_file.exists() else {}
+    assert not [r for r in on_disk.values() if r["status"] == "processed"]
+    assert "the last batch wasn't saved (its save failed)" in caplog.text
+    resumed = asyncio.run(
+        lightrag_engine.build_lightrag(tmp_path, passages, FakeEmbeddingClient(), client, concurrency=2)
+    )
+    assert (resumed.processed, resumed.failed, resumed.stopped) == (3, 0, False)
+
+
+def test_a_stop_saves_the_batch_in_progress_then_ends(tmp_path, monkeypatch, caplog):
+    pytest.importorskip("lightrag")
+    import threading
+
+    from cfr_v2.procedures import lightrag_engine
+
+    monkeypatch.setattr(lightrag_engine, "INSERT_BATCH", 2)
+    client, stop = FakeModelClient(responder=_extraction), threading.Event()
+    stop.set()  # asked before the first batch ends: that batch is finished and saved
+    build = asyncio.run(
+        lightrag_engine.build_lightrag(tmp_path, _copies(6), FakeEmbeddingClient(), client, concurrency=2, stop=stop)
+    )
+    assert (build.processed, build.asked_to_stop, build.stopped) == (2, True, False)
+    rows = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    assert sorted(r["status"] for r in rows.values()) == ["processed", "processed"]
+    assert "stopping as asked, with the batch in progress saved" in caplog.text
+    resumed = asyncio.run(
+        lightrag_engine.build_lightrag(tmp_path, _copies(6), FakeEmbeddingClient(), client, concurrency=2)
+    )
+    assert (resumed.processed, resumed.asked_to_stop) == (6, False)
+
+
+class _Store:
+    def __init__(self, log, name, fails=0):
+        self.log, self.name, self.fails = log, name, fails
+
+    async def index_done_callback(self):
+        if self.fails:
+            self.fails -= 1
+            raise TimeoutError("embedding timed out")
+        self.log.append(self.name)
+
+
+def _fake_rag(log, vector_fails=0):
+    from types import SimpleNamespace
+
+    rag = SimpleNamespace(
+        entities_vdb=_Store(log, "entities_vdb", vector_fails),
+        relationships_vdb=_Store(log, "relationships_vdb"),
+        chunks_vdb=_Store(log, "chunks_vdb"),
+        doc_status=_Store(log, "doc_status"),
+        chunk_entity_relation_graph=_Store(log, "graph"),
+    )
+    stores = [rag.doc_status, rag.chunk_entity_relation_graph, rag.entities_vdb, rag.relationships_vdb, rag.chunks_vdb]
+    rag._index_storages = lambda: stores
+
+    async def insert_done():
+        for store in stores:
+            await store.index_done_callback()
+
+    async def discard(*args, **kwargs):
+        log.append("discarded")
+
+    rag._insert_done, rag._discard_pending_index_ops = insert_done, discard
+    return rag
+
+
+def test_held_saves_write_the_vectors_first_and_the_rest_only_after():
+    from cfr_v2.procedures.lightrag_engine import BatchedSaves
+
+    log = []
+    rag = _fake_rag(log, vector_fails=1)
+    saves = BatchedSaves(rag, every=4)
+
+    async def run():
+        saves.hold()
+        await rag._insert_done()  # a passage's commit: held
+        await rag.doc_status.index_done_callback()  # the status store saving itself: held
+        assert log == [] and not saves.inserted(2) and saves.inserted(2)
+        await saves.save()
+
+    asyncio.run(run())
+    vectors = {"entities_vdb", "relationships_vdb", "chunks_vdb"}
+    assert set(log[:2]) <= vectors and "entities_vdb" not in log[:2]  # the first try: entities failed
+    first_other = min(log.index("doc_status"), log.index("graph"))
+    assert vectors <= set(log[:first_other])  # every vector store saved before any other store
+    assert saves.pending == 0 and not saves.holding
+
+
+def test_a_batch_whose_pending_writes_were_discarded_is_never_saved():
+    from cfr_v2.procedures.lightrag_engine import BatchedSaves, SaveError
+
+    log = []
+    rag = _fake_rag(log)
+    saves = BatchedSaves(rag, every=4)
+
+    async def run():
+        saves.hold()
+        await rag._discard_pending_index_ops()
+        with pytest.raises(SaveError, match="discarded pending writes"):
+            await saves.save()
+        await saves.close()
+        await rag.doc_status.index_done_callback()  # after close: LightRAG saves for itself again
+
+    asyncio.run(run())
+    assert log == ["discarded", "doc_status"]
+
+
+def test_vectors_that_cant_be_saved_stop_the_build_without_writing_anything_else():
+    from cfr_v2.procedures import lightrag_engine
+    from cfr_v2.procedures.lightrag_engine import BatchedSaves, SaveError
+
+    log = []
+    rag = _fake_rag(log, vector_fails=lightrag_engine.SAVE_TRIES)
+    saves = BatchedSaves(rag, every=1_000)
+
+    async def run():
+        saves.hold()
+        with pytest.raises(SaveError, match=f"after {lightrag_engine.SAVE_TRIES} tries"):
+            await saves.save()
+        await saves.close()  # no second try at a failed save
+
+    asyncio.run(run())
+    assert "doc_status" not in log and "graph" not in log
+    assert set(log) == {"relationships_vdb", "chunks_vdb"}  # each try wrote the others; entities never
+
+
+def test_saving_after_each_passage_leaves_lightrag_alone():
+    from cfr_v2.procedures.lightrag_engine import BatchedSaves
+
+    log = []
+    rag = _fake_rag(log)
+    insert_done = rag._insert_done
+    saves = BatchedSaves(rag, every=1)
+    saves.hold()
+    assert not saves.batched and not saves.holding and rag._insert_done is insert_done
+    asyncio.run(rag._insert_done())
+    assert len(log) == 5
