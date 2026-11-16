@@ -13,7 +13,10 @@ and flags only, never document text, so they can be shared. ``extract`` is a tri
 nothing, and ``--out`` writes the redacted text for reading locally. **Those files are document
 text: keep them local.** ``snapshot`` stores the originals and the redacted sections.
 ``lightrag-build`` builds the LightRAG graph and vectors from the snapshot's current procedures:
-about three gpt-5 calls per passage, and it can resume. Each snapshot gets its own store,
+about three gpt-5 calls per passage, and it can resume. It saves the store every 64 passages
+(``--save-every``): a save rewrites files of a gigabyte or more, so saving after every passage fills
+a disk whose scanner keeps the old copies open (LDR-0030). Stop (SIGTERM, Ctrl+C) saves the batch in
+progress before ending; a crash redoes the passages since the last save. Each snapshot gets its own store,
 ``lightrag_store_<first 12 of its hash>`` (``stores.py``), where the worker looks for it;
 ``--workdir`` puts it elsewhere. A ref from the ``index`` command this replaced also works.
 ``search`` is for trying queries against that store: **it prints section
@@ -24,7 +27,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
+import threading
 from pathlib import Path
 
 from cfr_v2.contracts import ProcedureDocument, ProcedureStatus
@@ -334,12 +339,27 @@ def _chat_client():
 def run_lightrag_build(args: argparse.Namespace) -> int:
     from cfr_v2.llm import model_loop
 
-    from .lightrag_engine import StoreMismatchError, build_lightrag
+    from .lightrag_engine import SAVE_EVERY, SaveError, StoreMismatchError, build_lightrag
     from .search import corpus_passages
 
+    save_every = args.save_every or SAVE_EVERY
+    if save_every < 1:
+        print("error: --save-every: at least 1", file=sys.stderr)
+        return 2
     workdir = args.workdir or store_dir(args.procedures)
     print(f"store: {workdir}")
     passages = corpus_passages(_store(), args.procedures)
+    stop = threading.Event()
+
+    def ask_to_stop(signum: int, _frame: object) -> None:
+        """Stop (SIGTERM) or Ctrl+C: finish and save the batch in progress. A second one: now."""
+        if stop.is_set():
+            raise SystemExit(128 + signum)
+        stop.set()
+        print("stopping: the batch in progress is saved first. Stop again to end now, losing it", flush=True)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, ask_to_stop)
     try:
         build = model_loop().run(
             build_lightrag(
@@ -349,11 +369,16 @@ def run_lightrag_build(args: argparse.Namespace) -> int:
                 _chat_client(),
                 concurrency=args.concurrency,
                 procedures_ref=args.procedures,
+                save_every=save_every,
+                stop=stop,
             )
         )
     except StoreMismatchError as exc:
         print(f"error: {exc}{'' if args.workdir else override_hint(args.procedures)}", file=sys.stderr)
         return 2
+    except SaveError as exc:
+        print(f"error: {exc}. Run this again to resume from the last save", file=sys.stderr)
+        return 1
     print(f"{build.processed} of {build.passages} passages in the graph; {build.failed} failed")
     print(
         f"model calls this run: {build.model_calls}; blocked by the gateway: "
@@ -363,6 +388,9 @@ def run_lightrag_build(args: argparse.Namespace) -> int:
         print(f"{build.duplicates} passages with identical text went in once")
     if build.stopped:
         print("stopped early: batches in a row added nothing. Check the gateway, then run this again to resume")
+    if build.asked_to_stop:
+        print("stopped as asked, with the batch in progress saved. Run this again to resume")
+        return 0
     return 1 if build.failed or build.processed < build.passages else 0
 
 
@@ -384,6 +412,13 @@ def main(argv: list[str] | None = None) -> int:
     step.add_argument("procedures", help="snapshot ref (or a ref from the old index command)")
     step.add_argument("--workdir", type=Path, help="the LightRAG store (default: the snapshot's own folder)")
     step.add_argument("--concurrency", type=int, default=16, help="passages processed at once (default 16)")
+    step.add_argument(
+        "--save-every",
+        type=int,
+        default=None,
+        metavar="N",
+        help="save the store every N passages, at the end of a batch (default 64); 1 saves after each one",
+    )
     step = sub.add_parser("search", help="try a query against a LightRAG store")
     step.add_argument("procedures", help="the ref the store was built from: snapshot, or old index")
     step.add_argument("query")

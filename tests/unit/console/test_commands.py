@@ -113,7 +113,17 @@ def test_procedures_commands_take_paths_and_default_to_the_store(ctx, tmp_path):
         "snapshot", pdfs, "--previous", "sha256:old",
     ]  # fmt: skip
     # a build defaults to the newest snapshot made here, into that snapshot's own folder
-    assert _args("procedures.build", {}, ctx, tmp_path) == ["lightrag-build", "sha256:new", "--concurrency", "16"]
+    assert _args("procedures.build", {}, ctx, tmp_path) == [
+        "lightrag-build",
+        "sha256:new",
+        "--concurrency",
+        "16",
+        "--save-every",
+        "64",
+    ]
+    # an older job's form, run again, has no save_every: left empty, it takes the default
+    assert _args("procedures.build", {"save_every": ""}, ctx, tmp_path)[-2:] == ["--save-every", "64"]
+    assert _args("procedures.build", {"save_every": "1"}, ctx, tmp_path)[-2:] == ["--save-every", "1"]
     assert _args("procedures.build", {"procedures": "sha256:built"}, ctx, tmp_path)[1] == "sha256:built"  # resumes
     with pytest.raises(FormError, match="store was built from sha256:built…, and a store holds one snapshot. Leave"):
         BY_ID["procedures.build"].parse({"workdir": store}, ctx)
