@@ -182,3 +182,16 @@ def test_a_call_span_says_how_long_it_queued(spans):
     asyncio.run(client.embed(["a"], purpose="p", redacted=True))
     (call,) = [s for s in spans.get_finished_spans() if s.name == "llm.call"]
     assert call.attributes["cfr.queue_wait_sec"] >= 0
+
+
+def test_embedding_attempts_are_counted_by_purpose_and_outcome(metric_points):
+    purpose = "test.embed_call_metrics"  # cumulative over the session: a label no other test uses
+    model = FakeEmbeddings(HttpError(503))
+    client, _ = _client(model)
+    asyncio.run(client.embed(["a"], purpose=purpose, redacted=True))
+    calls = {
+        dict(a)["outcome"]: v
+        for a, v in metric_points()["cfr.llm.calls"]
+        if dict(a)["program"] == purpose and dict(a)["kind"] == "embedding"
+    }
+    assert calls == {"transient": 1, "ok": 1}

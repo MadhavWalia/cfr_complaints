@@ -1,0 +1,1024 @@
+{
+  "uid": "cfr-pipeline",
+  "title": "CFR pipeline",
+  "tags": [
+    "cfr"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "CFR LightRAG build",
+      "type": "link",
+      "url": "/d/cfr-overview",
+      "icon": "dashboard"
+    }
+  ],
+  "description": "Case runs through C02, C03, C04 and C05: progress, stages, model calls and cost, routing, workers (LDR-0031).",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Progress",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "title": "Queued",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max({__name__=~\"cfr_queue_depth\", status=\"queued\"})",
+          "legendFormat": "__auto",
+          "range": true
+        }
+      ],
+      "description": "Case runs waiting for a worker (cfr.queue.depth). Every process running the runtime reports the same database-wide count, hence max, not sum.",
+      "options": {
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Running",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max({__name__=~\"cfr_queue_depth\", status=\"running\"})",
+          "legendFormat": "__auto",
+          "range": true
+        }
+      ],
+      "description": "Case runs a worker holds right now.",
+      "options": {
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Finished, last hour",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase({__name__=~\"cfr_job_finished(_total)?\", outcome=\"succeeded\"}[1h]))",
+          "legendFormat": "__auto",
+          "range": true
+        }
+      ],
+      "description": "Case runs that reached Plan ready in the last hour (cfr.job.finished, succeeded).",
+      "options": {
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Failed, last hour",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase({__name__=~\"cfr_job_finished(_total)?\", outcome=\"failed\"}[1h]))",
+          "legendFormat": "__auto",
+          "range": true
+        }
+      ],
+      "description": "Case runs that ended Failed in the last hour. The console's Cases page, Stage: Failed, lists them with reasons.",
+      "options": {
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Time left at this pace",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 8,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max({__name__=~\"cfr_queue_depth\", status=\"queued\"}) / clamp_min(sum(rate({__name__=~\"cfr_job_finished(_total)?\", outcome=~\"succeeded|failed\"}[1h])), 1e-9)",
+          "legendFormat": "__auto",
+          "range": true
+        }
+      ],
+      "description": "Queued runs divided by the last hour's finishing rate. Rough: it moves with the gateway's pace.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dtdurations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Case runs finished per hour",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (outcome) (rate({__name__=~\"cfr_job_finished(_total)?\", outcome=~\"succeeded|failed\"}[15m])) * 3600",
+          "legendFormat": "{{outcome}}",
+          "range": true
+        }
+      ],
+      "description": "Succeeded and failed case runs per hour, over 15-minute windows. A drop with a steady queue usually means the gateway slowed down: see Model calls."
+    },
+    {
+      "id": 8,
+      "title": "Queue",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (status) ({__name__=~\"cfr_queue_depth\"})",
+          "legendFormat": "{{status}}",
+          "range": true
+        }
+      ],
+      "description": "Queued and running case runs by status (cfr.queue.depth)."
+    },
+    {
+      "id": 9,
+      "title": "Stages",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 10,
+      "title": "Stage time, p50 and p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, stage) (rate({__name__=~\"cfr_stage_duration(_seconds)?_bucket\"}[15m])))",
+          "legendFormat": "{{stage}} p50",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate({__name__=~\"cfr_stage_duration(_seconds)?_bucket\"}[15m])))",
+          "legendFormat": "{{stage}} p95",
+          "range": true
+        }
+      ],
+      "description": "How long each stage takes per case (cfr.stage.duration): the model calls, plus LightRAG searches for C04. Stages skipped on resume aren't counted.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "Where the time goes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 15,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (stage) (rate({__name__=~\"cfr_stage_duration(_seconds)?_sum\"}[15m])) * 60",
+          "legendFormat": "{{stage}}",
+          "range": true
+        }
+      ],
+      "description": "Seconds of stage work per minute, by stage, across all cases in flight: the stage taking the most is the one to speed up.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Stage outcomes per hour",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (stage, outcome) (rate({__name__=~\"cfr_stage_outcomes(_total)?\", outcome!=\"committed\"}[15m])) * 3600",
+          "legendFormat": "{{stage}} {{outcome}}",
+          "range": true
+        }
+      ],
+      "description": "Stage results other than committed: failed, skipped (done before a resume), duplicate, conflict (cfr.stage.outcomes)."
+    },
+    {
+      "id": 13,
+      "title": "Stages committed, last 24h",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (stage) (increase({__name__=~\"cfr_stage_outcomes(_total)?\", outcome=\"committed\"}[24h]))",
+          "legendFormat": "{{stage}}",
+          "range": true
+        }
+      ],
+      "description": "Results stored per stage in the last day.",
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Model calls (gateway)",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 15,
+      "title": "Calls per minute, by program and outcome",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (program, outcome) (rate({__name__=~\"cfr_llm_calls(_total)?\"}[5m])) * 60",
+          "legendFormat": "{{program}} {{outcome}}",
+          "range": true
+        }
+      ],
+      "description": "Every attempt, chat and embedding, by program (c02.pass1, c02.pass2, c03.primary_selection, c04.routing; procedures.* for LightRAG) and outcome (ok, transient, rate_limited, timeout, model_blocked, ...). From cfr.llm.calls."
+    },
+    {
+      "id": 16,
+      "title": "Call time p95, by program",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 31,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, program) (rate({__name__=~\"cfr_llm_call_duration(_seconds)?_bucket\", outcome=\"ok\"}[15m])))",
+          "legendFormat": "{{program}}",
+          "range": true
+        }
+      ],
+      "description": "95th percentile of successful attempts (cfr.llm.call.duration). Rising latency with flat call counts means a slower gateway.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "title": "Tokens per hour, by program",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (program, direction) (rate({__name__=~\"cfr_llm_tokens(_total)?\", kind=\"chat\"}[15m])) * 3600",
+          "legendFormat": "{{program}} {{direction}}",
+          "range": true
+        }
+      ],
+      "description": "Input and output tokens of chat calls (cfr.llm.tokens): the cost view. Pass 1 sends the whole transcript, so it dominates input."
+    },
+    {
+      "id": 18,
+      "title": "Tokens per finished case, last hour",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 39,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase({__name__=~\"cfr_llm_tokens(_total)?\", kind=\"chat\", direction=\"input\"}[1h])) / clamp_min(sum(increase({__name__=~\"cfr_job_finished(_total)?\", outcome=~\"succeeded|failed\"}[1h])), 1)",
+          "legendFormat": "input",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase({__name__=~\"cfr_llm_tokens(_total)?\", kind=\"chat\", direction=\"output\"}[1h])) / clamp_min(sum(increase({__name__=~\"cfr_job_finished(_total)?\", outcome=~\"succeeded|failed\"}[1h])), 1)",
+          "legendFormat": "output",
+          "range": true
+        }
+      ],
+      "description": "Chat tokens spent in the last hour, divided by case runs finished in it: a cost per case to multiply by the queue.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 19,
+      "title": "Blocked by the gateway, last 24h",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 39,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase({__name__=~\"cfr_llm_calls(_total)?\", outcome=\"model_blocked\"}[24h]))",
+          "legendFormat": "__auto",
+          "range": true
+        }
+      ],
+      "description": "Calls the gateway's content filter blocked. A blocked call doesn't fail the case: the stage records it and carries on.",
+      "options": {
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 20,
+      "title": "Retries (per 5m)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 43,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (stage, outcome, status) (increase({__name__=~\"cfr_llm_retries(_total)?\"}[5m]))",
+          "legendFormat": "{{stage}} {{outcome}} {{status}}",
+          "range": true
+        }
+      ],
+      "description": "Attempts that failed and were tried again, by chat or embedding, failure and HTTP status (cfr.llm.retries). 429s here are the gateway's rate limit."
+    },
+    {
+      "id": 21,
+      "title": "Routing (C04)",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 22,
+      "title": "Claims by vertical, last 24h",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sort_desc(sum by (outcome) (increase({__name__=~\"cfr_routing_decisions(_total)?\"}[24h])))",
+          "legendFormat": "{{outcome}}",
+          "range": true
+        }
+      ],
+      "description": "Where claims were routed: a vertical, or UNMAPPED / NO_ELIGIBLE_VERTICAL (cfr.routing.decisions).",
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 23,
+      "title": "Unrouted share",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (outcome) (rate({__name__=~\"cfr_routing_decisions(_total)?\", outcome=~\"UNMAPPED|NO_ELIGIBLE_VERTICAL\"}[1h])) / ignoring(outcome) group_left clamp_min(sum(rate({__name__=~\"cfr_routing_decisions(_total)?\"}[1h])), 1e-9)",
+          "legendFormat": "{{outcome}}",
+          "range": true
+        }
+      ],
+      "description": "Share of claims the router couldn't place, over 1-hour windows. A jump means a kind of claim the verticals or procedures don't cover.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 24,
+      "title": "Workers",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 57,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 25,
+      "title": "Claims per 5m",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (outcome) (increase({__name__=~\"cfr_job_claims(_total)?\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "range": true
+        }
+      ],
+      "description": "Case runs taken by a worker. reclaimed: taken over after a worker's lease expired, i.e. a worker died or stalled."
+    },
+    {
+      "id": 26,
+      "title": "Requeued after an infrastructure error, per 5m",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 58,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase({__name__=~\"cfr_job_retries(_total)?\"}[5m]))",
+          "legendFormat": "__auto",
+          "range": true
+        }
+      ],
+      "description": "Runs put back on the queue after a database or store error (cfr.job.retries); each retry resumes from its last stage."
+    },
+    {
+      "id": 27,
+      "title": "Wait for a worker, p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 58,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate({__name__=~\"cfr_queue_claim_wait(_seconds)?_bucket\"}[15m])))",
+          "legendFormat": "p95",
+          "range": true
+        }
+      ],
+      "description": "Time a due case run waited before a worker took it. On a long backlog this is large by design.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 28,
+      "title": "Traces: click a trace id to open it",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 65,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 29,
+      "title": "Failed case runs",
+      "type": "table",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 66,
+        "w": 8,
+        "h": 9
+      },
+      "description": "Case-run attempts that ended FAILED. The trace shows each stage and model call.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ name = \"case_run.attempt\" && span.cfr.outcome = \"FAILED\" }",
+          "limit": 30,
+          "tableType": "spans"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Slow case runs (over 10 min)",
+      "type": "table",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 66,
+        "w": 8,
+        "h": 9
+      },
+      "description": "Attempts that took longer than 10 minutes.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ name = \"case_run.attempt\" && duration > 10m }",
+          "limit": 30,
+          "tableType": "spans"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "title": "Failed or slow model calls",
+      "type": "table",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 66,
+        "w": 8,
+        "h": 9
+      },
+      "description": "Model and embedding attempts that failed, or took over 2 minutes.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ name = \"llm.call\" && (span.cfr.outcome != \"ok\" || duration > 2m) }",
+          "limit": 30,
+          "tableType": "spans"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "title": "Logs",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 75,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 33,
+      "title": "Warnings and errors (pipeline)",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 76,
+        "w": 24,
+        "h": 10
+      },
+      "description": "From the worker, intake and console, LightRAG build lines left out (they're on the LightRAG build dashboard).",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{service_name=~\"cfr.*\"} | severity_text=~\"(?i)warn.*|error|critical|fatal\" != \"lightrag: \"",
+          "legendFormat": "",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+      }
+    }
+  ]
+}

@@ -42,7 +42,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from cfr_v2.telemetry import elf_headers, get_logger, record_llm_call, record_retry, set_attributes, span
+from cfr_v2.telemetry import elf_headers, get_logger, model_call, record_llm_call, record_retry, set_attributes, span
 
 from .client import (
     ModelBlockedError,
@@ -306,19 +306,24 @@ class GatewayModelClient:
                     queue_wait_sec=round(queue_wait, 3),
                 ) as call_span,
                 record_llm_call(s.model_id, operation=request.program_id),
+                model_call("chat", request.program_id) as call,
             ):
                 try:
                     response = await asyncio.wait_for(self._invoke(request), timeout)
                 except _InvalidOutput:
-                    set_attributes(call_span, outcome="invalid_output")
+                    call.outcome = "invalid_output"
+                    set_attributes(call_span, outcome=call.outcome)
                     raise
                 except ModelError as exc:
-                    set_attributes(call_span, outcome=exc.error_code.lower())
+                    call.outcome = exc.error_code.lower()
+                    set_attributes(call_span, outcome=call.outcome)
                     raise
                 except Exception as exc:
                     found = classify(exc)
-                    set_attributes(call_span, outcome=found.failure.value, http_status=found.status)
+                    call.outcome = found.failure.value
+                    set_attributes(call_span, outcome=call.outcome, http_status=found.status)
                     raise
+                call.input_tokens, call.output_tokens = response.usage.input_tokens, response.usage.output_tokens
                 set_attributes(
                     call_span,
                     outcome="ok",

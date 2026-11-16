@@ -332,8 +332,15 @@ docker compose --profile observability up -d   # Collector (4318), Tempo, Loki, 
 export CFR_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-Then open Grafana at http://localhost:3000. The **CFR overview** dashboard shows a build's
-progress, time per stage, slow traces and logs. Span attributes are allowlisted
+Then open Grafana at http://localhost:3000. Two dashboards, linked to each other:
+
+- **CFR pipeline**: case runs through the stages. Queue and progress, a rough time left, time per
+  stage, model calls, latency and tokens per program (`cfr.llm.calls`, `cfr.llm.call.duration`,
+  `cfr.llm.tokens`), gateway retries and blocks, claims by vertical, workers, and failed or slow
+  runs and calls in Tempo.
+- **CFR LightRAG build**: a store build's progress, time per stage, slow traces and logs.
+
+Span attributes are allowlisted
 (`src/cfr_v2/telemetry/attributes.py`) and never carry transcript or redaction-map content.
 
 ## Tests

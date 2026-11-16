@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from cfr_v2.telemetry import get_logger, record_llm_call, record_retry, set_attributes, span
+from cfr_v2.telemetry import get_logger, model_call, record_llm_call, record_retry, set_attributes, span
 
 from .client import (
     ModelBlockedError,
@@ -199,18 +199,22 @@ class GatewayEmbeddingClient:
                     queue_wait_sec=round(queue_wait, 3),
                 ) as call_span,
                 record_llm_call(s.model_id, operation=purpose),
+                model_call("embedding", purpose) as call,
             ):
                 try:
                     model = await self._get_model()
                     vectors = await asyncio.wait_for(asyncio.to_thread(model.embed_documents, batch), timeout)
                 except ModelError as exc:
-                    set_attributes(call_span, outcome=exc.error_code.lower())
+                    call.outcome = exc.error_code.lower()
+                    set_attributes(call_span, outcome=call.outcome)
                     raise
                 except Exception as exc:
                     found = classify(exc)
-                    set_attributes(call_span, outcome=found.failure.value, http_status=found.status)
+                    call.outcome = found.failure.value
+                    set_attributes(call_span, outcome=call.outcome, http_status=found.status)
                     raise
                 if len(vectors) != len(batch) or any(len(v) != s.dimensions for v in vectors):
+                    call.outcome = "invalid_output"
                     set_attributes(call_span, outcome="invalid_output")
                     raise ModelOutputInvalidError(f"{purpose}: expected {len(batch)} vectors of {s.dimensions}")
                 set_attributes(call_span, outcome="ok")

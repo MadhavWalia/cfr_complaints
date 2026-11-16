@@ -1,6 +1,6 @@
 {
   "uid": "cfr-overview",
-  "title": "CFR overview",
+  "title": "CFR LightRAG build",
   "tags": [
     "cfr"
   ],
@@ -462,6 +462,14 @@
         "sortOrder": "Descending",
         "enableLogDetails": true
       }
+    }
+  ],
+  "links": [
+    {
+      "title": "CFR pipeline",
+      "type": "link",
+      "url": "/d/cfr-pipeline",
+      "icon": "dashboard"
     }
   ]
 }
