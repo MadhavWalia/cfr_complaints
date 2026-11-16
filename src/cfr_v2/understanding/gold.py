@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from cfr_v2 import xlsx
+
 ALLEGATION_TYPES = {"claim": "CLAIM", "impact": "IMPACT"}
 ABOUT = ("agent", "customer", "system", "third_party", "mixed")
 DETAIL_TYPES = ("when", "amount", "merchant_or_product", "earlier_contact", "other")
@@ -338,10 +340,10 @@ def write_template(case_nos: list[str], path: Path) -> None:
     case_list = f"cases!$A$2:$A${max(len(case_nos), 1) + 1}"
     for name, columns in SHEETS.items():
         sheet = book.create_sheet(name)
-        sheet.append(list(columns))
+        xlsx.append(sheet, list(columns))
         if name == "cases":
             for case_no in case_nos:
-                sheet.append([case_no])
+                xlsx.append(sheet, [case_no])
         for i, column in enumerate(columns):
             letter = chr(ord("A") + i)
             sheet.column_dimensions[letter].width = (

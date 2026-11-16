@@ -125,11 +125,15 @@ def rows_for(db, store, runs: Iterable[tuple[str, str]], report: Export) -> Iter
 
 
 def _text(sheet: Any, value: Any, *, bold: bool = False, wrap: bool = False, fill: str | None = None) -> Any:
-    """A cell that is always text: a claim starting with '=' must not become a formula."""
+    """A cell that is always text: a claim starting with '=' must not become a formula, and control
+    characters a call's text can carry (which Excel can't store; openpyxl refuses the whole cell)
+    are dropped. They print nothing, so the text reads the same."""
     from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Alignment, Font, PatternFill
 
-    cell = WriteOnlyCell(sheet, value=value)
+    from cfr_v2 import xlsx
+
+    cell = WriteOnlyCell(sheet, value=xlsx.clean(value))
     if isinstance(value, str):
         cell.data_type = "s"
     if bold:
