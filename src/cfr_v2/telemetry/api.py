@@ -331,6 +331,21 @@ def model_call(kind: str, program: str):
             pass
 
 
+@functools.cache
+def _concurrency_gauge() -> Any:
+    return get_meter("cfr.llm").create_gauge(
+        "cfr.llm.concurrency_limit", description="Model or embedding calls the rate gate allows at once"
+    )
+
+
+def record_concurrency_limit(kind: str, limit: int) -> None:
+    """The rate gate's current allowance (LDR-0032): it ramps up from the start and halves on a 429."""
+    try:
+        _concurrency_gauge().set(limit, {"kind": kind})
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
+        pass
+
+
 # --- procedure index builds ---------------------------------------------------------
 # Named here rather than taken from ee-logging's instruments, so a dashboard can rely on them.
 

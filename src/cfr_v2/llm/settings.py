@@ -22,8 +22,11 @@ class GatewaySettings:
     max_completion_tokens: int = 32768
     temperature: float = 0.0
 
-    # Admission, shared by every case in the worker process.
+    # Admission, shared by every case in the worker process. The gate starts at
+    # start_concurrency calls at once and doubles per round of successes up to the cap; a 429
+    # halves it (LDR-0032). Starting at the cap sent 32 calls at once and drew a burst of 429s.
     max_concurrency: int = 32
+    start_concurrency: int = 4
     # Optional steady pacing on top of the concurrency cap; None = no pacing.
     requests_per_minute: float | None = None
 
@@ -65,6 +68,7 @@ class GatewaySettings:
             max_completion_tokens=int(env.get("CFR_LLM_MAX_COMPLETION_TOKENS", d.max_completion_tokens)),
             temperature=float(env.get("CFR_LLM_TEMPERATURE", d.temperature)),
             max_concurrency=int(env.get("CFR_LLM_MAX_CONCURRENCY", d.max_concurrency)),
+            start_concurrency=int(env.get("CFR_LLM_START_CONCURRENCY", d.start_concurrency)),
             requests_per_minute=float(rpm) if rpm else None,
             max_attempts=int(env.get("CFR_LLM_MAX_ATTEMPTS", d.max_attempts)),
             backoff_base_sec=float(env.get("CFR_LLM_BACKOFF_BASE_SEC", d.backoff_base_sec)),

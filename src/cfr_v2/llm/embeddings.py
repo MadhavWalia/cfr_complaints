@@ -52,6 +52,7 @@ class EmbeddingSettings:
     dimensions: int = 3072
     batch_size: int = 64  # as V1
     max_concurrency: int = 5  # as V1
+    start_concurrency: int = 2  # ramps up to the cap (LDR-0032)
     max_attempts: int = 5
     backoff_base_sec: float = 2.0
     backoff_max_sec: float = 30.0
@@ -75,6 +76,7 @@ class EmbeddingSettings:
             dimensions=int(env.get("CFR_EMBEDDING_DIMENSIONS", d.dimensions)),
             batch_size=int(env.get("CFR_EMBEDDING_BATCH_SIZE", d.batch_size)),
             max_concurrency=int(env.get("CFR_EMBEDDING_MAX_CONCURRENCY", d.max_concurrency)),
+            start_concurrency=int(env.get("CFR_EMBEDDING_START_CONCURRENCY", d.start_concurrency)),
             attempt_timeout_sec=float(env.get("CFR_EMBEDDING_ATTEMPT_TIMEOUT_SEC", d.attempt_timeout_sec)),
             call_deadline_sec=float(env.get("CFR_EMBEDDING_CALL_DEADLINE_SEC", d.call_deadline_sec)),
         )
@@ -123,7 +125,9 @@ class GatewayEmbeddingClient:
         self.dimensions = s.dimensions
         self.gate = gate or RateGate(
             max_concurrency=s.max_concurrency,
+            start_concurrency=s.start_concurrency,
             requests_per_minute=None,
+            name="embedding",
             cooldown_sec=s.rate_limit_cooldown_sec,
             cooldown_max_sec=s.rate_limit_cooldown_max_sec,
             clock=clock,
@@ -169,7 +173,8 @@ class GatewayEmbeddingClient:
                     failures += 1
                     cap = min(s.backoff_max_sec, s.backoff_base_sec * 2 ** (failures - 1))
                     wait = random.uniform(cap / 2, cap)
-                if failures >= s.max_attempts or self._clock() + wait >= deadline:
+                worst = self.gate.resume_by(wait) if found.failure is Failure.RATE_LIMITED else wait
+                if failures >= s.max_attempts or self._clock() + worst >= deadline:
                     raise _EXHAUSTED.get(found.failure, RetryableModelError)(
                         f"{purpose}: {found.failure.value} after {tries} tries ({detail})", retry_after_sec=wait
                     ) from exc

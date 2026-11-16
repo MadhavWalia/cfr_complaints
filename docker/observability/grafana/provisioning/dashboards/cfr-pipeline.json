@@ -688,19 +688,75 @@
     },
     {
       "id": 21,
+      "title": "Calls allowed at once",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (kind) ({__name__=~\"cfr_llm_concurrency_limit\"})",
+          "legendFormat": "{{kind}}",
+          "range": true
+        }
+      ],
+      "description": "The rate gate's allowance (cfr.llm.concurrency_limit, LDR-0032): it starts low when a worker starts and doubles per round of successes up to the cap (CFR_LLM_MAX_CONCURRENCY); each 429 episode halves it. A sawtooth below the cap means the gateway's limit is lower than the cap."
+    },
+    {
+      "id": 22,
+      "title": "Rate limited (429), per 5m",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 47,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (kind) (increase({__name__=~\"cfr_llm_calls(_total)?\", outcome=\"rate_limited\"}[5m]))",
+          "legendFormat": "{{kind}}",
+          "range": true
+        }
+      ],
+      "description": "Attempts the gateway answered with 429. A worker start should no longer show a burst here; occasional ones as the allowance probes the gateway's limit are expected."
+    },
+    {
+      "id": 23,
       "title": "Routing (C04)",
       "type": "row",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 47,
+        "y": 53,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 22,
+      "id": 24,
       "title": "Claims by vertical, last 24h",
       "type": "bargauge",
       "datasource": {
@@ -709,7 +765,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 54,
         "w": 12,
         "h": 9
       },
@@ -737,7 +793,7 @@
       }
     },
     {
-      "id": 23,
+      "id": 25,
       "title": "Unrouted share",
       "type": "timeseries",
       "datasource": {
@@ -746,7 +802,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 48,
+        "y": 54,
         "w": 12,
         "h": 9
       },
@@ -771,20 +827,20 @@
       }
     },
     {
-      "id": 24,
+      "id": 26,
       "title": "Workers",
       "type": "row",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 57,
+        "y": 63,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 25,
+      "id": 27,
       "title": "Claims per 5m",
       "type": "timeseries",
       "datasource": {
@@ -793,7 +849,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 64,
         "w": 8,
         "h": 7
       },
@@ -812,7 +868,7 @@
       "description": "Case runs taken by a worker. reclaimed: taken over after a worker's lease expired, i.e. a worker died or stalled."
     },
     {
-      "id": 26,
+      "id": 28,
       "title": "Requeued after an infrastructure error, per 5m",
       "type": "timeseries",
       "datasource": {
@@ -821,7 +877,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 58,
+        "y": 64,
         "w": 8,
         "h": 7
       },
@@ -840,7 +896,7 @@
       "description": "Runs put back on the queue after a database or store error (cfr.job.retries); each retry resumes from its last stage."
     },
     {
-      "id": 27,
+      "id": 29,
       "title": "Wait for a worker, p95",
       "type": "timeseries",
       "datasource": {
@@ -849,7 +905,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 58,
+        "y": 64,
         "w": 8,
         "h": 7
       },
@@ -874,20 +930,20 @@
       }
     },
     {
-      "id": 28,
+      "id": 30,
       "title": "Traces: click a trace id to open it",
       "type": "row",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 71,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 29,
+      "id": 31,
       "title": "Failed case runs",
       "type": "table",
       "datasource": {
@@ -896,7 +952,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 72,
         "w": 8,
         "h": 9
       },
@@ -916,7 +972,7 @@
       ]
     },
     {
-      "id": 30,
+      "id": 32,
       "title": "Slow case runs (over 10 min)",
       "type": "table",
       "datasource": {
@@ -925,7 +981,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 66,
+        "y": 72,
         "w": 8,
         "h": 9
       },
@@ -945,7 +1001,7 @@
       ]
     },
     {
-      "id": 31,
+      "id": 33,
       "title": "Failed or slow model calls",
       "type": "table",
       "datasource": {
@@ -954,7 +1010,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 66,
+        "y": 72,
         "w": 8,
         "h": 9
       },
@@ -974,20 +1030,20 @@
       ]
     },
     {
-      "id": 32,
+      "id": 34,
       "title": "Logs",
       "type": "row",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 75,
+        "y": 81,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 33,
+      "id": 35,
       "title": "Warnings and errors (pipeline)",
       "type": "logs",
       "datasource": {
@@ -996,7 +1052,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 76,
+        "y": 82,
         "w": 24,
         "h": 10
       },
