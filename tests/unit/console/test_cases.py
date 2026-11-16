@@ -232,6 +232,33 @@ def test_the_case_page_shows_each_stages_result(client, monkeypatch):
     assert page.count("A late fee was charged although the payment was on time") == 4  # Pass 2, its JSON, C03, C04
 
 
+def test_the_long_parts_of_a_result_are_accordions_closed_by_default(client, monkeypatch):
+    """Pass 1's groups, Pass 2's verification points per claim, and C04's reasoning and sections fold away,
+    leaving the claims and the verticals in view."""
+    import re
+
+    client.app.state.store = InMemoryArtifactStore()
+    serve_fake_case(monkeypatch, fake_case(), withheld="none")
+    page = client.get("/cases/run-1").text
+    folds = re.findall(r'<details class="fold[^"]*"( open)?><summary>(.*?)</summary>', page, flags=re.DOTALL)
+    summaries = [" ".join(re.sub(r"<[^>]+>", " ", text).split()) for _, text in folds]
+    assert summaries == [
+        "Allegations 1",  # Pass 1
+        "Requests 1",
+        "Agent statements 1",
+        "Verification points 1",  # Pass 2, under the claim
+        "Reasoning",  # C04, under the vertical
+        "Sections it relied on 1",
+        "All sections it was shown 1",
+    ]
+    assert not any(opened for opened, _ in folds)  # closed until asked
+    # what stays in view: the claim, its tags, and the vertical with its confidence
+    assert re.search(
+        r"Grounded · account resolved.*?<details class=\"fold\"><summary>Verification points", page, re.DOTALL
+    )
+    assert re.search(r'<span class="vertical">fees_and_interest</span>.*?82%.*?<summary>Reasoning', page, re.DOTALL)
+
+
 def test_a_withheld_result_says_why_and_a_run_without_a_trace_has_no_links(client, monkeypatch):
     client.app.state.store = InMemoryArtifactStore()  # no S3 settings here
     serve_fake_case(monkeypatch, fake_case(traceparent=None), withheld="c02.pass2")
