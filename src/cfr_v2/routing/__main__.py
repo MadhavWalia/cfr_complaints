@@ -27,6 +27,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cfr_v2 import xlsx
 from cfr_v2.contracts import ClaimRouting, ClaimRoutingOutcome
 from cfr_v2.llm import ModelError, ModelRequest, ModelResponse
 from cfr_v2.procedures.stores import store_dir
@@ -203,17 +204,18 @@ def write_workbook(results: Sequence[Routed], path: Path, catalog: VerticalCatal
     guide = book.active
     guide.title = "how to review"
     for line in HOW_TO_REVIEW:
-        guide.append([line])
+        xlsx.append(guide, [line])
     guide.column_dimensions["A"].width = 110
     sheet = book.create_sheet("routing")
-    sheet.append(REVIEW_HEADERS)
+    xlsx.append(sheet, REVIEW_HEADERS)
     for cell in sheet[1]:
         cell.font = Font(bold=True)
     for number, r in enumerate(results, start=1):
         confidence = ""
         if r.routing is not None and r.routing.candidates:
             confidence = {0.9: "high", 0.6: "medium", 0.3: "low"}.get(r.routing.candidates[0].confidence, "")
-        sheet.append(
+        xlsx.append(
+            sheet,
             [
                 number,
                 r.case_id,
@@ -226,7 +228,7 @@ def write_workbook(results: Sequence[Routed], path: Path, catalog: VerticalCatal
                 None,
                 None,
                 None,
-            ]
+            ],
         )
     widths = {"A": 9, "B": 16, "C": 9, "D": 60, "E": 26, "F": 11, "G": 70, "H": 60, "I": 9, "J": 26, "K": 40}
     for column, width in widths.items():

@@ -201,3 +201,31 @@ def test_the_console_form_defaults_to_the_current_release_and_writes_into_the_jo
         "--admitted-to",
         "2026-11-16",
     ]
+
+
+def test_control_characters_from_a_call_are_dropped_not_fatal(tmp_path):
+    """A claim with a vertical tab in it stopped a real export (2026-11-16): openpyxl refuses
+    characters Excel can't store. They print nothing, so dropping them keeps the text as read."""
+    routing = {
+        "claims": [
+            {
+                "claim_id": "c1",
+                "outcome": "UNMAPPED",
+                "rationale": "The first agent said there were no 10\x0ba2 charges.\x01",
+                "candidates": [],
+            }
+        ]
+    }
+    pass2 = {"claims": [{"claim_id": "c1", "statement": "Told the emails\x1b were fraudulent\nand\tso on"}]}
+    rows = export.claim_rows("CASE-9\x00", pass2, None, routing)
+    export.write_workbook(tmp_path / "x.xlsx", rows, lambda: [("Note", "bell\x07")])
+    book = load_workbook(tmp_path / "x.xlsx")
+    row = [c.value for c in book["routing"][2]]
+    assert row[:5] == [
+        "CASE-9",
+        "Told the emails were fraudulent\nand\tso on",  # newline and tab are allowed, and kept
+        "N",
+        "UNMAPPED",
+        "The first agent said there were no 10a2 charges.",
+    ]
+    assert book["about"]["B1"].value == "bell"

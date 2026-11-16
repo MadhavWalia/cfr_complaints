@@ -33,6 +33,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from cfr_v2 import xlsx
 from cfr_v2.contracts import AuthorizationContext, EvidenceBackend, EvidenceSourceTaxonomy
 
 from .manifests import DEFAULT_REGISTRY_DIR, load_pinned
@@ -388,20 +389,22 @@ def to_workbook(taxonomy: EvidenceSourceTaxonomy, path: Path, directory: Path = 
         ("changes", "Add a line for every change you make: date, who, what, why."),
         ("source_types", "Reference only (locked). Maintained by the technical team."),
     ):
-        read_me.append(row)
+        xlsx.append(read_me, row)
 
     types = book.create_sheet("source_types")
-    types.append(list(TYPE_COLUMNS))
+    xlsx.append(types, list(TYPE_COLUMNS))
     for t in taxonomy.source_types:
-        types.append([t.id, t.description, "\n".join(t.examples), "Y" if t.deprecated else "N", t.replaced_by or ""])
+        xlsx.append(
+            types, [t.id, t.description, "\n".join(t.examples), "Y" if t.deprecated else "N", t.replaced_by or ""]
+        )
     types.protection.sheet = True  # no password: guards against accidental edits, import checks the rest
 
     ids = f"source_types!$A$2:$A${len(taxonomy.source_types) + 1}"
     backends = book.create_sheet("backends")
-    backends.append(list(BACKEND_COLUMNS))
+    xlsx.append(backends, list(BACKEND_COLUMNS))
     for t in taxonomy.source_types:
         for b in t.backends:
-            backends.append([t.id, b.system, b.dataset or "", b.status.value, b.owner or "", b.notes or ""])
+            xlsx.append(backends, [t.id, b.system, b.dataset or "", b.status.value, b.owner or "", b.notes or ""])
     for validation, column in (
         (DataValidation(type="list", formula1=f"={ids}", allow_blank=False), "A"),
         (DataValidation(type="list", formula1=f'"{",".join(STATUSES)}"', allow_blank=False), "D"),
@@ -419,9 +422,9 @@ def to_workbook(taxonomy: EvidenceSourceTaxonomy, path: Path, directory: Path = 
     )
 
     proposals = book.create_sheet("proposals")
-    proposals.append(list(PROPOSAL_COLUMNS))
+    xlsx.append(proposals, list(PROPOSAL_COLUMNS))
     for p in log.get("proposals", []):
-        proposals.append([p.get(c) or "" for c in PROPOSAL_COLUMNS])
+        xlsx.append(proposals, [p.get(c) or "" for c in PROPOSAL_COLUMNS])
     for validation, column in (
         (DataValidation(type="list", formula1=f'"{",".join(PROPOSAL_KINDS)}"', allow_blank=False), "A"),
         (DataValidation(type="list", formula1=f"={ids}", allow_blank=True), "B"),
@@ -430,9 +433,9 @@ def to_workbook(taxonomy: EvidenceSourceTaxonomy, path: Path, directory: Path = 
         validation.add(f"{column}2:{column}{_ROWS}")
 
     changes = book.create_sheet("changes")
-    changes.append(list(CHANGE_COLUMNS))
+    xlsx.append(changes, list(CHANGE_COLUMNS))
     for c in log.get("changes", []):
-        changes.append([c.get(k) or "" for k in CHANGE_COLUMNS])
+        xlsx.append(changes, [c.get(k) or "" for k in CHANGE_COLUMNS])
 
     widths = {
         "read_me": (14, 100),

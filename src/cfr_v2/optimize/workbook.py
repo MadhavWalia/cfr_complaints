@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from cfr_v2 import xlsx
+
 ROWS = 2000  # rows of an answer sheet that get dropdowns
 KEEP_LOCAL = (
     "This workbook holds case text. Keep it on this machine, upload it only to the CFR console on this "
@@ -46,7 +48,7 @@ def write(path: Path, *, title: str, steps: Sequence[str], sheets: Sequence[Shee
     readme.title = "read me"
     readme.column_dimensions["A"].width = 110
     for line in (title, "", KEEP_LOCAL, "", *steps):
-        readme.append([line])
+        xlsx.append(readme, [line])
     readme["A1"].font = Font(bold=True, size=13)
     readme["A3"].font = Font(bold=True)
     for row in readme.iter_rows():
@@ -58,9 +60,9 @@ def write(path: Path, *, title: str, steps: Sequence[str], sheets: Sequence[Shee
     locked_fill = PatternFill("solid", fgColor="ECEDEE")  # Gray 02: read, don't edit
     for spec in sheets:
         sheet = book.create_sheet(spec.name)
-        sheet.append(list(spec.columns))
+        xlsx.append(sheet, list(spec.columns))
         for row in spec.rows:
-            sheet.append(list(row))
+            xlsx.append(sheet, list(row))
         last = max(len(spec.rows) + 1, 2)
         span = ROWS if spec.free_rows else last
         for i, column in enumerate(spec.columns):
@@ -96,9 +98,9 @@ def write(path: Path, *, title: str, steps: Sequence[str], sheets: Sequence[Shee
 
     meta = book.create_sheet("_frozen")
     meta.sheet_state = "hidden"
-    meta.append(["case_no", "context_ref"])
+    xlsx.append(meta, ["case_no", "context_ref"])
     for case_no, ref in frozen.items():
-        meta.append([case_no, ref])
+        xlsx.append(meta, [case_no, ref])
     book.save(path)
 
 
