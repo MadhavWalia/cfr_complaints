@@ -42,7 +42,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from cfr_v2.telemetry import elf_headers, get_logger, record_llm_call, record_retry, set_attributes, span
+from cfr_v2.telemetry import elf_headers, get_logger, model_call, record_llm_call, record_retry, set_attributes, span
 
 from .client import (
     ModelBlockedError,
@@ -219,6 +219,7 @@ class GatewayModelClient:
         s = self.settings
         self.gate = gate or RateGate(
             max_concurrency=s.max_concurrency,
+            start_concurrency=s.start_concurrency,
             requests_per_minute=s.requests_per_minute,
             cooldown_sec=s.rate_limit_cooldown_sec,
             cooldown_max_sec=s.rate_limit_cooldown_max_sec,
@@ -266,7 +267,8 @@ class GatewayModelClient:
                     failures += 1
                     cap = min(s.backoff_max_sec, s.backoff_base_sec * 2 ** (failures - 1))
                     wait = random.uniform(cap / 2, cap)
-                exhausted = failures >= s.max_attempts or self._clock() + wait >= deadline
+                worst = self.gate.resume_by(wait) if found.failure is Failure.RATE_LIMITED else wait
+                exhausted = failures >= s.max_attempts or self._clock() + worst >= deadline
                 if exhausted:
                     raise _EXHAUSTED.get(found.failure, RetryableModelError)(
                         f"{request.program_id}: {found.failure.value} after {tries} tries ({detail})",
@@ -306,19 +308,24 @@ class GatewayModelClient:
                     queue_wait_sec=round(queue_wait, 3),
                 ) as call_span,
                 record_llm_call(s.model_id, operation=request.program_id),
+                model_call("chat", request.program_id) as call,
             ):
                 try:
                     response = await asyncio.wait_for(self._invoke(request), timeout)
                 except _InvalidOutput:
-                    set_attributes(call_span, outcome="invalid_output")
+                    call.outcome = "invalid_output"
+                    set_attributes(call_span, outcome=call.outcome)
                     raise
                 except ModelError as exc:
-                    set_attributes(call_span, outcome=exc.error_code.lower())
+                    call.outcome = exc.error_code.lower()
+                    set_attributes(call_span, outcome=call.outcome)
                     raise
                 except Exception as exc:
                     found = classify(exc)
-                    set_attributes(call_span, outcome=found.failure.value, http_status=found.status)
+                    call.outcome = found.failure.value
+                    set_attributes(call_span, outcome=call.outcome, http_status=found.status)
                     raise
+                call.input_tokens, call.output_tokens = response.usage.input_tokens, response.usage.output_tokens
                 set_attributes(
                     call_span,
                     outcome="ok",

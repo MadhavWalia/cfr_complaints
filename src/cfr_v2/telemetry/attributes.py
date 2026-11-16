@@ -82,4 +82,7 @@ SPAN_ATTRIBUTES: frozenset[str] = frozenset(
     }
 )
 
-METRIC_LABELS: frozenset[str] = frozenset({"lane", "stage", "outcome", "status"})
+# Every value is from a small fixed set the code chooses, never from a case: lane, stage, outcome,
+# status; program (a program id or an embedding purpose, about six), kind (chat or embedding) and
+# direction (input or output tokens) for the model-call metrics behind the pipeline dashboard.
+METRIC_LABELS: frozenset[str] = frozenset({"lane", "stage", "outcome", "status", "program", "kind", "direction"})

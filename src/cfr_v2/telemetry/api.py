@@ -276,6 +276,76 @@ def record_llm_call(model_id: str, operation: str = "completion", **extra: Any):
                 pass
 
 
+# --- model calls, by program: the pipeline dashboard's cost and latency panels ---------
+# Named here, like the build metrics below, so a dashboard can rely on them. One record per
+# attempt: a retried call counts once per try, with each try's outcome.
+
+CALL_BUCKETS_SEC = (0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 240, 480, 960, 1800)
+
+
+@functools.cache
+def _call_instruments() -> tuple[Any, Any, Any]:
+    meter = get_meter("cfr.llm")
+    return (
+        meter.create_counter("cfr.llm.calls", description="Model and embedding attempts, by program and outcome"),
+        meter.create_histogram(
+            "cfr.llm.call.duration",
+            unit="s",
+            description="Time per model or embedding attempt",
+            explicit_bucket_boundaries_advisory=CALL_BUCKETS_SEC,
+        ),
+        meter.create_counter("cfr.llm.tokens", description="Tokens sent and received, by program"),
+    )
+
+
+class ModelCall:
+    """What one attempt ended as: the caller sets ``outcome`` and, for chat, the tokens."""
+
+    def __init__(self) -> None:
+        self.outcome: str | None = None
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+
+@contextmanager
+def model_call(kind: str, program: str):
+    """Count one attempt of a ``kind`` ("chat" or "embedding") call for ``program`` (a program id,
+    or an embedding purpose), with its duration, outcome and tokens. An attempt that raises
+    without an outcome set is "error". Best-effort, like every metric here."""
+    call, start = ModelCall(), time.perf_counter()
+    try:
+        yield call
+    except BaseException:
+        call.outcome = call.outcome or "error"
+        raise
+    finally:
+        try:
+            calls, duration, tokens = _call_instruments()
+            attrs = {"kind": kind, "program": program, "outcome": call.outcome or "ok"}
+            calls.add(1, attrs)
+            duration.record(time.perf_counter() - start, attrs)
+            for direction, count in (("input", call.input_tokens), ("output", call.output_tokens)):
+                if count:
+                    tokens.add(count, {"kind": kind, "program": program, "direction": direction})
+        except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
+            pass
+
+
+@functools.cache
+def _concurrency_gauge() -> Any:
+    return get_meter("cfr.llm").create_gauge(
+        "cfr.llm.concurrency_limit", description="Model or embedding calls the rate gate allows at once"
+    )
+
+
+def record_concurrency_limit(kind: str, limit: int) -> None:
+    """The rate gate's current allowance (LDR-0032): it ramps up from the start and halves on a 429."""
+    try:
+        _concurrency_gauge().set(limit, {"kind": kind})
+    except Exception:  # noqa: BLE001, S110  # pragma: no cover - metrics are best-effort
+        pass
+
+
 # --- procedure index builds ---------------------------------------------------------
 # Named here rather than taken from ee-logging's instruments, so a dashboard can rely on them.
 

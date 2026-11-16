@@ -393,3 +393,43 @@ def test_model_loop_serves_many_threads_through_one_client():
             loop.run(_client(Script(HTTPError(403))).complete(_req()))
     finally:
         loop.close()
+
+
+# --- call metrics: the pipeline dashboard's calls, latency and tokens per program ---------------
+
+
+def _sum(points, name, **labels) -> float:
+    return sum(v for a, v in points.get(name, []) if labels.items() <= dict(a).items())
+
+
+async def test_every_attempt_is_counted_with_its_outcome_duration_and_tokens(metric_points):
+    program = "test.call_metrics"  # cumulative over the session: a label no other test uses
+    script = Script(HTTPError(503), {"allegations": []})
+    await _client(script).complete(_req().model_copy(update={"program_id": program}))
+    points = metric_points()
+    calls = {dict(a)["outcome"]: v for a, v in points["cfr.llm.calls"] if dict(a)["program"] == program}
+    assert calls == {"transient": 1, "ok": 1}
+    assert all(dict(a)["kind"] == "chat" for a, _ in points["cfr.llm.calls"] if dict(a)["program"] == program)
+    assert _sum(points, "cfr.llm.call.duration", program=program) == 2  # histogram: the count of attempts
+    assert _sum(points, "cfr.llm.tokens", program=program, direction="input") == 120
+    assert _sum(points, "cfr.llm.tokens", program=program, direction="output") == 30
+
+
+async def test_a_blocked_call_is_counted_as_blocked_without_tokens(metric_points):
+    program = "test.call_metrics_blocked"
+    with pytest.raises(ModelBlockedError):
+        await _client(Script("filtered")).complete(_req().model_copy(update={"program_id": program}))
+    points = metric_points()
+    outcomes = {dict(a)["outcome"] for a, _ in points["cfr.llm.calls"] if dict(a)["program"] == program}
+    assert outcomes and "ok" not in outcomes and "error" not in outcomes  # a named outcome, not a guess
+    assert _sum(points, "cfr.llm.tokens", program=program) == 0
+
+
+async def test_call_metrics_use_bounded_labels_only(metric_points):
+    from cfr_v2.telemetry import METRIC_LABELS
+
+    await _client(Script({"allegations": []})).complete(_req().model_copy(update={"program_id": "test.labels"}))
+    points = metric_points()
+    for name in ("cfr.llm.calls", "cfr.llm.call.duration", "cfr.llm.tokens"):
+        for attributes, _ in points[name]:
+            assert set(attributes) <= METRIC_LABELS, (name, attributes)
