@@ -1037,6 +1037,41 @@ CATALOGUE: tuple[Command, ...] = (
     ),
     # --- System ---------------------------------------------------------------------------------
     Command(
+        id="evaluation.routing_export",
+        area="evaluation",
+        title="Routing results to Excel",
+        effect="Writes routing_results.xlsx: one row per claim of every case run at Plan ready under the release, "
+        "with its case number, the claim, whether C03 chose it as primary (Y/N), the vertical, the reasoning and the "
+        "procedure sections it relied on, then three empty columns to review it: Correct? (Y/N), Correct vertical "
+        "(if not) and Reason it's wrong. Reads stored results only, so it's safe while a worker runs; run it "
+        f"again later for the cases that finished since. The workbook holds claims and reasoning from cases. {KEEP_LOCAL}",
+        module="cfr_v2.console.export",
+        fields=(
+            Field(
+                "release",
+                "Release",
+                "choice",
+                required=True,
+                default=lambda ctx: ctx.env.get("CFR_RELEASE_ID"),
+                choices=_releases,
+            ),
+            Field("admitted_from", "Admitted from", "date", help="The first admission day to include."),
+            Field("admitted_to", "Admitted to", "date", help="The last one, included."),
+        ),
+        args=lambda v, folder: [
+            "--release",
+            v["release"],
+            *_opt("--admitted-from", v["admitted_from"]),
+            *_opt("--admitted-to", v["admitted_to"]),
+            "--out",
+            _out(folder, "routing_results.xlsx"),
+        ],
+        job_title=lambda v: f"Routing results · {v['release']}",
+        summarize=_printed(r"^([\d,]+ case runs exported, [\d,]+ rows)"),
+        action="Write the workbook",
+        tags=("changes nothing", "keep output local"),
+    ),
+    Command(
         id="system.worker",
         area="system",
         title="Worker",

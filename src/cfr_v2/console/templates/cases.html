@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block main %}
-<div class="head"><h1>Cases</h1></div>
+<div class="head"><h1>Cases</h1>
+  <div class="actions"><a class="btn secondary" href="/evaluation?fill=evaluation.routing_export{% if filters.release %}&amp;release={{ filters.release | urlencode }}{% endif %}#evaluation.routing_export">Routing results to Excel</a></div>
+</div>
 <form class="find" method="get" action="/cases" role="search">
   <div class="field">
     <label for="q">Case number or run id</label>
