@@ -2,6 +2,7 @@
 {% import "_fields.html" as fields %}
 {% macro claim_text(id) %}{% set c = claims.get(id) %}{% if c %}{{ c.statement }}{% else %}<span class="mono">{{ id }}</span>{% endif %}{% endmacro %}
 {% macro words(value) %}{{ (value or "") | replace("_", " ") | lower | capitalize }}{% endmacro %}
+{% macro section(p) %}<li>{{ p.file_name }} · {{ p.section_title }} <span class="muted">p. {{ p.page_start }}{% if p.page_end != p.page_start %}–{{ p.page_end }}{% endif %}</span></li>{% endmacro %}
 {% block main %}
 <div class="head">
   <h1>Case <span class="mono-h">{{ run.row.case_no }}</span></h1>
@@ -62,19 +63,20 @@
     <p class="muted">A placeholder: this stage isn't built yet.</p>
     {% elif data is mapping %}
       {% if stage.task == "c02.pass1" %}
-      <h4>Allegations <span class="count">{{ data.allegations | length }}</span></h4>
-      <ul class="items">{% for a in data.allegations %}<li><p>{{ a.text }}</p><p class="tags">{{ words(a.kind) }} · {{ words(a.scope) }}{% if a.ambiguous %} · ambiguous{% endif %}</p></li>{% endfor %}</ul>
-      {% if data.requests %}<h4>Requests <span class="count">{{ data.requests | length }}</span></h4>
-      <ul class="items">{% for r in data.requests %}<li><p>{{ r.text }}</p><p class="tags">{{ words(r.request_type) }}</p></li>{% endfor %}</ul>{% endif %}
-      {% if data.agent_statements %}<h4>Agent statements <span class="count">{{ data.agent_statements | length }}</span></h4>
-      <ul class="items">{% for s in data.agent_statements %}<li><p>{{ s.text }}</p><p class="tags">{{ words(s.kind) }}</p></li>{% endfor %}</ul>{% endif %}
+      <details class="fold group"><summary>Allegations <span class="count">{{ data.allegations | length }}</span></summary>
+      <ul class="items">{% for a in data.allegations %}<li><p>{{ a.text }}</p><p class="tags">{{ words(a.kind) }} · {{ words(a.scope) }}{% if a.ambiguous %} · ambiguous{% endif %}</p></li>{% endfor %}</ul></details>
+      {% if data.requests %}<details class="fold group"><summary>Requests <span class="count">{{ data.requests | length }}</span></summary>
+      <ul class="items">{% for r in data.requests %}<li><p>{{ r.text }}</p><p class="tags">{{ words(r.request_type) }}</p></li>{% endfor %}</ul></details>{% endif %}
+      {% if data.agent_statements %}<details class="fold group"><summary>Agent statements <span class="count">{{ data.agent_statements | length }}</span></summary>
+      <ul class="items">{% for s in data.agent_statements %}<li><p>{{ s.text }}</p><p class="tags">{{ words(s.kind) }}</p></li>{% endfor %}</ul></details>{% endif %}
       {% if data.dropped %}<p class="muted">{{ data.dropped | length }} item{{ "" if data.dropped | length == 1 else "s" }} dropped by the checks.</p>{% endif %}
       {% elif stage.task == "c02.pass2" %}
       <h4>Claims <span class="count">{{ data.claims | length }}</span></h4>
       <ul class="items">{% for c in data.claims %}<li>
         <p>{{ c.statement }}</p>
         <p class="tags">{{ words(c.grounding_status) }} · account {{ (c.account_resolution or "") | replace("_", " ") | lower }}{% if c.event_window_start %} · <span class="nowrap">{{ c.event_window_start }}</span> to <span class="nowrap">{{ c.event_window_end or "?" }}</span>{% endif %}</p>
-        {% if c.evidence_needs %}<ul class="needs">{% for n in c.evidence_needs %}<li>{{ n.description }} <span class="mono muted">{{ n.source_type }}</span></li>{% endfor %}</ul>{% endif %}
+        {% if c.evidence_needs %}<details class="fold"><summary>Verification points <span class="count">{{ c.evidence_needs | length }}</span></summary>
+        <ul class="needs">{% for n in c.evidence_needs %}<li>{{ n.description }} <span class="mono muted">{{ n.source_type }}</span></li>{% endfor %}</ul></details>{% endif %}
       </li>{% endfor %}</ul>
       {% if data.other_checks %}<h4>Other checks <span class="count">{{ data.other_checks | length }}</span></h4>
       <ul class="items">{% for o in data.other_checks %}<li><p>{{ o.description }}</p><p class="tags mono">{{ o.source_types | join(", ") }}</p></li>{% endfor %}</ul>{% endif %}
@@ -90,14 +92,16 @@
         {% if c.outcome == "ROUTED" %}
           {% for v in c.candidates %}
           <p class="route"><span class="vertical">{{ v.vertical_id }}</span> <span class="muted">{{ "%.0f" | format(v.confidence * 100) }}% · source: {{ (v.source or "") | lower }}</span></p>
-          {% if v.rationale %}<p class="why">{{ v.rationale }}</p>{% endif %}
-          {% if v.procedures %}<ul class="needs">{% for p in v.procedures %}<li>{{ p.file_name }} · {{ p.section_title }} <span class="muted">p. {{ p.page_start }}{% if p.page_end != p.page_start %}–{{ p.page_end }}{% endif %}</span></li>{% endfor %}</ul>{% endif %}
+          {% if v.rationale %}<details class="fold"><summary>Reasoning</summary><p class="why">{{ v.rationale }}</p></details>{% endif %}
+          {% if v.procedures %}<details class="fold"><summary>Sections it relied on <span class="count">{{ v.procedures | length }}</span></summary>
+          <ul class="needs">{% for p in v.procedures %}{{ section(p) }}{% endfor %}</ul></details>{% endif %}
           {% endfor %}
         {% else %}
           <p class="route"><span class="vertical">{{ words(c.outcome) }}</span></p>
         {% endif %}
-        {% if c.rationale %}<p class="why">{{ c.rationale }}</p>{% endif %}
-        {% if c.sections_seen %}<p class="muted">Shown {{ c.sections_seen | length }} section{{ "" if c.sections_seen | length == 1 else "s" }}.</p>{% endif %}
+        {% if c.rationale %}<details class="fold"><summary>Reasoning{% if c.outcome == "ROUTED" %} for the claim{% endif %}</summary><p class="why">{{ c.rationale }}</p></details>{% endif %}
+        {% if c.sections_seen %}<details class="fold"><summary>All sections it was shown <span class="count">{{ c.sections_seen | length }}</span></summary>
+        <ul class="needs">{% for p in c.sections_seen %}{{ section(p) }}{% endfor %}</ul></details>{% endif %}
       </li>{% endfor %}</ul>
       {% endif %}
       <details class="raw"><summary>JSON</summary>

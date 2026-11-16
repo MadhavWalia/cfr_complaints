@@ -443,6 +443,27 @@ pre.log::selection { background: var(--selection-bg); color: var(--selection-tex
 .vertical { font-weight: 600; color: var(--text-emphasis); }
 .why { margin-top: var(--s1); color: var(--text-subtle); max-width: var(--measure); }
 .lead { font-size: 16px; max-width: var(--measure); margin: var(--s2) 0; }
+/* An accordion on the case page: closed by default, its count in the summary, the command rows'
+   chevron beside it, and Theme-Gray tertiary hover and pressed. */
+.fold { margin-top: var(--s1); }
+.fold > summary {
+  list-style: none; cursor: pointer; display: inline-flex; align-items: center; min-height: 28px;
+  padding: 0 var(--s2); margin-left: calc(-1 * var(--s2)); border-radius: var(--radius);
+  font-size: 13px; font-weight: 500; color: var(--text-subtle);
+}
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::after {
+  content: ""; width: 6px; height: 6px; margin-left: var(--s3); border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg); flex: none;
+}
+.fold[open] > summary::after { transform: translateY(1px) rotate(-135deg); }
+.fold > summary:hover { background: var(--gray-tertiary-bg-hover); color: var(--text-emphasis); }
+.fold > summary:active { background: var(--gray-tertiary-bg-pressed); }
+.fold > .items, .fold > .needs { margin-top: var(--s2); }
+.fold > .why { margin-top: var(--s1); }
+.fold.group + .fold.group { margin-top: var(--s2); }
+.fold.group > summary { font-size: 14px; }  /* a whole group: Allegations, Requests, Agent statements */
+.fold.group > .items { margin: var(--s2) 0 var(--s3); }
 .raw { margin-top: var(--s4); }
 .raw pre { margin-top: var(--s2); }
 .raw p { margin-top: var(--s2); font-size: 13px; }
@@ -556,7 +577,7 @@ tr.chosen td:first-child a { color: var(--text-brand-alt); }
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .btn, .rail a.area, .filters a, button.copy, .menu-toggle, .command > summary, .table-wrap td { transition: background-color 120ms ease-out, color 120ms ease-out; }
+  .btn, .rail a.area, .filters a, button.copy, .menu-toggle, .command > summary, .fold > summary, .table-wrap td { transition: background-color 120ms ease-out, color 120ms ease-out; }
 }
 .prompts td[data-label="Version"] .mono { white-space: nowrap; }
 .prompts .note { max-width: 60ch; }
