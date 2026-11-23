@@ -311,6 +311,24 @@ tr.lit td:first-child > span::after, tr.lit td:first-child > time::after {
 .filters a[aria-current="page"] { background: var(--selected-bg); border-color: var(--border-brand); color: var(--selected-text); }
 .find { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s3); margin-bottom: var(--s4); }
 .find .field { width: auto; flex: 1 1 180px; max-width: 260px; }
+.find-form { margin-bottom: var(--s4); }
+.find-form .find { margin-bottom: var(--s2); }
+/* "More filters": closed by default; the chips below the form say what is on. */
+.more-filters > .filter-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--s4) var(--s5); margin-top: var(--s3); padding: var(--s4); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--surface-foreground); }
+.filter-groups fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: var(--s3); align-content: start; }
+.filter-groups legend { padding: 0; margin-bottom: var(--s1); font-size: 12px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--text-subtle); }
+.filter-groups .field { max-width: none; }
+.field.range .pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: var(--s2); }
+.field.range input { width: 100%; min-width: 0; }
+.filter-actions { display: flex; align-items: center; gap: var(--s4); margin-top: var(--s3); font-size: 13px; }
+.chips { list-style: none; margin: 0 0 var(--s4); padding: 0; display: flex; flex-wrap: wrap; gap: var(--s2); }
+.chips li { display: inline-flex; align-items: center; height: 28px; padding: 0 var(--s1) 0 var(--s3); border: 1px solid var(--border-brand); border-radius: var(--round); background: var(--selected-bg); color: var(--selected-text); font-size: 13px; font-weight: 500; }
+.chips a { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-left: var(--s1); border-radius: 50%; color: inherit; }
+.chips a:hover { background: var(--gray-tertiary-bg-hover); }
+.chips a:active { background: var(--gray-tertiary-bg-pressed); }
+.chips .icon { width: 14px; height: 14px; }
+.facts-note { margin: 0 0 var(--s4); }
+
 .pager { display: flex; gap: var(--s4); align-items: center; margin-top: var(--s3); font-size: 13px; }
 
 /* ---- Home: what needs attention, and the pipeline --------------------------------------- */
@@ -464,6 +482,17 @@ pre.log::selection { background: var(--selection-bg); color: var(--selection-tex
 .fold.group + .fold.group { margin-top: var(--s2); }
 .fold.group > summary { font-size: 14px; }  /* a whole group: Allegations, Requests, Agent statements */
 .fold.group > .items { margin: var(--s2) 0 var(--s3); }
+/* Pass 2's customer data: the accounts it was given, and the claims that name each one. */
+.accounts { margin: var(--s2) 0 var(--s3); display: grid; gap: var(--s2); }
+.accounts .note { margin: 0; max-width: var(--measure); }
+.account-grid { font-size: 13px; width: auto; min-width: 100%; }
+.account-grid th, .account-grid td { padding: var(--s2) var(--s4); height: auto; vertical-align: top; }
+.account-grid thead th { color: var(--text-emphasis); white-space: nowrap; }
+.account-grid tbody th { font-weight: 400; color: var(--text-subtle); background: transparent; white-space: nowrap; width: 1%; }
+.account-grid td { min-width: 9em; }
+.account-grid tr:last-child > * { border-bottom: 0; }
+.account-grid tr.used > * { font-weight: 500; color: var(--text-emphasis); }
+.case-account { margin-left: var(--s1); font-size: 12px; color: var(--text-subtle); white-space: nowrap; }
 .raw { margin-top: var(--s4); }
 .raw pre { margin-top: var(--s2); }
 .raw p { margin-top: var(--s2); font-size: 13px; }

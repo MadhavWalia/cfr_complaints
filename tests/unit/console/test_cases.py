@@ -147,6 +147,7 @@ PASS2 = {
             "claim_id": "c1",
             "statement": "A late fee was charged although the payment was on time",
             "grounding_status": "GROUNDED",
+            "account_refs": ["A1"],
             "account_resolution": "RESOLVED",
             "event_window_start": "2026-09-01",
             "event_window_end": "2026-09-30",
@@ -154,6 +155,16 @@ PASS2 = {
         }
     ],
     "findings": [{"issue": "UNCOVERED_ALLEGATION", "ref": "a2"}],
+    "baseline_profile_ref": "sha256:" + "b" * 64,
+    "case_received_date": "2026-10-02",
+}
+BASELINE = {
+    "query_version": "lumi-baseline-1",
+    "temporal_quality": "CURRENT_ONLY",
+    "accounts": [
+        {"account_ref": "A1", "is_case_account": True, "product": "Platinum Card", "status_at_case": "Active"},
+        {"account_ref": "A2", "is_case_account": False, "product": "Gold Card", "holder": "Other cardholder"},
+    ],
 }
 C03 = {"status": "SELECTED", "claim_id": "c1", "rationale": "The fee is what the customer wants put right."}
 C04 = {
@@ -209,6 +220,7 @@ def serve_fake_case(monkeypatch, run: cases.CaseRun, withheld: str = "c02.pass2"
 
     monkeypatch.setattr(cases, "read_case", lambda db, case_run_id: run if case_run_id == run.row.case_run_id else None)
     monkeypatch.setattr(cases, "read_result", read_result)
+    monkeypatch.setattr(cases, "read_baseline", lambda db, store, case, pass2: json.dumps(BASELINE).encode())
 
 
 def test_the_case_page_shows_each_stages_result(client, monkeypatch):
@@ -246,6 +258,7 @@ def test_the_long_parts_of_a_result_are_accordions_closed_by_default(client, mon
         "Allegations 1",  # Pass 1
         "Requests 1",
         "Agent statements 1",
+        "Customer data 2 accounts",  # Pass 2: what it was given
         "Verification points 1",  # Pass 2, under the claim
         "Reasoning",  # C04, under the vertical
         "Sections it relied on 1",
@@ -254,7 +267,10 @@ def test_the_long_parts_of_a_result_are_accordions_closed_by_default(client, mon
     assert not any(opened for opened, _ in folds)  # closed until asked
     # what stays in view: the claim, its tags, and the vertical with its confidence
     assert re.search(
-        r"Grounded · account resolved.*?<details class=\"fold\"><summary>Verification points", page, re.DOTALL
+        r"Grounded · account <span class=\"nowrap\">A1 · Platinum Card \(case account\)</span>.*?"
+        r"<details class=\"fold\"><summary>Verification points",
+        page,
+        re.DOTALL,
     )
     assert re.search(r'<span class="vertical">fees_and_interest</span>.*?82%.*?<summary>Reasoning', page, re.DOTALL)
 
@@ -380,3 +396,226 @@ def test_a_next_step_opens_its_form_filled_in(repo, monkeypatch):
     assert 'id="procedures.build" open' in page and f'value="{snapshot}"' in page
     assert 'value="16"' in page  # the other fields keep their defaults
     assert client.get("/procedures?fill=routing.trial").status_code == 404
+
+
+# --- Pass 2's customer data (LDR-0037) -----------------------------------------------------------
+
+
+def test_pass2_shows_the_customer_data_it_was_given_and_which_claims_used_it(client, monkeypatch):
+    client.app.state.store = InMemoryArtifactStore()
+    serve_fake_case(monkeypatch, fake_case(), withheld="none")
+    page = client.get("/cases/run-1").text
+    for text in (
+        "Customer accounts Pass 2 was given",
+        "the case received date (2026-10-02)",
+        "current data, not history",
+        '<th scope="col"><span class="mono">A1</span><span class="case-account">case account</span></th>',
+        "Platinum Card",
+        "Other cardholder",  # a field only one account has still gets its column
+        '<th scope="row">Status at case</th>',
+    ):
+        assert text in page, text
+    assert ">Co-brand</th>" not in page  # no account has one: no empty row
+    assert '<th scope="row">Claims naming it</th><td>1</td><td>—</td>' in page  # A1 by one claim, A2 by none
+
+
+def test_a_case_without_a_baseline_says_so(client, monkeypatch):
+    client.app.state.store = InMemoryArtifactStore()
+    pass2 = {k: v for k, v in PASS2.items() if k != "baseline_profile_ref"} | {
+        "claims": [
+            PASS2["claims"][0] | {"account_refs": [], "account_resolution": "NONE", "grounding_status": "PARTIAL"}
+        ]
+    }
+    monkeypatch.setitem(RESULTS, "c02.pass2", pass2)
+    serve_fake_case(monkeypatch, fake_case(), withheld="none")
+    page = client.get("/cases/run-1").text
+    assert "No customer accounts were found for this case at admission" in page
+    assert "Partial · no account named" in page
+
+
+def test_only_the_baseline_pass2_names_is_read_and_only_if_internal():
+    store = InMemoryArtifactStore()
+    profile = store.put(
+        json.dumps(BASELINE).encode(), media_type="application/json", classification=Classification.INTERNAL
+    )
+    ref_map = store.put(b'{"entries": []}', media_type="application/json", classification=Classification.RESTRICTED)
+    db = FakeDb({
+        profile.metadata.ref.removeprefix("sha256:"): {"INTERNAL"},
+        ref_map.metadata.ref.removeprefix("sha256:"): {"RESTRICTED"},
+    })  # fmt: skip
+    run = _run("sha256:" + "c" * 64)
+    assert json.loads(cases.read_baseline(db, store, run, {"baseline_profile_ref": profile.metadata.ref})) == BASELINE
+    for pass2 in ({"baseline_profile_ref": ref_map.metadata.ref}, {"baseline_profile_ref": "../x"}, {}, None):
+        with pytest.raises(cases.NotShown):
+            cases.read_baseline(db, store, run, pass2)
+    no_pass2 = cases.CaseRun(run.row, run.events, (), run.job)
+    with pytest.raises(cases.NotShown):  # a run without a Pass 2 result names no baseline
+        cases.read_baseline(db, store, no_pass2, {"baseline_profile_ref": profile.metadata.ref})
+
+
+# --- the list's filters (LDR-0037) -------------------------------------------------------------
+
+
+def test_filters_keep_only_values_on_offer():
+    f = cases.CaseFilters.parse({
+        "q": " SYN ", "state": "DROP TABLE", "transcript": "absent", "baseline": "maybe", "failed_at": "c04.routing",
+        "claims_min": "5", "claims_max": "2", "primary": "AMBIGUOUS", "grounding": "x", "account": "NONE",
+        "admitted_from": "2026-11-20", "admitted_to": "2026-11-01", "vertical": "fees_and_interest",
+    })  # fmt: skip
+    assert (f.q, f.state, f.transcript, f.baseline, f.failed_at) == ("SYN", None, "absent", None, "c04.routing")
+    assert (f.claims_min, f.claims_max) == (2, 5)  # swapped into order
+    assert (str(f.admitted_from), str(f.admitted_to)) == ("2026-11-01", "2026-11-20")
+    assert (f.primary, f.grounding, f.account, f.vertical) == ("AMBIGUOUS", None, "NONE", "fees_and_interest")
+    assert f.on_results and f.more == 7 and f.active
+    assert [label for label, _ in f.chips()] == [
+        "Admitted 2026-11-01 to 2026-11-20",
+        "Without a transcript",
+        "Failed at C04 routing",
+        "2 to 5 claims",
+        "Primary claim: ambiguous",
+        "Vertical: fees_and_interest",
+        "A claim: no account named",
+    ]
+    assert cases.CaseFilters.parse({"claims_min": "-1", "claims_max": "abc"}).on_results is False
+    assert cases.CaseFilters.parse({"claims_min": "3", "claims_max": "3"}).chips()[0][0] == "3 claims"
+    assert cases.CaseFilters.parse({"claims_min": "2"}).chips()[0][0] == "2 or more claims"
+
+
+def test_result_filters_need_the_stages_result():
+    facts = {
+        "c02.pass2": {"claims": 3, "grounding": ["GROUNDED", "PARTIAL"], "accounts": ["RESOLVED"]},
+        "c03.primary_selection": {"primary": "SELECTED"},
+        "c04.routing": {"verticals": ["fees_and_interest", "UNMAPPED"]},
+    }
+
+    def keeps(**kw):
+        return cases.CaseFilters.parse(kw).matches(facts)
+
+    assert keeps(claims_min="2", claims_max="3") and not keeps(claims_min="4") and not keeps(claims_max="2")
+    assert keeps(grounding="PARTIAL") and not keeps(grounding="UNGROUNDED")
+    assert keeps(account="RESOLVED") and not keeps(account="CANDIDATES")
+    assert keeps(primary="SELECTED") and not keeps(primary="AMBIGUOUS")
+    assert keeps(vertical="UNMAPPED") and not keeps(vertical="cards")
+    assert not cases.CaseFilters.parse({"claims_min": "0"}).matches({})  # no Pass 2 result: can't match
+
+
+class ListDb:
+    """Answers the list query with fixed rows, and records the parameters it was given."""
+
+    def __init__(self, rows):
+        self.rows, self.params = rows, None
+
+    @contextmanager
+    def transaction(self):
+        db = self
+
+        class Tx:
+            def all(self, sql, params=None):
+                assert sql == cases.CASES_SQL
+                db.params = params
+                return db.rows[: params["limit"]] if params["limit"] else db.rows
+
+        yield Tx()
+
+
+def _listed(n: int, claims: int) -> tuple:
+    refs = (f"sha256:{n:064x}", None, None)
+    return (f"run-{n}", f"SYN{n}", "cfr-v2-phase-e", "cfr-v2-phase-e@abc", "batch", "PLAN_READY", AT, AT, *refs)
+
+
+def test_the_list_pages_in_sql_until_a_result_filter_is_on(tmp_path):
+    from cfr_v2.console.facts import FactIndex
+
+    rows = [_listed(n, claims=n % 4) for n in range(1, 121)]
+    index = FactIndex(tmp_path / "facts.sqlite")
+    index.put(
+        (r[8], "c02.pass2", {"claims": n % 4}) for n, r in enumerate(rows, start=1) if n <= 100
+    )  # 20 not read yet
+    db = ListDb(rows)
+
+    page = cases.list_cases(db, release="cfr-v2-phase-e", filters=cases.CaseFilters(), facts=index)
+    assert db.params["limit"] == cases.PAGE_ROWS + 1 and len(page.rows) == cases.PAGE_ROWS and page.more
+    assert page.rows[0].claims == 1  # the column, from the index
+
+    two = cases.CaseFilters.parse({"claims_min": "2", "claims_max": "2"})
+    page = cases.list_cases(db, release="cfr-v2-phase-e", filters=two, facts=index)
+    assert db.params["limit"] is None and db.params["offset"] == 0  # every run, filtered and paged here
+    assert [r.claims for r in page.rows] == [2] * 25 and not page.more
+    assert page.unindexed == 20
+
+
+def test_the_cases_page_offers_the_filters_and_shows_those_in_use(client, monkeypatch):
+    asked = []
+    monkeypatch.setattr(cases, "list_cases", lambda db, **kw: asked.append(kw) or cases.CasePage([], False))
+    page = client.get("/cases?release=&claims_min=2&primary=AMBIGUOUS&transcript=absent&state=FAILED").text
+    assert asked[-1]["filters"].claims_min == 2 and asked[-1]["release"] == ""
+    for text in (
+        'name="claims_min"',
+        'name="admitted_from"',
+        'name="failed_at"',
+        'name="grounding"',
+        'name="vertical"',
+    ):
+        assert text in page, text
+    assert '<span class="count">3 on</span>' in page
+    assert "<span>2 or more claims</span>" in page and "<span>Primary claim: ambiguous</span>" in page
+    # removing a chip keeps the rest; "Clear these" keeps the main row
+    assert 'href="/cases?state=FAILED&amp;transcript=absent&amp;primary=AMBIGUOUS&amp;release="' in page
+    assert 'href="/cases?state=FAILED&amp;release=">Clear these' in page
+    assert "No case runs match" in page
+
+
+# --- the fact index ----------------------------------------------------------------------------
+
+
+def test_facts_hold_counts_and_values_never_text():
+    from cfr_v2.console.facts import facts_of
+
+    assert facts_of("c02.pass2", PASS2) == {
+        "claims": 1, "allegations": 0, "grounding": ["GROUNDED"], "accounts": ["RESOLVED"], "baseline": True,
+    }  # fmt: skip
+    assert facts_of("c03.primary_selection", C03) == {"primary": "SELECTED"}
+    assert facts_of("c04.routing", C04) == {"verticals": ["fees_and_interest"]}
+    assert facts_of("c04.routing", {"claims": [{"outcome": "UNMAPPED"}]}) == {"verticals": ["UNMAPPED"]}
+    assert facts_of("c02.pass2", None) == {} and facts_of("c05.planning", {"x": 1}) == {}
+    assert "late fee" not in json.dumps([facts_of(t, d) for t, d in RESULTS.items()])
+
+
+def test_the_indexer_reads_only_results_it_lacks(tmp_path):
+    from cfr_v2.console.facts import RESULT_REFS_SQL, FactIndex, Indexer
+
+    store = InMemoryArtifactStore()
+    pass2 = store.put(json.dumps(PASS2).encode(), media_type="application/json", classification=Classification.INTERNAL)
+    routing = store.put(json.dumps(C04).encode(), media_type="application/json", classification=Classification.INTERNAL)
+    secret = store.put(b"transcript", media_type="text/plain", classification=Classification.RESTRICTED)
+    rows = [
+        ("c02.pass2", pass2.metadata.ref),
+        ("c04.routing", routing.metadata.ref),
+        ("c03.primary_selection", secret.metadata.ref),
+    ]
+
+    class RefsDb:
+        @contextmanager
+        def transaction(self):
+            class Tx:
+                def all(self, sql, params=None):
+                    assert sql == RESULT_REFS_SQL
+                    return rows
+
+            yield Tx()
+
+    now = [0.0]
+    indexer = Indexer(FactIndex(tmp_path / "facts.sqlite"), clock=lambda: now[0])
+    progress = indexer.start(RefsDb(), store, wait=True)
+    assert (progress.running, progress.done, progress.total, progress.failed) == (
+        False,
+        3,
+        3,
+        1,
+    )  # RESTRICTED: not read
+    assert indexer.index.get([pass2.metadata.ref])[pass2.metadata.ref]["claims"] == 1
+    assert indexer.index.verticals() == ["fees_and_interest"]
+    now[0] = 5.0
+    assert indexer.start(RefsDb(), store, wait=True) is progress  # checked moments ago: no new pass
+    now[0] = 60.0
+    assert indexer.start(RefsDb(), store, wait=True).total == 1  # only the unreadable one is retried

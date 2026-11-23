@@ -1,29 +1,94 @@
 {% extends "base.html" %}
+{% macro select(name, label, options, value, any="Any") %}
+<div class="field">
+  <label for="{{ name }}">{{ label }}</label>
+  <select id="{{ name }}" name="{{ name }}">
+    <option value="">{{ any }}</option>
+    {% for v, text in options.items() %}<option value="{{ v }}"{% if value == v %} selected{% endif %}>{{ text }}</option>{% endfor %}
+  </select>
+</div>
+{% endmacro %}
 {% block main %}
 <div class="head"><h1>Cases</h1>
-  <div class="actions"><a class="btn secondary" href="/evaluation?fill=evaluation.routing_export{% if filters.release %}&amp;release={{ filters.release | urlencode }}{% endif %}#evaluation.routing_export">Routing results to Excel</a></div>
+  <div class="actions"><a class="btn secondary" href="/evaluation?fill=evaluation.routing_export{% if release_filter %}&amp;release={{ release_filter | urlencode }}{% endif %}#evaluation.routing_export">Routing results to Excel</a></div>
 </div>
-<form class="find" method="get" action="/cases" role="search">
-  <div class="field">
-    <label for="q">Case number or run id</label>
-    <input id="q" name="q" type="search" value="{{ filters.q }}" class="mono" spellcheck="false" autocomplete="off">
+<form class="find-form" method="get" action="/cases" role="search">
+  <div class="find">
+    <div class="field">
+      <label for="q">Case number or run id</label>
+      <input id="q" name="q" type="search" value="{{ filters.q }}" class="mono" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="state">Stage</label>
+      <select id="state" name="state">
+        <option value="">Any</option>
+        {% for value, label in states %}<option value="{{ value }}"{% if filters.state == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="release">Release</label>
+      <select id="release" name="release">
+        <option value=""{% if not release_filter %} selected{% endif %}>All releases</option>
+        {% for r in releases %}<option value="{{ r }}"{% if release_filter == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
+      </select>
+    </div>
+    <button class="btn secondary" type="submit">Show</button>
   </div>
-  <div class="field">
-    <label for="state">Stage</label>
-    <select id="state" name="state">
-      <option value="">Any</option>
-      {% for value, label in states %}<option value="{{ value }}"{% if filters.state == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
-    </select>
-  </div>
-  <div class="field">
-    <label for="release">Release</label>
-    <select id="release" name="release">
-      <option value=""{% if not filters.release %} selected{% endif %}>All releases</option>
-      {% for r in releases %}<option value="{{ r }}"{% if filters.release == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
-    </select>
-  </div>
-  <button class="btn secondary" type="submit">Show</button>
+  <details class="fold more-filters">
+    <summary>More filters{% if filters.more %} <span class="count">{{ filters.more }} on</span>{% endif %}</summary>
+    <div class="filter-groups">
+      <fieldset>
+        <legend>Admission</legend>
+        <div class="field">
+          <label for="admitted_from">Admitted from</label>
+          <input id="admitted_from" name="admitted_from" type="date" value="{{ filters.admitted_from or '' }}">
+        </div>
+        <div class="field">
+          <label for="admitted_to">Admitted to</label>
+          <input id="admitted_to" name="admitted_to" type="date" value="{{ filters.admitted_to or '' }}">
+        </div>
+        {{ select("transcript", "Transcript", choices.transcript, filters.transcript) }}
+        {{ select("baseline", "Customer accounts", choices.baseline, filters.baseline) }}
+      </fieldset>
+      <fieldset>
+        <legend>Results</legend>
+        <div class="field range">
+          <span class="label" id="claims-label">Claims</span>
+          <div class="pair" role="group" aria-labelledby="claims-label">
+            <input id="claims_min" name="claims_min" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_min if filters.claims_min is not none else '' }}" placeholder="From" aria-label="At least">
+            <span class="muted" aria-hidden="true">to</span>
+            <input id="claims_max" name="claims_max" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_max if filters.claims_max is not none else '' }}" placeholder="To" aria-label="At most">
+          </div>
+        </div>
+        {{ select("primary", "Primary claim (C03)", choices.primary, filters.primary) }}
+        <div class="field">
+          <label for="vertical">Vertical (C04)</label>
+          <select id="vertical" name="vertical">
+            <option value="">Any</option>
+            {% for v in verticals %}<option value="{{ v }}"{% if filters.vertical == v %} selected{% endif %}>{{ v | replace("_", " ") | lower | capitalize if v in ("UNMAPPED", "NO_ELIGIBLE_VERTICAL") else v }}</option>{% endfor %}
+          </select>
+        </div>
+        {{ select("grounding", "Has a claim that is", choices.grounding, filters.grounding) }}
+        {{ select("account", "Has a claim with", choices.account, filters.account) }}
+      </fieldset>
+      <fieldset>
+        <legend>Problems</legend>
+        {{ select("failed_at", "Failed at", choices.failed_at, filters.failed_at) }}
+      </fieldset>
+    </div>
+    <div class="filter-actions">
+      <button class="btn secondary" type="submit">Show</button>
+      {% if filters.more %}<a href="{{ clear_more }}">Clear these</a>{% endif %}
+    </div>
+  </details>
 </form>
+
+{% if chips %}
+<ul class="chips" aria-label="Filters in use">
+  {% for label, href in chips %}<li><span>{{ label }}</span><a href="{{ href }}" aria-label="Remove: {{ label }}"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></a></li>{% endfor %}
+</ul>
+{% endif %}
+{% if progress and progress.running %}{% include "_case_facts.html" %}{% endif %}
 
 {% if error %}
 <div class="panel error-box" role="status">
@@ -34,12 +99,13 @@
 <div class="table-wrap">
   <table class="stack">
     <caption class="visually-hidden">Case runs, newest first</caption>
-    <thead><tr><th scope="col">Case</th><th scope="col">Stage</th><th scope="col">Release</th><th scope="col">Admitted</th><th scope="col">Last change</th></tr></thead>
+    <thead><tr><th scope="col">Case</th><th scope="col">Stage</th><th scope="col" class="num">Claims</th><th scope="col">Release</th><th scope="col">Admitted</th><th scope="col">Last change</th></tr></thead>
     <tbody>
     {% for r in rows %}
     <tr>
       <td data-label="Case"><span><a class="mono" href="/cases/{{ r.case_run_id }}">{{ r.case_no }}</a></span></td>
       <td data-label="Stage"><span><span class="pill {{ r.pill }}">{{ r.state_label }}</span></span></td>
+      <td data-label="Claims" class="num"><span>{{ r.claims if r.claims is not none else "—" }}</span></td>
       <td data-label="Release"><span class="mono">{{ r.release_id or "not pinned" }}</span></td>
       <td data-label="Admitted"><span>{{ r.admitted_at.isoformat() | stamp }}</span></td>
       <td data-label="Last change"><span>{{ r.updated_at.isoformat() | stamp if r.updated_at else "—" }}</span></td>
@@ -48,15 +114,14 @@
     </tbody>
   </table>
 </div>
-{% set query = "&q=" ~ (filters.q | urlencode) ~ "&state=" ~ (filters.state or "") ~ "&release=" ~ (filters.release or "") %}
 <nav class="pager" aria-label="Pages">
-  {% if offset > 0 %}<a href="/cases?offset={{ [offset - page_rows, 0] | max }}{{ query }}">Newer</a>{% endif %}
+  {% if offset > 0 %}<a href="/cases?{{ (query | dictsort | list + [('offset', [offset - page_rows, 0] | max)]) | urlencode }}">Newer</a>{% endif %}
   <span class="muted">{{ offset + 1 }}–{{ offset + rows | length }}</span>
-  {% if more %}<a href="/cases?offset={{ offset + page_rows }}{{ query }}">Older</a>{% endif %}
+  {% if more %}<a href="/cases?{{ (query | dictsort | list + [('offset', offset + page_rows)]) | urlencode }}">Older</a>{% endif %}
 </nav>
 {% elif only_current %}
-<div class="empty"><h3>No case runs under {{ filters.release }} yet</h3><p>It's the release new cases use. <a href="/intake">Admit cases</a>, or <a href="/cases?release=">show every release</a>.</p></div>
-{% elif filters.q or filters.state or filters.release or offset %}
+<div class="empty"><h3>No case runs under {{ release_filter }} yet</h3><p>It's the release new cases use. <a href="/intake">Admit cases</a>, or <a href="/cases?release=">show every release</a>.</p></div>
+{% elif filters.active or release_filter or offset %}
 <div class="empty"><h3>No case runs match</h3><p>Try part of a case number, or clear a filter. <a href="/cases?release=">Show all</a></p></div>
 {% else %}
 <div class="empty"><h3>No case runs yet</h3><p>Cases appear here once they are admitted. <a href="/intake">Admit cases</a> from a date window, a list of case numbers, or synthetic ones.</p></div>

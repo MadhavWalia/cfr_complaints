@@ -305,7 +305,9 @@ def test_the_pipeline_and_cases_cover_the_current_release_unless_asked_for_all(t
     assert seen[-1] == "cfr-v2-phase-e"
 
     asked = []
-    monkeypatch.setattr(cases_view, "list_cases", lambda db, **kw: asked.append(kw["release"]) or [])
+    monkeypatch.setattr(
+        cases_view, "list_cases", lambda db, **kw: asked.append(kw["release"]) or cases_view.CasePage([], False)
+    )
     page = client.get("/cases").text
     assert asked[-1] == "cfr-v2-phase-e" and "No case runs under cfr-v2-phase-e yet" in page
     client.get("/cases?release=")

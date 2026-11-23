@@ -2,15 +2,21 @@
 
 Stage results are read through an INTERNAL-only reader, and only refs a run's stages wrote: the
 console never reads RESTRICTED artifacts (transcripts, source records, redaction maps), whatever
-it is asked for. Each case links to its trace and logs in Grafana.
+it is asked for. The one other read is the baseline profile Pass 2 names in its result (the
+customer accounts it was given, INTERNAL); the baseline's ref map is RESTRICTED and never read.
+Each case links to its trace and logs in Grafana.
+
+The list's filters (LDR-0037) are SQL where Postgres holds the fact (dates, the admission's
+transcript and baseline, a failed stage) and the local fact index (``facts.py``) where only a
+stage result does (claims, the primary claim, verticals, grounding).
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field, fields
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -46,10 +52,30 @@ _RUNS = (
     " LEFT JOIN latest l ON l.case_run_id = r.case_run_id"
     " LEFT JOIN release_manifest rm ON rm.manifest_ref = r.release_manifest_ref"
 )
+_LAST_OK = (  # the latest successful result of a stage
+    "(SELECT t.output_artifact_refs->>0 FROM task_execution t WHERE t.case_run_id = r.case_run_id"
+    " AND t.logical_task_id = '{task}' AND t.status = 'SUCCEEDED' ORDER BY t.created_at DESC LIMIT 1)"
+)
 CASES_SQL = (
-    f"{_RUNS} WHERE (%(state)s::text IS NULL OR l.state = %(state)s)"
+    f"WITH latest AS ({_LATEST})"
+    " SELECT r.case_run_id, c.source_case_id, rm.release_id, r.release_manifest_ref, r.lane, l.state,"
+    " r.created_at, l.created_at, "
+    + ", ".join(_LAST_OK.format(task=task) for task in ("c02.pass2", "c03.primary_selection", "c04.routing"))
+    + ' FROM case_run r JOIN "case" c ON c.case_id = r.case_id'
+    " LEFT JOIN latest l ON l.case_run_id = r.case_run_id"
+    " LEFT JOIN release_manifest rm ON rm.manifest_ref = r.release_manifest_ref"
+    " LEFT JOIN case_run_event a ON a.case_run_id = r.case_run_id AND a.state = 'ADMITTED'"
+    " WHERE (%(state)s::text IS NULL OR l.state = %(state)s)"
     " AND (%(release)s::text IS NULL OR rm.release_id = %(release)s)"
     " AND (%(q)s::text IS NULL OR c.source_case_id ILIKE %(like)s OR r.case_run_id = %(q)s)"
+    " AND (%(admitted_from)s::date IS NULL OR r.created_at >= %(admitted_from)s::date)"
+    " AND (%(admitted_to)s::date IS NULL OR r.created_at < %(admitted_to)s::date + 1)"
+    " AND (%(transcript)s::text IS NULL OR coalesce(a.detail->>'transcript', '') = %(transcript)s)"
+    " AND (%(baseline)s::text IS NULL OR (coalesce(a.detail->>'baseline', '') = 'present') = (%(baseline)s = 'present'))"
+    " AND (%(failed_at)s::text IS NULL OR (EXISTS (SELECT 1 FROM task_execution f WHERE f.case_run_id = r.case_run_id"
+    " AND f.logical_task_id = %(failed_at)s AND f.status IN ('FAILED_RETRYABLE', 'FAILED_PERMANENT'))"
+    " AND NOT EXISTS (SELECT 1 FROM task_execution s WHERE s.case_run_id = r.case_run_id"
+    " AND s.logical_task_id = %(failed_at)s AND s.status = 'SUCCEEDED')))"
     " ORDER BY r.created_at DESC, r.case_run_id LIMIT %(limit)s OFFSET %(offset)s"
 )
 CASE_SQL = f"{_RUNS} WHERE r.case_run_id = %(run)s"
@@ -80,6 +106,7 @@ class CaseRow:
     state: str | None
     admitted_at: datetime
     updated_at: datetime | None
+    claims: int | None = None  # from the fact index, on the list only; None: no Pass 2 result indexed
 
     @property
     def state_label(self) -> str:
@@ -161,21 +188,223 @@ def _row(r: Sequence[Any]) -> CaseRow:
     return CaseRow(*r)
 
 
+# --- the list's filters (LDR-0037) -------------------------------------------------------------
+
+FAILED_AT = {task: label for task, label in STAGE_LABELS.items() if task != "c05.planning"}
+TRANSCRIPT = {"present": "With a transcript", "absent": "Without a transcript"}
+BASELINE = {"present": "With customer accounts", "absent": "Without customer accounts"}
+PRIMARY = {"SELECTED": "Selected", "AMBIGUOUS": "Ambiguous", "NO_ELIGIBLE_CLAIM": "No eligible claim"}
+GROUNDING = {
+    "GROUNDED": "Grounded",
+    "PARTIAL": "Partial",
+    "EVENT_TIME_APPROXIMATE": "Event time approximate",
+    "UNGROUNDED": "Ungrounded",
+}
+ACCOUNTS = {
+    "RESOLVED": "One account",
+    "CANDIDATES": "Several possible accounts",
+    "NONE": "No account named",
+    "NOT_APPLICABLE": "Not about an account",
+}
+ROUTING_OUTCOMES = ("UNMAPPED", "NO_ELIGIBLE_VERTICAL")
+MAX_CLAIMS = 99
+
+
+def _date(value: str | None) -> date | None:
+    try:
+        return date.fromisoformat((value or "").strip()) if value else None
+    except ValueError:
+        return None
+
+
+def _count(value: str | None) -> int | None:
+    try:
+        n = int((value or "").strip())
+    except ValueError:
+        return None
+    return n if 0 <= n <= MAX_CLAIMS else None
+
+
+def _one_of(value: str | None, allowed: Mapping[str, str] | Sequence[str]) -> str | None:
+    return value if value in allowed else None
+
+
+@dataclass(frozen=True)
+class CaseFilters:
+    """What the Cases page filters on. Values not on offer are dropped, never passed to SQL."""
+
+    q: str = ""
+    state: str | None = None
+    admitted_from: date | None = None
+    admitted_to: date | None = None
+    transcript: str | None = None
+    baseline: str | None = None
+    failed_at: str | None = None
+    claims_min: int | None = None
+    claims_max: int | None = None
+    primary: str | None = None
+    vertical: str | None = None
+    grounding: str | None = None
+    account: str | None = None
+
+    RESULT_FIELDS = ("claims_min", "claims_max", "primary", "vertical", "grounding", "account")
+    MORE_FIELDS = ("admitted_from", "admitted_to", "transcript", "baseline", "failed_at", *RESULT_FIELDS)
+
+    @classmethod
+    def parse(cls, params: Mapping[str, str | None]) -> CaseFilters:
+        claims_min, claims_max = _count(params.get("claims_min")), _count(params.get("claims_max"))
+        if claims_min is not None and claims_max is not None and claims_max < claims_min:
+            claims_min, claims_max = claims_max, claims_min
+        start, end = _date(params.get("admitted_from")), _date(params.get("admitted_to"))
+        if start and end and end < start:
+            start, end = end, start
+        vertical = (params.get("vertical") or "").strip()
+        return cls(
+            q=(params.get("q") or "").strip(),
+            state=_one_of(params.get("state"), STATES),
+            admitted_from=start,
+            admitted_to=end,
+            transcript=_one_of(params.get("transcript"), TRANSCRIPT),
+            baseline=_one_of(params.get("baseline"), BASELINE),
+            failed_at=_one_of(params.get("failed_at"), FAILED_AT),
+            claims_min=claims_min,
+            claims_max=claims_max,
+            primary=_one_of(params.get("primary"), PRIMARY),
+            vertical=vertical if vertical and len(vertical) <= 80 else None,
+            grounding=_one_of(params.get("grounding"), GROUNDING),
+            account=_one_of(params.get("account"), ACCOUNTS),
+        )
+
+    @property
+    def on_results(self) -> bool:
+        """Whether a filter needs the stage results (the fact index), not just Postgres."""
+        return any(getattr(self, name) is not None for name in self.RESULT_FIELDS)
+
+    @property
+    def more(self) -> int:
+        """How many of the "More filters" are set; a date or claims range counts once."""
+        return len(self.chips())
+
+    @property
+    def active(self) -> bool:
+        return bool(self.q) or self.state is not None or self.more > 0
+
+    def query(self, **changes: Any) -> dict[str, str]:
+        """The filters as URL parameters, with ``changes``; unset ones left out."""
+        values = {f.name: getattr(self, f.name) for f in fields(self)} | changes
+        return {k: str(v) for k, v in values.items() if v not in (None, "")}
+
+    def chips(self) -> list[tuple[str, tuple[str, ...]]]:
+        """The "More filters" in use, as (label, the parameters removing it clears)."""
+        found: list[tuple[str, tuple[str, ...]]] = []
+        start, end = self.admitted_from, self.admitted_to
+        if start or end:
+            label = (
+                f"Admitted {start} to {end}"
+                if start and end
+                else f"Admitted from {start}"
+                if start
+                else f"Admitted by {end}"
+            )
+            found.append((label, ("admitted_from", "admitted_to")))
+        for name, labels in (("transcript", TRANSCRIPT), ("baseline", BASELINE)):
+            value = getattr(self, name)
+            if value:
+                found.append((labels[value], (name,)))
+        if self.failed_at:
+            found.append((f"Failed at {FAILED_AT[self.failed_at]}", ("failed_at",)))
+        lo, hi = self.claims_min, self.claims_max
+        if lo is not None or hi is not None:
+            if lo == hi:
+                label = f"{lo} claim{'' if lo == 1 else 's'}"
+            elif hi is None:
+                label = f"{lo} or more claims"
+            elif lo is None:
+                label = f"Up to {hi} claim{'' if hi == 1 else 's'}"
+            else:
+                label = f"{lo} to {hi} claims"
+            found.append((label, ("claims_min", "claims_max")))
+        if self.primary:
+            found.append((f"Primary claim: {PRIMARY[self.primary].lower()}", ("primary",)))
+        if self.vertical:
+            found.append((f"Vertical: {self.vertical}", ("vertical",)))
+        if self.grounding:
+            found.append((f"A claim {GROUNDING[self.grounding].lower()}", ("grounding",)))
+        if self.account:
+            found.append((f"A claim: {ACCOUNTS[self.account].lower()}", ("account",)))
+        return found
+
+    def matches(self, facts: Mapping[str, Mapping[str, Any]]) -> bool:
+        """``facts`` by task. A result filter needs that stage's result: a run without it doesn't match."""
+        pass2, c03, c04 = (facts.get(t) for t in ("c02.pass2", "c03.primary_selection", "c04.routing"))
+        if self.claims_min is not None or self.claims_max is not None or self.grounding or self.account:
+            if pass2 is None:
+                return False
+            n = int(pass2.get("claims", 0))
+            if self.claims_min is not None and n < self.claims_min:
+                return False
+            if self.claims_max is not None and n > self.claims_max:
+                return False
+            if self.grounding and self.grounding not in pass2.get("grounding", ()):
+                return False
+            if self.account and self.account not in pass2.get("accounts", ()):
+                return False
+        if self.primary and (c03 is None or c03.get("primary") != self.primary):
+            return False
+        return not (self.vertical and (c04 is None or self.vertical not in c04.get("verticals", ())))
+
+
+@dataclass(frozen=True)
+class CasePage:
+    rows: list[CaseRow]
+    more: bool  # is there a next page
+    unindexed: int = 0  # runs with a result the fact index doesn't hold yet: result filters can't see them
+
+
 def list_cases(
-    db, *, state: str | None = None, release: str | None = None, q: str | None = None, offset: int = 0
-) -> list[CaseRow]:
-    """A page of case runs, newest first. ``q`` matches a case number (part of it) or a run id."""
-    q = (q or "").strip() or None
+    db, *, release: str | None = None, filters: CaseFilters | None = None, offset: int = 0, facts=None
+) -> CasePage:
+    """A page of case runs, newest first. ``q`` matches a case number (part of it) or a run id.
+
+    Filters Postgres holds go into the SQL. Result filters read ``facts`` (a ``FactIndex``): every
+    run the SQL keeps is checked, then paged here.
+    """
+    filters = filters or CaseFilters()
+    q = filters.q or None
+    offset = max(0, offset)
+    on_results = filters.on_results and facts is not None
     params = {
-        "state": state if state in STATES else None,
+        "state": filters.state,
         "release": release or None,
         "q": q,
         "like": f"%{q}%" if q else None,
-        "limit": PAGE_ROWS + 1,  # one more: is there a next page
-        "offset": max(0, offset),
+        "admitted_from": filters.admitted_from,
+        "admitted_to": filters.admitted_to,
+        "transcript": filters.transcript,
+        "baseline": filters.baseline,
+        "failed_at": filters.failed_at,
+        "limit": None if on_results else PAGE_ROWS + 1,  # one more: is there a next page
+        "offset": 0 if on_results else offset,
     }
     with db.transaction() as tx:
-        return [_row(r) for r in tx.all(CASES_SQL, params)]
+        found = tx.all(CASES_SQL, params)
+    known = facts.get(ref for r in found for ref in r[8:11]) if facts is not None else {}
+    unindexed = sum(1 for r in found for ref in r[8:11] if ref and ref not in known)
+    rows: list[CaseRow] = []
+    for r in found:
+        by_task = {
+            task: known[ref]
+            for task, ref in zip(("c02.pass2", "c03.primary_selection", "c04.routing"), r[8:11], strict=True)
+            if ref in known
+        }
+        if on_results and not filters.matches(by_task):
+            continue
+        claims = by_task.get("c02.pass2", {}).get("claims")
+        rows.append(CaseRow(*r[:8], claims=claims))
+    if on_results:
+        page = rows[offset : offset + PAGE_ROWS + 1]
+        return CasePage(page[:PAGE_ROWS], len(page) > PAGE_ROWS, unindexed)
+    return CasePage(rows[:PAGE_ROWS], len(rows) > PAGE_ROWS, unindexed)
 
 
 def trace_id(traceparent: str | None) -> str | None:
@@ -224,6 +453,77 @@ def read_result(db, store, run: CaseRun, ref: str) -> bytes:
     if Classification.INTERNAL.value not in stored:
         raise NotShown(ref)
     return store.get(ref, classification=Classification.INTERNAL, authorization=READER)
+
+
+def read_baseline(db, store, run: CaseRun, pass2: Any) -> bytes:
+    """The baseline profile Pass 2 was given: the customer accounts and fields it saw.
+
+    Only the ref the run's own Pass 2 result names, and only INTERNAL; anything else raises
+    ``NotShown``. Never the ref map (RESTRICTED), which holds the identifiers.
+    """
+    ref = pass2.get("baseline_profile_ref") if isinstance(pass2, Mapping) else None
+    pass2_refs = {r for s in run.stages if s.task == "c02.pass2" for r in s.refs}
+    if not isinstance(ref, str) or not ref.startswith("sha256:") or not pass2_refs:
+        raise NotShown(str(ref))
+    with db.transaction() as tx:
+        stored = set(tx.column(CLASSIFICATIONS_SQL, {"sha": ref.removeprefix("sha256:")}))
+    if Classification.INTERNAL.value not in stored:
+        raise NotShown(ref)
+    return store.get(ref, classification=Classification.INTERNAL, authorization=READER)
+
+
+# The baseline's fields, in the order the case page shows them (BaselineAccount).
+ACCOUNT_FIELDS = (
+    ("product", "Product"),
+    ("co_brand_partner", "Co-brand"),
+    ("business_unit", "Business unit"),
+    ("account_type", "Type"),
+    ("status_at_case", "Status at case"),
+    ("opened_month", "Opened"),
+    ("card_replaced_month", "Card replaced"),
+    ("holder", "Holder"),
+    ("card_role", "Card role"),
+    ("role_detail", "Role detail"),
+    ("market", "Market"),
+)
+
+
+@dataclass(frozen=True)
+class CustomerData:
+    """What Pass 2 was given about the customer, shaped for the case page."""
+
+    received: str | None  # the case received date Pass 2 saw
+    temporal_quality: str | None
+    accounts: list[Mapping[str, Any]]
+    columns: list[tuple[str, str]]  # only the fields some account has
+    claims_by_account: dict[str, int]  # account ref → how many claims name it
+
+    def label(self, ref: str) -> str:
+        """``A1 · Platinum Card`` (the product, when known)."""
+        account = next((a for a in self.accounts if a.get("account_ref") == ref), None)
+        product = (account or {}).get("product")
+        return f"{ref} · {product}" if product else ref
+
+    def is_case_account(self, ref: str) -> bool:
+        return any(a.get("account_ref") == ref and a.get("is_case_account") for a in self.accounts)
+
+
+def customer_data(pass2: Mapping[str, Any], baseline: Any) -> CustomerData:
+    accounts = (
+        [a for a in (baseline or {}).get("accounts", ()) if isinstance(a, Mapping)]
+        if isinstance(baseline, Mapping)
+        else []
+    )
+    columns = [(key, label) for key, label in ACCOUNT_FIELDS if any(a.get(key) for a in accounts)]
+    used: dict[str, int] = {}
+    for claim in pass2.get("claims", ()):
+        for ref in (claim.get("account_refs") or ()) if isinstance(claim, Mapping) else ():
+            used[ref] = used.get(ref, 0) + 1
+    received = pass2.get("case_received_date") or (
+        baseline.get("case_received_date") if isinstance(baseline, Mapping) else None
+    )
+    quality = baseline.get("temporal_quality") if isinstance(baseline, Mapping) else None
+    return CustomerData(received, quality, accounts, columns, used)
 
 
 def parse_result(data: bytes) -> Any:
@@ -341,15 +641,20 @@ __all__ = [
     "PAGE_ROWS",
     "STAGES",
     "STATES",
+    "CaseFilters",
+    "CasePage",
     "CaseRow",
     "CaseRun",
+    "CustomerData",
     "NotShown",
     "Release",
     "Withheld",
     "blockers",
+    "customer_data",
     "list_cases",
     "logs_url",
     "parse_result",
+    "read_baseline",
     "read_case",
     "read_releases",
     "read_result",
