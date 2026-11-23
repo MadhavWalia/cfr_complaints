@@ -3,6 +3,34 @@
 {% macro claim_text(id) %}{% set c = claims.get(id) %}{% if c %}{{ c.statement }}{% else %}<span class="mono">{{ id }}</span>{% endif %}{% endmacro %}
 {% macro words(value) %}{{ (value or "") | replace("_", " ") | lower | capitalize }}{% endmacro %}
 {% macro section(p) %}<li>{{ p.file_name }} · {{ p.section_title }} <span class="muted">p. {{ p.page_start }}{% if p.page_end != p.page_start %}–{{ p.page_end }}{% endif %}</span></li>{% endmacro %}
+{% macro claim_accounts(c, customer) %}{% set refs = c.account_refs or [] %}{% set res = c.account_resolution or "NONE" %}
+{%- if res == "NOT_APPLICABLE" %}not about an account
+{%- elif not refs %}no account named
+{%- else %}{{ "account" if refs | length == 1 else "possible accounts" }} {% for r in refs %}<span class="nowrap">{{ customer.label(r) if customer else r }}{% if customer and customer.is_case_account(r) %} (case account){% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endif %}{% endmacro %}
+{% macro customer_fold(data, customer) %}
+{% if baseline is none %}
+<details class="fold group"><summary>Customer data <span class="count">none</span></summary>
+<div class="accounts"><p class="note muted">No customer accounts were found for this case at admission, so Pass 2 had only Pass 1's items{% if customer and customer.received %} and the case received date ({{ customer.received }}){% endif %}. Claims can't name an account.</p></div></details>
+{% elif baseline.reason is defined %}
+<details class="fold group"><summary>Customer data</summary><div class="accounts"><p class="note muted">{{ baseline.reason }}</p></div></details>
+{% else %}
+<details class="fold group"><summary>Customer data <span class="count">{{ customer.accounts | length }} account{{ "" if customer.accounts | length == 1 else "s" }}</span></summary>
+<div class="accounts">
+  <p class="note muted">What Pass 2 was given besides Pass 1's items: the case received date{% if customer.received %} ({{ customer.received }}){% endif %} and these accounts{% if customer.temporal_quality == "CURRENT_ONLY" %}, as they stood when the case was admitted (current data, not history){% endif %}. Accounts are named A1, A2…; their identifiers never reach the model.</p>
+  <div class="table-wrap">
+    <table class="account-grid">
+      <caption class="visually-hidden">Customer accounts Pass 2 was given, one column per account</caption>
+      <thead><tr><th scope="col"><span class="visually-hidden">Field</span></th>{% for a in customer.accounts %}<th scope="col"><span class="mono">{{ a.account_ref }}</span>{% if a.is_case_account %}<span class="case-account">case account</span>{% endif %}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for key, label in customer.columns %}<tr><th scope="row">{{ label }}</th>{% for a in customer.accounts %}<td>{{ a.get(key) or "—" }}</td>{% endfor %}</tr>
+        {% endfor %}<tr class="used"><th scope="row">Claims naming it</th>{% for a in customer.accounts %}<td>{{ customer.claims_by_account.get(a.account_ref, 0) or "—" }}</td>{% endfor %}</tr>
+      </tbody>
+    </table>
+  </div>
+</div></details>
+{% endif %}
+{% endmacro %}
 {% block main %}
 <div class="head">
   <h1>Case <span class="mono-h">{{ run.row.case_no }}</span></h1>
@@ -71,10 +99,11 @@
       <ul class="items">{% for s in data.agent_statements %}<li><p>{{ s.text }}</p><p class="tags">{{ words(s.kind) }}</p></li>{% endfor %}</ul></details>{% endif %}
       {% if data.dropped %}<p class="muted">{{ data.dropped | length }} item{{ "" if data.dropped | length == 1 else "s" }} dropped by the checks.</p>{% endif %}
       {% elif stage.task == "c02.pass2" %}
+      {{ customer_fold(data, customer) }}
       <h4>Claims <span class="count">{{ data.claims | length }}</span></h4>
       <ul class="items">{% for c in data.claims %}<li>
         <p>{{ c.statement }}</p>
-        <p class="tags">{{ words(c.grounding_status) }} · account {{ (c.account_resolution or "") | replace("_", " ") | lower }}{% if c.event_window_start %} · <span class="nowrap">{{ c.event_window_start }}</span> to <span class="nowrap">{{ c.event_window_end or "?" }}</span>{% endif %}</p>
+        <p class="tags">{{ words(c.grounding_status) }} · {{ claim_accounts(c, customer) }}{% if c.event_window_start %} · <span class="nowrap">{{ c.event_window_start }}</span> to <span class="nowrap">{{ c.event_window_end or "?" }}</span>{% endif %}</p>
         {% if c.evidence_needs %}<details class="fold"><summary>Verification points <span class="count">{{ c.evidence_needs | length }}</span></summary>
         <ul class="needs">{% for n in c.evidence_needs %}<li>{{ n.description }} <span class="mono muted">{{ n.source_type }}</span></li>{% endfor %}</ul></details>{% endif %}
       </li>{% endfor %}</ul>

@@ -15,7 +15,7 @@ from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -27,7 +27,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from cfr_v2.telemetry import get_logger
 
-from . import cases, commands, formats, optimize_view, release_files
+from . import cases, commands, facts, formats, optimize_view, release_files
 from . import status as pipeline
 from .diagnosis import diagnose
 from .jobs import Job, JobRunner, JobStatus, read_progress
@@ -101,6 +101,8 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         db = app.state.db
         if db is not None:
             db.close()
+        if app.state.indexer is not None:
+            app.state.indexer.index.close()
 
     app = FastAPI(title="CFR console", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -109,6 +111,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     app.state.csrf = secrets.token_urlsafe(32)
     app.state.db = None
     app.state.store = None  # set by tests to an in-memory store
+    app.state.indexer = None  # the Cases filters' fact index (facts.py), opened when first needed
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.globals.update(areas=AREAS, catalogue=commands.BY_ID, tag_help=commands.TAGS)
     templates.env.filters.update(
@@ -142,6 +145,11 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
 
             app.state.store = S3ArtifactStore(S3Settings.from_env(settings.env))
         return app.state.store
+
+    def indexer() -> facts.Indexer:
+        if app.state.indexer is None:
+            app.state.indexer = facts.Indexer(facts.FactIndex(settings.workspace / "case_facts.sqlite"))
+        return app.state.indexer
 
     def resolver(db):
         from cfr_v2.contracts import AuthorizationContext
@@ -348,37 +356,69 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         return type(exc).__name__
 
     @app.get("/cases", response_class=HTMLResponse)
-    def case_list(
-        request: Request, state: str | None = None, release: str | None = None, q: str | None = None, offset: int = 0
-    ):
-        rows, error = [], None
+    def case_list(request: Request, release: str | None = None, offset: int = 0):
+        params = dict(request.query_params)
+        filters = cases.CaseFilters.parse(params)
+        listed, error, progress, verticals = cases.CasePage([], False), None, None, []
         current = release is None  # no release asked for: the current one (LDR-0029); "" is every release
         if current:
             release = settings.release_id or ""
         try:
-            rows = cases.list_cases(database(), state=state, release=release, q=q, offset=offset)
+            db = database()
+            index = indexer()
+            try:  # results the index doesn't hold yet are read in the background
+                progress = index.start(db, artifact_store())
+            except Exception as exc:  # noqa: BLE001 - no artifact store: the list still works, result filters can't
+                logger.warning("console: case facts unavailable: %s", type(exc).__name__)
+            listed = cases.list_cases(db, release=release, filters=filters, offset=offset, facts=index.index)
+            verticals = index.index.verticals()
         except Exception as exc:  # noqa: BLE001 - the page says the database is down
             error = _unavailable(exc)
-        filters = {
-            "state": state if state in cases.STATES else None,
-            "release": release or None,
-            "q": (q or "").strip(),
-        }
-        only_current = current and bool(release) and not (filters["state"] or filters["q"] or offset)
+        only_current = current and bool(release) and not (filters.active or offset)
+        chosen = {**filters.query(), "release": release or ""}
+        chips = [
+            (label, "/cases?" + urlencode({k: v for k, v in chosen.items() if k not in keys}))
+            for label, keys in filters.chips()
+        ]
         return page(
             request,
             "cases.html",
             title="Cases",
-            rows=rows[: cases.PAGE_ROWS],
-            more=len(rows) > cases.PAGE_ROWS,
+            rows=listed.rows,
+            more=listed.more,
+            unindexed=listed.unindexed,
+            progress=progress,
             offset=max(0, offset),
             page_rows=cases.PAGE_ROWS,
             filters=filters,
+            release_filter=release or None,
+            query=chosen,
+            chips=chips,
+            clear_more="/cases?"
+            + urlencode({k: v for k, v in chosen.items() if k not in cases.CaseFilters.MORE_FIELDS}),
             states=[(s, cases.STATE_LABELS[s]) for s in cases.STATES],
             releases=[path.stem for path in sorted((settings.repo_root / "registry" / "releases").glob("*.yaml"))],
+            choices={
+                "transcript": cases.TRANSCRIPT,
+                "baseline": cases.BASELINE,
+                "failed_at": cases.FAILED_AT,
+                "primary": cases.PRIMARY,
+                "grounding": cases.GROUNDING,
+                "account": cases.ACCOUNTS,
+            },
+            verticals=sorted(
+                set(verticals) - set(cases.ROUTING_OUTCOMES) | ({filters.vertical} if filters.vertical else set())
+            )
+            + list(cases.ROUTING_OUTCOMES),
             only_current=only_current,
             error=error,
         )
+
+    @app.get("/partials/case-facts", response_class=HTMLResponse)
+    def case_facts_progress(request: Request):
+        """How far the background read of stage results has got, for the note under the filters."""
+        progress = app.state.indexer.progress if app.state.indexer is not None else None
+        return templates.TemplateResponse(request, "_case_facts.html", {"progress": progress})
 
     def _case(case_run_id: str):
         try:
@@ -407,9 +447,18 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
                 logger.warning("console: stage result unreadable: %s", type(exc).__name__)
                 results[stage.task] = cases.Withheld(f"Can't read it from the artifact store ({type(exc).__name__}).")
         claims = {}
+        baseline: Any = None  # the accounts Pass 2 was given, or why they aren't shown
         pass2 = results.get("c02.pass2")
         if isinstance(pass2, dict):
             claims = {c.get("claim_id"): c for c in pass2.get("claims", []) if isinstance(c, dict)}
+            if pass2.get("baseline_profile_ref"):
+                try:
+                    baseline = cases.parse_result(cases.read_baseline(database(), artifact_store(), run, pass2))
+                except cases.NotShown:
+                    baseline = cases.Withheld("It isn't INTERNAL, so the console doesn't show it.")
+                except Exception as exc:  # noqa: BLE001 - the rest of the case still shows
+                    logger.warning("console: baseline unreadable: %s", type(exc).__name__)
+                    baseline = cases.Withheld(f"Can't read it from the artifact store ({type(exc).__name__}).")
         return page(
             request,
             "case.html",
@@ -417,6 +466,8 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             run=run,
             results=results,
             claims=claims,
+            baseline=baseline,
+            customer=cases.customer_data(pass2, baseline) if isinstance(pass2, dict) else None,
             trace_url=cases.trace_url(settings.grafana_url, run),
             logs_url=cases.logs_url(settings.grafana_url, run),
         )

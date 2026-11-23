@@ -1,0 +1,12 @@
+{# The result filters' note: while stage results are still being read, cases not read yet can't match. #}
+{% if progress and progress.running %}
+<p id="case-facts" class="note facts-note" role="status" hx-get="/partials/case-facts" hx-trigger="every 3s" hx-swap="outerHTML">
+  Reading stage results for the filters: {{ "{:,}".format(progress.done) }} of {{ "{:,}".format(progress.total) }}. Cases not read yet are left out until then.
+</p>
+{% elif progress and progress.error %}
+<p id="case-facts" class="note facts-note" role="status">Couldn't read the stage results ({{ progress.error }}), so the result filters may miss cases. Reload to try again.</p>
+{% elif progress and progress.total %}
+<p id="case-facts" class="note facts-note" role="status">Read the results of every case{% if progress.failed %}, except {{ progress.failed }} that couldn't be read{% endif %}. <a href="">Reload</a> to see every match.</p>
+{% else %}
+<p id="case-facts" hidden></p>
+{% endif %}
