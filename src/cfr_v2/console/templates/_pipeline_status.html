@@ -11,13 +11,11 @@
   </ul>
 </section>
 {% endif %}
-<section class="panel" aria-labelledby="line-h">
+<section class="{{ 'notice critical' if status.error else 'panel' }}" aria-labelledby="line-h">
   <h2 id="line-h" class="visually-hidden">Cases by stage</h2>
   {% if status.error %}
-  <div class="error-box" role="status">
-    <strong>Can't read the state database ({{ status.error }}).</strong>
-    <p class="muted">Is Postgres running? Start it with <span class="mono">docker compose up -d</span>. This panel tries again every 5 seconds.</p>
-  </div>
+  <strong role="status">Can't read the state database ({{ status.error }}).</strong>
+  <p>Check that Postgres is running: start it with <span class="mono">docker compose up -d</span>. This panel tries again every 5 seconds.</p>
   {% else %}
   <p class="caption"><span>{% if view == "queue" %}Queued and running case runs, by release.{% else %}Case runs at each stage now, {% if status.release %}under <span class="mono">{{ status.release }}</span>, the release new cases use. <a href="/?scope=all">All releases</a>{% else %}across releases.{% if release_id %} <a href="/">Only {{ release_id }}</a>{% endif %}{% endif %} · <a href="/help#stages">What the stages do</a>{% endif %}</span> <span class="updated" data-updated>Updated {{ updated }}</span></p>
   {% if view != "queue" %}
@@ -38,14 +36,14 @@
     {% if status.releases %}
     <table class="compact stack">
       <caption class="visually-hidden">Queued and running case runs by release</caption>
-      <thead><tr><th scope="col">Release</th><th scope="col" class="num">Queued</th><th scope="col" class="num">Running</th><th scope="col">Can a worker run it?</th></tr></thead>
+      <thead><tr><th scope="col">Release</th><th scope="col" class="num">Queued</th><th scope="col" class="num">Running</th><th scope="col">Can a Worker Run It?</th></tr></thead>
       <tbody>
       {% for r in status.releases %}
       <tr>
         <td data-label="Release"><span><a class="mono" href="/releases#{{ r.manifest_ref.split('@')[0] }}" title="{{ r.manifest_ref }}">{{ r.manifest_ref.split('@')[0] }}</a></span></td>
         <td class="num" data-label="Queued"><span>{{ "{:,}".format(r.queued) }}</span></td>
         <td class="num" data-label="Running"><span>{{ "{:,}".format(r.running) }}</span></td>
-        <td data-label="Can a worker run it?"><span>{% if r.compatible %}Yes, it matches this code
+        <td data-label="Can a Worker Run It?"><span>{% if r.compatible %}Yes, it matches this code
           {% elif r.unknown %}<strong>No:</strong> the release was never pinned
           {% else %}<strong>No:</strong> it doesn't match this code<span class="detail">{{ r.mismatches | map('string') | join('; ') }}</span>{% endif %}
           {% if not r.compatible and r.queued %}<span class="detail"><a href="/system?fill=system.cancel&amp;release={{ r.manifest_ref.split('@')[0] | urlencode }}#system.cancel">Cancel its {{ "{:,}".format(r.queued) }} queued runs</a></span>{% endif %}</span></td>

@@ -567,6 +567,19 @@ def test_the_cases_page_offers_the_filters_and_shows_those_in_use(client, monkey
     assert "No case runs match" in page
 
 
+def test_the_pager_keeps_both_chevrons_and_disables_the_one_at_an_end(client, monkeypatch):
+    from datetime import UTC, datetime
+
+    at = datetime(2026, 11, 20, 9, 0, tzinfo=UTC)
+    row = cases.CaseRow("run-1", "SYN1", "cfr-v2-phase-e", "x", "batch", "PLAN_READY", at, at, claims=2)
+    monkeypatch.setattr(cases, "list_cases", lambda db, **kw: cases.CasePage([row], True))
+    first = client.get("/cases?release=").text
+    assert "Case runs 1–1" in first
+    assert 'aria-disabled="true" aria-label="Newer case runs (this is the first page)"' in first
+    assert 'aria-label="Older case runs"' in first and "offset=50" in first
+    assert 'placeholder="Search case runs" aria-describedby="q-help"' in first  # the search field's hint
+
+
 # --- the fact index ----------------------------------------------------------------------------
 
 

@@ -14,9 +14,13 @@
 </div>
 <form class="find-form" method="get" action="/cases" role="search">
   <div class="find">
-    <div class="field">
+    <div class="field wide">
       <label for="q">Case number or run id</label>
-      <input id="q" name="q" type="search" value="{{ filters.q }}" class="mono" spellcheck="false" autocomplete="off">
+      <p class="help" id="q-help">Part of a case number, or a whole run id.</p>
+      <div class="search-box">
+        <input id="q" name="q" type="search" value="{{ filters.q }}" class="mono" spellcheck="false" autocomplete="off" placeholder="Search case runs" aria-describedby="q-help">
+        <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+      </div>
     </div>
     <div class="field">
       <label for="state">Stage</label>
@@ -32,7 +36,7 @@
         {% for r in releases %}<option value="{{ r }}"{% if release_filter == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
       </select>
     </div>
-    <button class="btn secondary sm" type="submit">Search</button>
+    <button class="btn secondary" type="submit">Search</button>
   </div>
   <details class="fold more-filters">
     <summary><span class="when-closed">Show</span><span class="when-open">Hide</span> more filters{% if filters.more %} <span class="count">({{ filters.more }} on)</span>{% endif %}</summary>
@@ -93,15 +97,15 @@
 {% if progress and progress.running %}{% include "_case_facts.html" %}{% endif %}
 
 {% if error %}
-<div class="panel error-box" role="status">
+<div class="notice critical" role="status">
   <strong>Can't read the state database ({{ error }}).</strong>
-  <p class="muted">Is Postgres running? Start it with <span class="mono">docker compose up -d</span>, then reload.</p>
+  <p>Check that Postgres is running: start it with <span class="mono">docker compose up -d</span>, then reload.</p>
 </div>
 {% elif rows %}
 <div class="table-wrap">
   <table class="stack">
     <caption class="visually-hidden">Case runs, newest first</caption>
-    <thead><tr><th scope="col">Case</th><th scope="col">Stage</th><th scope="col" class="num">Claims</th><th scope="col">Release</th><th scope="col">Admitted</th><th scope="col">Last change</th></tr></thead>
+    <thead><tr><th scope="col">Case</th><th scope="col">Stage</th><th scope="col" class="num">Claims</th><th scope="col">Release</th><th scope="col">Admitted</th><th scope="col">Last Change</th></tr></thead>
     <tbody>
     {% for r in rows %}
     <tr>
@@ -110,22 +114,24 @@
       <td data-label="Claims" class="num"><span>{{ r.claims if r.claims is not none else "—" }}</span></td>
       <td data-label="Release"><span class="mono">{{ r.release_id or "not pinned" }}</span></td>
       <td data-label="Admitted"><span>{{ r.admitted_at.isoformat() | stamp }}</span></td>
-      <td data-label="Last change"><span>{{ r.updated_at.isoformat() | stamp if r.updated_at else "—" }}</span></td>
+      <td data-label="Last Change"><span>{{ r.updated_at.isoformat() | stamp if r.updated_at else "—" }}</span></td>
     </tr>
     {% endfor %}
     </tbody>
   </table>
 </div>
-<nav class="pager" aria-label="Pages">
-  {% if offset > 0 %}<a href="/cases?{{ (query | dictsort | list + [('offset', [offset - page_rows, 0] | max)]) | urlencode }}">Newer</a>{% endif %}
-  <span class="muted">{{ offset + 1 }}–{{ offset + rows | length }}</span>
-  {% if more %}<a href="/cases?{{ (query | dictsort | list + [('offset', offset + page_rows)]) | urlencode }}">Older</a>{% endif %}
+<nav class="pager" aria-label="Pages of case runs">
+  <span class="range">Case runs {{ offset + 1 }}–{{ offset + rows | length }}</span>
+  {% if offset > 0 %}<a href="/cases?{{ (query | dictsort | list + [('offset', [offset - page_rows, 0] | max)]) | urlencode }}" aria-label="Newer case runs" title="Newer"><svg class="icon" aria-hidden="true"><use href="#i-prev"/></svg></a>
+  {% else %}<span role="link" aria-disabled="true" aria-label="Newer case runs (this is the first page)"><svg class="icon" aria-hidden="true"><use href="#i-prev"/></svg></span>{% endif %}
+  {% if more %}<a href="/cases?{{ (query | dictsort | list + [('offset', offset + page_rows)]) | urlencode }}" aria-label="Older case runs" title="Older"><svg class="icon" aria-hidden="true"><use href="#i-next"/></svg></a>
+  {% else %}<span role="link" aria-disabled="true" aria-label="Older case runs (this is the last page)"><svg class="icon" aria-hidden="true"><use href="#i-next"/></svg></span>{% endif %}
 </nav>
 {% elif only_current %}
-<div class="empty"><h3>No case runs under {{ release_filter }} yet</h3><p>It's the release new cases use. <a href="/intake">Admit cases</a>, or <a href="/cases?release=">show every release</a>.</p></div>
+<div class="empty"><h2>No case runs under {{ release_filter }} yet</h2><p>It's the release new cases use. <a href="/intake">Admit cases</a>, or <a href="/cases?release=">show every release</a>.</p></div>
 {% elif filters.active or release_filter or offset %}
-<div class="empty"><h3>No case runs match</h3><p>Try part of a case number, or clear a filter. <a href="/cases?release=">Show all</a></p></div>
+<div class="empty"><h2>No case runs match</h2><p>Try part of a case number, or clear a filter. <a href="/cases?release=">Show all</a></p></div>
 {% else %}
-<div class="empty"><h3>No case runs yet</h3><p>Cases appear here once they are admitted. <a href="/intake">Admit cases</a> from a date window, a list of case numbers, or synthetic ones.</p></div>
+<div class="empty"><h2>No case runs yet</h2><p>Cases appear here once they are admitted. <a href="/intake">Admit cases</a> from a date window, a list of case numbers, or synthetic ones.</p></div>
 {% endif %}
 {% endblock %}

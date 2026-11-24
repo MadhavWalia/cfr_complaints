@@ -12,6 +12,7 @@
       {% else %}
       <label for="{{ fid }}">{{ f.label }}{% if not f.required and not f.either %} <span class="muted">(optional)</span>{% endif %}</label>
       {% endif %}
+      {% if f.help %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}
       {% if f.kind in ("choice", "job") %}
       {% if f.kind == "job" and not options %}
       {% set source = catalogue[f.source] %}
@@ -49,7 +50,7 @@
         {%- if f.help %} aria-describedby="{{ hid }}"{% endif %}>
       {% endif %}
       {% endif %}
-      {% if f.help %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}
+      {% if f.help and f.kind == "check" %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}
     </div>
 {% endmacro %}
 

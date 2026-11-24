@@ -4,7 +4,7 @@
   <div class="table-wrap">
     <table class="stack">
       <caption class="visually-hidden">The pipeline's prompts, their gold sets and last runs</caption>
-      <thead><tr><th scope="col">Prompt</th><th scope="col">Version</th><th scope="col">Gold sets</th><th scope="col">Last run</th><th scope="col"><span class="visually-hidden">Choose</span></th></tr></thead>
+      <thead><tr><th scope="col">Prompt</th><th scope="col">Version</th><th scope="col">Gold Sets</th><th scope="col">Last Run</th><th scope="col"><span class="visually-hidden">Choose</span></th></tr></thead>
       <tbody>
       {% for row in prompt_rows %}
       {% set current = chosen is not none and chosen.prompt.prompt_id == row.prompt.prompt_id %}
