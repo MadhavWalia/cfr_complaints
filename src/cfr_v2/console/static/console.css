@@ -235,6 +235,9 @@ a.btn.cta:hover { text-decoration: underline; text-underline-offset: 3px; }
 .btn.secondary { background: var(--secondary-bg); color: var(--secondary-text); border-color: var(--border-brand); }
 .btn.secondary:hover { background: var(--secondary-bg-hover); }
 .btn.secondary:active { background: var(--secondary-bg-pressed); }
+/* A choice that holds (the chosen prompt): the Secondary button kept in its Pressed state, where
+   the DLS changes background and text. */
+.btn.secondary.pressed, .btn.secondary.pressed:hover { background: var(--secondary-bg-pressed); color: var(--selected-text); }
 .btn[disabled], .btn[aria-disabled="true"] { background: var(--disabled-bg); color: var(--disabled-text); border-color: transparent; cursor: not-allowed; }
 
 .form { display: grid; gap: var(--s4); justify-items: start; }
