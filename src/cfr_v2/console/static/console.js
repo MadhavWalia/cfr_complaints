@@ -164,29 +164,38 @@
   });
 })();
 
-/* DLS Multi Select: a field that opens a panel of checkboxes. The field says how many are chosen;
-   the panel closes on Escape or a click outside it. Without JavaScript it is still a working
-   disclosure of checkboxes. */
+/* DLS Multi Select and Dropdown (its single-select form): a field that opens a panel of
+   checkboxes or radios. The field says what is chosen; the panel closes on Escape or a click
+   outside it, and a dropdown also on a pick (a click, Space or Enter; arrow keys only move the
+   choice). Without JavaScript each is still a working disclosure. */
 (() => {
   const label = (ms) => {
-    const chosen = [...ms.querySelectorAll('input[type="checkbox"]:checked')];
+    const chosen = [...ms.querySelectorAll("input:checked")];
     const out = ms.querySelector("[data-ms-value]");
     if (!out) return;
     out.textContent = chosen.length === 0 ? (ms.dataset.none || "Any")
       : chosen.length === 1 ? chosen[0].closest("label").textContent.trim()
       : `${chosen.length} items`;
   };
+  const close = (ms) => { ms.open = false; ms.querySelector("summary").focus(); };
   document.addEventListener("change", (event) => {
-    const ms = event.target.closest("details.ms");
+    const ms = event.target.closest?.("details.ms");
     if (ms) label(ms);
   });
   document.addEventListener("click", (event) => {
     document.querySelectorAll("details.ms[open]").forEach((ms) => { if (!ms.contains(event.target)) ms.open = false; });
+    // event.detail is 0 for the click a browser fires when arrow keys move a radio
+    if (event.detail > 0 && event.target.matches?.("details.ms.single input[type=radio]")) close(event.target.closest("details.ms"));
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
-    const ms = event.target.closest && event.target.closest("details.ms[open]");
-    if (ms) { ms.open = false; ms.querySelector("summary").focus(); }
+    const ms = event.target.closest?.("details.ms[open]");
+    if (!ms) return;
+    if (event.key === "Escape") close(ms);
+    else if (ms.classList.contains("single") && event.target.type === "radio" && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();  // Enter would send the form; the pick is the radio's
+      if (!event.target.checked) { event.target.checked = true; event.target.dispatchEvent(new Event("change", { bubbles: true })); }
+      close(ms);
+    }
   });
 })();
 
@@ -224,35 +233,42 @@
   });
 })();
 
-/* DLS Stepper: minus and plus step the field within its minimum and maximum; each is marked
-   unavailable at its end. The field still takes a typed value. */
+/* DLS Stepper: minus and plus step a number field by its step (1 when it takes any value), within
+   its minimum and maximum; each is marked unavailable at its end. The field still takes a typed
+   value. */
 (() => {
+  const bound = (input, name) => (input[name] === "" ? null : parseFloat(input[name]));
   const sync = (box) => {
     const input = box.querySelector("input");
     const value = parseFloat(input.value);
     const [down, up] = box.querySelectorAll("[data-step]");
-    const atMin = input.min !== "" && !Number.isNaN(value) && value <= parseFloat(input.min);
-    const atMax = input.max !== "" && !Number.isNaN(value) && value >= parseFloat(input.max);
-    down.setAttribute("aria-disabled", String(atMin));
-    up.setAttribute("aria-disabled", String(atMax));
+    const min = bound(input, "min");
+    const max = bound(input, "max");
+    down.setAttribute("aria-disabled", String(min !== null && value <= min));
+    up.setAttribute("aria-disabled", String(max !== null && value >= max));
   };
-  document.querySelectorAll("[data-stepper]").forEach(sync);
-  document.body.addEventListener("htmx:afterSwap", () => document.querySelectorAll("[data-stepper]").forEach(sync));
+  const syncAll = () => document.querySelectorAll("[data-stepper]").forEach(sync);
+  syncAll();
+  document.body.addEventListener("htmx:afterSwap", syncAll);
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-stepper] [data-step]");
     if (!button || button.getAttribute("aria-disabled") === "true") return;
     const box = button.closest("[data-stepper]");
     const input = box.querySelector("input");
-    if (input.value === "") input.value = input.min || "0";
-    try { button.dataset.step === "1" ? input.stepUp() : input.stepDown(); } catch (e) { return; }
     const step = input.step && input.step !== "any" ? input.step : "1";
     const places = (step.split(".")[1] || "").length;
-    input.value = parseFloat(input.value).toFixed(places);  // 0.35, not 0.35000000000000003
+    const min = bound(input, "min");
+    const max = bound(input, "max");
+    const current = parseFloat(input.value);
+    let next = Number.isNaN(current) ? (min ?? 0) : current + Number(button.dataset.step) * parseFloat(step);
+    if (min !== null) next = Math.max(min, next);
+    if (max !== null) next = Math.min(max, next);
+    input.value = next.toFixed(places);  // 0.35, not 0.35000000000000003
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    sync(box);
+    input.dispatchEvent(new Event("change", { bubbles: true }));
   });
   document.addEventListener("input", (event) => {
-    const box = event.target.closest && event.target.closest("[data-stepper]");
+    const box = event.target.closest?.("[data-stepper]");
     if (box) sync(box);
   });
 })();

@@ -69,20 +69,10 @@ class Field:
     either: bool = False  # one of a pair the command needs exactly one of: not marked optional
     step: float | None = None  # a number field's step; ints step by 1
 
-    STEPPER_MAX_STEPS = 64  # DLS Stepper: small, bounded ranges only; a wider one stays a text field
-
-    @property
-    def step_value(self) -> float:
-        return self.step if self.step is not None else 1
-
     @property
     def stepper(self) -> bool:
-        """Whether the form shows this number as a DLS Stepper (bounded, a few dozen steps at most)."""
-        if self.kind not in ("int", "float") or self.minimum is None or self.maximum is None:
-            return False
-        if self.kind == "float" and self.step is None:
-            return False
-        return (self.maximum - self.minimum) / self.step_value <= self.STEPPER_MAX_STEPS
+        """Whether the form shows this field as a DLS Stepper: every number field does."""
+        return self.kind in ("int", "float")
 
     def initial(self, ctx: Context) -> Any:
         return self.default(ctx) if callable(self.default) else self.default

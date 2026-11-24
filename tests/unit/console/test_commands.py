@@ -346,20 +346,28 @@ def test_every_command_says_what_it_does_and_counts_calls_where_it_can(ctx, tmp_
     assert BY_ID["routing.backfill"].estimate(ctx) is None  # no count yet
 
 
-def test_bounded_numbers_are_steppers_and_uploads_are_split_buttons(console):
+def test_number_fields_are_steppers_and_uploads_are_split_buttons(console):
     from cfr_v2.console.commands import Field
 
-    assert Field("n", "N", "int", minimum=1, maximum=32).stepper  # a few dozen steps
-    assert not Field("n", "N", "int", minimum=1, maximum=500).stepper  # too wide: a text field (DLS)
-    assert not Field("n", "N", "int", minimum=1).stepper  # unbounded
-    assert not Field("x", "X", "float", minimum=0, maximum=1).stepper  # a float needs its step
-    assert Field("x", "X", "float", minimum=0, maximum=1, step=0.05).stepper
+    assert Field("n", "N", "int", minimum=1, maximum=500).stepper
+    assert Field("n", "N", "int", minimum=1).stepper  # unbounded: minus stops at the minimum only
+    assert Field("x", "X", "float").stepper
+    assert not Field("t", "T").stepper
     _, client = console
     page = client.get("/evaluation").text
     assert "data-stepper" in page and 'step="0.05"' in page and "Between 0 and 1." in page
     assert 'aria-label="Increase Quote overlap to match"' in page
     assert "data-upload" in page and "Choose Files</button>" in page and "Remove All Files" in page
     assert "Accepts .xlsx." in page
+    assert 'step="any"' in client.get("/system").text  # a float with no step of its own
+
+
+def test_dropdowns_are_single_select_panels(console):
+    _, client = console
+    page = client.get("/evaluation").text
+    assert "<select" not in page
+    assert '<details class="ms single">' in page and 'role="radiogroup"' in page
+    assert 'type="radio"' in page
 
 
 def test_date_fields_are_text_with_the_calendar_button(console):

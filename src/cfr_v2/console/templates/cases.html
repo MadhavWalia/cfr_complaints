@@ -1,22 +1,15 @@
 {% extends "base.html" %}
+{% import "_fields.html" as fields %}
 {% macro select(name, label, options, value, any="Any") %}
 <div class="field">
-  <label for="{{ name }}">{{ label }}</label>
-  <select id="{{ name }}" name="{{ name }}">
-    <option value="">{{ any }}</option>
-    {% for v, text in options.items() %}<option value="{{ v }}"{% if value == v %} selected{% endif %}>{{ text }}</option>{% endfor %}
-  </select>
+  <span class="label" id="{{ name }}-label">{{ label }}</span>
+  {{ fields.dropdown(name, name, [("", any)] + options.items() | list, value or "") }}
 </div>
 {% endmacro %}
 {% macro multi(name, label, options, chosen, empty="Any") %}
 <div class="field">
   <span class="label" id="{{ name }}-label">{{ label }}</span>
-  <details class="ms" data-none="{{ empty }}">
-    <summary aria-labelledby="{{ name }}-label {{ name }}-value"><span data-ms-value id="{{ name }}-value">{% if not chosen %}{{ empty }}{% elif chosen | length == 1 %}{{ (options | selectattr(0, "equalto", chosen[0]) | map(attribute=1) | first) or chosen[0] }}{% else %}{{ chosen | length }} items{% endif %}</span><svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
-    <div class="ms-panel" role="group" aria-labelledby="{{ name }}-label">
-      {% for v, text in options %}<label><input type="checkbox" name="{{ name }}" value="{{ v }}"{% if v in chosen %} checked{% endif %}>{{ text }}</label>{% endfor %}
-    </div>
-  </details>
+  {{ fields.multi(name, name, options, chosen, empty) }}
 </div>
 {% endmacro %}
 {% block main %}
@@ -34,12 +27,10 @@
       </div>
     </div>
     {{ multi("state", "Stage", states, filters.state) }}
+    {% set release_options = [("", "All releases")] %}{% for r in releases %}{% set _ = release_options.append((r, r)) %}{% endfor %}
     <div class="field">
-      <label for="release">Release</label>
-      <select id="release" name="release">
-        <option value=""{% if not release_filter %} selected{% endif %}>All releases</option>
-        {% for r in releases %}<option value="{{ r }}"{% if release_filter == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
-      </select>
+      <span class="label" id="release-label">Release</span>
+      {{ fields.dropdown("release", "release", release_options, release_filter or "") }}
     </div>
     <button class="btn secondary" type="submit">Search</button>
   </div>
@@ -67,9 +58,9 @@
           <span class="label" id="claims-label">Claims</span>
           <span class="help" id="claims-help">How many claims Pass 2 found. Leave one empty for no limit.</span>
           <div class="pair" role="group" aria-labelledby="claims-label" aria-describedby="claims-help">
-            <input id="claims_min" name="claims_min" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_min if filters.claims_min is not none else '' }}" placeholder="Any" aria-label="At least">
+            <div class="stepper" data-stepper><input id="claims_min" name="claims_min" type="number" step="1" inputmode="numeric" min="0" max="99" value="{{ filters.claims_min if filters.claims_min is not none else '' }}" placeholder="Any" aria-label="At least">{{ fields.steps("claims, at least") }}</div>
             <span class="muted" aria-hidden="true">to</span>
-            <input id="claims_max" name="claims_max" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_max if filters.claims_max is not none else '' }}" placeholder="Any" aria-label="At most">
+            <div class="stepper" data-stepper><input id="claims_max" name="claims_max" type="number" step="1" inputmode="numeric" min="0" max="99" value="{{ filters.claims_max if filters.claims_max is not none else '' }}" placeholder="Any" aria-label="At most">{{ fields.steps("claims, at most") }}</div>
           </div>
         </div>
         {{ select("primary", "Primary claim (C03)", choices.primary, filters.primary) }}

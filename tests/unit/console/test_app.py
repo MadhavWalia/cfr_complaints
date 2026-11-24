@@ -337,4 +337,4 @@ def test_cancel_queued_runs_is_a_system_form_over_the_release_files(tmp_path):
         .get("/system?fill=system.cancel&release=cfr-v2-phase-d")
         .text
     )
-    assert 'id="system.cancel" open' in page and '<option value="cfr-v2-phase-d" selected' in page
+    assert 'id="system.cancel" open' in page and 'value="cfr-v2-phase-d" checked' in page
