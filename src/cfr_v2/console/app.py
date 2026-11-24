@@ -376,8 +376,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
 
     @app.get("/cases", response_class=HTMLResponse)
     def case_list(request: Request, release: str | None = None, offset: int = 0):
-        params = dict(request.query_params)
-        filters = cases.CaseFilters.parse(params)
+        filters = cases.CaseFilters.parse(request.query_params)  # a multi-select repeats its name
         listed, error, progress, verticals = cases.CasePage([], False), None, None, []
         current = release is None  # no release asked for: the current one (LDR-0029); "" is every release
         if current:
@@ -425,9 +424,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
                 "grounding": cases.GROUNDING,
                 "account": cases.ACCOUNTS,
             },
-            verticals=sorted(
-                set(verticals) - set(cases.ROUTING_OUTCOMES) | ({filters.vertical} if filters.vertical else set())
-            )
+            verticals=sorted((set(verticals) | set(filters.vertical)) - set(cases.ROUTING_OUTCOMES))
             + list(cases.ROUTING_OUTCOMES),
             only_current=only_current,
             error=error,

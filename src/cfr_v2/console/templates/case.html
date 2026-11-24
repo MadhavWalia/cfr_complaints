@@ -59,7 +59,8 @@
   <p class="run-id"><span class="muted">Run id</span> {{ fields.copy(run.row.case_run_id, short=false) }}</p>
 </section>
 
-<section class="section" aria-labelledby="timeline-h">
+<div class="case-layout">
+<section class="section timeline" aria-labelledby="timeline-h">
   <h2 id="timeline-h">Timeline</h2>
   <ol class="tracker">
     {% for step in steps %}
@@ -72,7 +73,7 @@
   </ol>
 </section>
 
-<section class="section" aria-labelledby="results-h">
+<section class="section results" aria-labelledby="results-h">
   <h2 id="results-h">Stage results</h2>
   {% if not run.stages %}<p class="muted">No stage has finished yet.</p>{% endif %}
   {% for stage in run.stages %}
@@ -144,4 +145,5 @@
   </article>
   {% endfor %}
 </section>
+</div>
 {% endblock %}

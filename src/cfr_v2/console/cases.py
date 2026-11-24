@@ -65,7 +65,7 @@ CASES_SQL = (
     " LEFT JOIN latest l ON l.case_run_id = r.case_run_id"
     " LEFT JOIN release_manifest rm ON rm.manifest_ref = r.release_manifest_ref"
     " LEFT JOIN case_run_event a ON a.case_run_id = r.case_run_id AND a.state = 'ADMITTED'"
-    " WHERE (%(state)s::text IS NULL OR l.state = %(state)s)"
+    " WHERE (%(state)s::text[] IS NULL OR l.state = ANY(%(state)s))"
     " AND (%(release)s::text IS NULL OR rm.release_id = %(release)s)"
     " AND (%(q)s::text IS NULL OR c.source_case_id ILIKE %(like)s OR r.case_run_id = %(q)s)"
     " AND (%(admitted_from)s::date IS NULL OR r.created_at >= %(admitted_from)s::date)"
@@ -275,12 +275,23 @@ def _one_of(value: str | None, allowed: Mapping[str, str] | Sequence[str]) -> st
     return value if value in allowed else None
 
 
+def _values(params: Mapping[str, Any], name: str) -> list[str]:
+    """Every value of ``name``: repeated parameters (a multi-select) or one comma-separated value
+    (the links the page builds)."""
+    raw = params.getlist(name) if hasattr(params, "getlist") else [params.get(name)]
+    return [v.strip() for item in raw if item for v in str(item).split(",") if v.strip()]
+
+
+def _many(params: Mapping[str, Any], name: str, allowed: Mapping[str, str] | Sequence[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(v for v in _values(params, name) if v in allowed))
+
+
 @dataclass(frozen=True)
 class CaseFilters:
     """What the Cases page filters on. Values not on offer are dropped, never passed to SQL."""
 
     q: str = ""
-    state: str | None = None
+    state: tuple[str, ...] = ()  # any of these stages (a multi-select)
     admitted_from: date | None = None
     admitted_to: date | None = None
     transcript: str | None = None
@@ -289,7 +300,7 @@ class CaseFilters:
     claims_min: int | None = None
     claims_max: int | None = None
     primary: str | None = None
-    vertical: str | None = None
+    vertical: tuple[str, ...] = ()  # a claim routed to any of these (a multi-select)
     grounding: str | None = None
     account: str | None = None
 
@@ -297,17 +308,17 @@ class CaseFilters:
     MORE_FIELDS = ("admitted_from", "admitted_to", "transcript", "baseline", "failed_at", *RESULT_FIELDS)
 
     @classmethod
-    def parse(cls, params: Mapping[str, str | None]) -> CaseFilters:
+    def parse(cls, params: Mapping[str, Any]) -> CaseFilters:
         claims_min, claims_max = _count(params.get("claims_min")), _count(params.get("claims_max"))
         if claims_min is not None and claims_max is not None and claims_max < claims_min:
             claims_min, claims_max = claims_max, claims_min
         start, end = _date(params.get("admitted_from")), _date(params.get("admitted_to"))
         if start and end and end < start:
             start, end = end, start
-        vertical = (params.get("vertical") or "").strip()
+        verticals = tuple(dict.fromkeys(v for v in _values(params, "vertical") if len(v) <= 80))[:20]
         return cls(
             q=(params.get("q") or "").strip(),
-            state=_one_of(params.get("state"), STATES),
+            state=_many(params, "state", STATES),
             admitted_from=start,
             admitted_to=end,
             transcript=_one_of(params.get("transcript"), TRANSCRIPT),
@@ -316,7 +327,7 @@ class CaseFilters:
             claims_min=claims_min,
             claims_max=claims_max,
             primary=_one_of(params.get("primary"), PRIMARY),
-            vertical=vertical if vertical and len(vertical) <= 80 else None,
+            vertical=verticals,
             grounding=_one_of(params.get("grounding"), GROUNDING),
             account=_one_of(params.get("account"), ACCOUNTS),
         )
@@ -324,7 +335,7 @@ class CaseFilters:
     @property
     def on_results(self) -> bool:
         """Whether a filter needs the stage results (the fact index), not just Postgres."""
-        return any(getattr(self, name) is not None for name in self.RESULT_FIELDS)
+        return any(getattr(self, name) not in (None, ()) for name in self.RESULT_FIELDS)
 
     @property
     def more(self) -> int:
@@ -333,12 +344,14 @@ class CaseFilters:
 
     @property
     def active(self) -> bool:
-        return bool(self.q) or self.state is not None or self.more > 0
+        return bool(self.q) or bool(self.state) or self.more > 0
 
     def query(self, **changes: Any) -> dict[str, str]:
         """The filters as URL parameters, with ``changes``; unset ones left out."""
         values = {f.name: getattr(self, f.name) for f in fields(self)} | changes
-        return {k: str(v) for k, v in values.items() if v not in (None, "")}
+        return {
+            k: ",".join(v) if isinstance(v, tuple) else str(v) for k, v in values.items() if v not in (None, "", ())
+        }
 
     def chips(self) -> list[tuple[str, tuple[str, ...]]]:
         """The "More filters" in use, as (label, the parameters removing it clears)."""
@@ -373,7 +386,7 @@ class CaseFilters:
         if self.primary:
             found.append((f"Primary claim: {PRIMARY[self.primary].lower()}", ("primary",)))
         if self.vertical:
-            found.append((f"Vertical: {self.vertical}", ("vertical",)))
+            found.append((f"Vertical: {', '.join(self.vertical)}", ("vertical",)))
         if self.grounding:
             found.append((f"A claim {GROUNDING[self.grounding].lower()}", ("grounding",)))
         if self.account:
@@ -397,7 +410,7 @@ class CaseFilters:
                 return False
         if self.primary and (c03 is None or c03.get("primary") != self.primary):
             return False
-        return not (self.vertical and (c04 is None or self.vertical not in c04.get("verticals", ())))
+        return not (self.vertical and (c04 is None or not set(self.vertical) & set(c04.get("verticals", ()))))
 
 
 @dataclass(frozen=True)
@@ -420,7 +433,7 @@ def list_cases(
     offset = max(0, offset)
     on_results = filters.on_results and facts is not None
     params = {
-        "state": filters.state,
+        "state": list(filters.state) or None,
         "release": release or None,
         "q": q,
         "like": f"%{q}%" if q else None,

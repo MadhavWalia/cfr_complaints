@@ -23,11 +23,12 @@
   <div class="bar{% if not total %} empty{% endif %}" role="img" aria-label="{% if total %}Case runs by stage: {% for stop in status.line %}{{ '{:,}'.format(stop.count) }} {{ stop.label }}{{ ', ' if not loop.last }}{% endfor %}{% else %}No case runs yet{% endif %}">
     {% for stop in status.line %}<span class="seg {{ 'wait' if stop.state == 'ADMITTED' else 'done' if stop.state == 'PLAN_READY' else 'busy' }}" style="flex-grow: {{ stop.count }}"></span>{% endfor %}
   </div>
-  <ol class="line">
+  <ol class="line" aria-label="Stages, in order">
     {% for stop in status.line %}
-    <li class="{{ 'wait' if stop.state == 'ADMITTED' else 'done' if stop.state == 'PLAN_READY' else 'busy' }}">
-      <a class="n" href="/cases?state={{ stop.state }}&amp;release={{ rel }}" aria-label="{{ '{:,}'.format(stop.count) }} {{ stop.label }}: show these cases">{{ "{:,}".format(stop.count) }}</a>
+    <li class="{{ 'wait' if stop.state == 'ADMITTED' else 'done' if stop.state == 'PLAN_READY' else 'busy' }}{% if stop.count %} has{% endif %}">
+      <span class="node" aria-hidden="true">{{ loop.index }}</span>
       <span class="label">{{ stop.label }}</span>
+      <a class="n" href="/cases?state={{ stop.state }}&amp;release={{ rel }}" aria-label="{{ '{:,}'.format(stop.count) }} {{ stop.label }}: show these cases">{{ "{:,}".format(stop.count) }}</a>
     </li>
     {% endfor %}
   </ol>

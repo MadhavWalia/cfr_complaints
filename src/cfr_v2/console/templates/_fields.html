@@ -39,6 +39,7 @@
       {% elif f.kind == "lines" %}
       <textarea id="{{ fid }}" name="{{ f.name }}" rows="4" spellcheck="false" class="mono"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>{{ value or "" }}</textarea>
       {% else %}
+      {% if f.kind == "date" %}<div class="date-box">{% endif %}
       <input id="{{ fid }}" name="{{ f.name }}"
         type="{{ 'number' if f.kind in ('int', 'float') else 'date' if f.kind == 'date' else 'text' }}"
         {%- if f.kind == "float" %} step="any"{% endif %}
@@ -48,6 +49,7 @@
         {%- if f.maximum is not none %} max="{{ f.maximum }}"{% endif %}
         {%- if f.required %} required{% endif %}
         {%- if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      {% if f.kind == "date" %}<button type="button" class="cal" data-open-picker aria-label="Open the calendar for {{ f.label }}"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button></div>{% endif %}
       {% endif %}
       {% endif %}
       {% if f.help and f.kind == "check" %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}

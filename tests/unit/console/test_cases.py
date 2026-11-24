@@ -125,7 +125,7 @@ def client(tmp_path):
 def test_the_pages_say_when_the_database_is_down(client):
     page = client.get("/cases?state=ROUTING&q=SYN")
     assert page.status_code == 200 and "Can't read the state database (OperationalError)" in page.text
-    assert 'value="SYN"' in page.text and '<option value="ROUTING" selected>' in page.text
+    assert 'value="SYN"' in page.text and 'name="state" value="ROUTING" checked' in page.text
     releases = client.get("/releases")
     assert releases.status_code == 200 and "Can't read the state database" in releases.text
     assert 'id="cfr-v2-phase-e"' in releases.text and "New cases use it" in releases.text
@@ -464,10 +464,10 @@ def test_filters_keep_only_values_on_offer():
         "claims_min": "5", "claims_max": "2", "primary": "AMBIGUOUS", "grounding": "x", "account": "NONE",
         "admitted_from": "2026-11-20", "admitted_to": "2026-11-01", "vertical": "fees_and_interest",
     })  # fmt: skip
-    assert (f.q, f.state, f.transcript, f.baseline, f.failed_at) == ("SYN", None, "absent", None, "c04.routing")
+    assert (f.q, f.state, f.transcript, f.baseline, f.failed_at) == ("SYN", (), "absent", None, "c04.routing")
     assert (f.claims_min, f.claims_max) == (2, 5)  # swapped into order
     assert (str(f.admitted_from), str(f.admitted_to)) == ("2026-11-01", "2026-11-20")
-    assert (f.primary, f.grounding, f.account, f.vertical) == ("AMBIGUOUS", None, "NONE", "fees_and_interest")
+    assert (f.primary, f.grounding, f.account, f.vertical) == ("AMBIGUOUS", None, "NONE", ("fees_and_interest",))
     assert f.on_results and f.more == 7 and f.active
     assert [label for label, _ in f.chips()] == [
         "Admitted 2026-11-01 to 2026-11-20",
@@ -497,7 +497,7 @@ def test_result_filters_need_the_stages_result():
     assert keeps(grounding="PARTIAL") and not keeps(grounding="UNGROUNDED")
     assert keeps(account="RESOLVED") and not keeps(account="CANDIDATES")
     assert keeps(primary="SELECTED") and not keeps(primary="AMBIGUOUS")
-    assert keeps(vertical="UNMAPPED") and not keeps(vertical="cards")
+    assert keeps(vertical="UNMAPPED") and keeps(vertical="cards,UNMAPPED") and not keeps(vertical="cards")
     assert not cases.CaseFilters.parse({"claims_min": "0"}).matches({})  # no Pass 2 result: can't match
 
 
@@ -578,6 +578,18 @@ def test_the_pager_keeps_both_chevrons_and_disables_the_one_at_an_end(client, mo
     assert 'aria-disabled="true" aria-label="Newer case runs (this is the first page)"' in first
     assert 'aria-label="Older case runs"' in first and "offset=50" in first
     assert 'placeholder="Search case runs" aria-describedby="q-help"' in first  # the search field's hint
+
+
+def test_stage_and_vertical_take_several_values_from_the_multi_selects(client, monkeypatch):
+    asked = []
+    monkeypatch.setattr(cases, "list_cases", lambda db, **kw: asked.append(kw) or cases.CasePage([], False))
+    page = client.get("/cases?release=&state=FAILED&state=ROUTING&state=DROP&vertical=cards&vertical=UNMAPPED").text
+    f = asked[-1]["filters"]
+    assert f.state == ("FAILED", "ROUTING") and f.vertical == ("cards", "UNMAPPED")
+    assert f.query()["state"] == "FAILED,ROUTING"  # links carry them comma-separated, and parse back
+    assert cases.CaseFilters.parse({"state": "FAILED,ROUTING"}).state == ("FAILED", "ROUTING")
+    assert "<span>Vertical: cards, UNMAPPED</span>" in page
+    assert 'name="state" value="FAILED" checked' in page and ">2 items</span>" in page
 
 
 # --- the fact index ----------------------------------------------------------------------------

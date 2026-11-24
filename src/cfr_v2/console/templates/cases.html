@@ -8,6 +8,17 @@
   </select>
 </div>
 {% endmacro %}
+{% macro multi(name, label, options, chosen, empty="Any") %}
+<div class="field">
+  <span class="label" id="{{ name }}-label">{{ label }}</span>
+  <details class="ms" data-none="{{ empty }}">
+    <summary aria-labelledby="{{ name }}-label {{ name }}-value"><span data-ms-value id="{{ name }}-value">{% if not chosen %}{{ empty }}{% elif chosen | length == 1 %}{{ (options | selectattr(0, "equalto", chosen[0]) | map(attribute=1) | first) or chosen[0] }}{% else %}{{ chosen | length }} items{% endif %}</span><svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+    <div class="ms-panel" role="group" aria-labelledby="{{ name }}-label">
+      {% for v, text in options %}<label><input type="checkbox" name="{{ name }}" value="{{ v }}"{% if v in chosen %} checked{% endif %}>{{ text }}</label>{% endfor %}
+    </div>
+  </details>
+</div>
+{% endmacro %}
 {% block main %}
 <div class="head"><h1>Cases</h1>
   <div class="actions"><a class="btn secondary cta" href="/evaluation?fill=evaluation.routing_export{% if release_filter %}&amp;release={{ release_filter | urlencode }}{% endif %}#evaluation.routing_export">Export Routing Results</a></div>
@@ -22,13 +33,7 @@
         <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
       </div>
     </div>
-    <div class="field">
-      <label for="state">Stage</label>
-      <select id="state" name="state">
-        <option value="">Any</option>
-        {% for value, label in states %}<option value="{{ value }}"{% if filters.state == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
-      </select>
-    </div>
+    {{ multi("state", "Stage", states, filters.state) }}
     <div class="field">
       <label for="release">Release</label>
       <select id="release" name="release">
@@ -46,10 +51,11 @@
         <div class="field range">
           <span class="label" id="admitted-label">Admitted between</span>
           <span class="help" id="admitted-help">Both days included. Leave one empty for no limit.</span>
-          <div class="pair" role="group" aria-labelledby="admitted-label" aria-describedby="admitted-help">
-            <input id="admitted_from" name="admitted_from" type="date" value="{{ filters.admitted_from or '' }}" aria-label="From">
-            <span class="muted" aria-hidden="true">to</span>
-            <input id="admitted_to" name="admitted_to" type="date" value="{{ filters.admitted_to or '' }}" aria-label="To">
+          <div class="date-range" role="group" aria-labelledby="admitted-label" aria-describedby="admitted-help" data-date-range>
+            <input id="admitted_from" name="admitted_from" type="date" value="{{ filters.admitted_from or '' }}" aria-label="Start date">
+            <span aria-hidden="true">–</span>
+            <input id="admitted_to" name="admitted_to" type="date" value="{{ filters.admitted_to or '' }}" aria-label="End date">
+            <button type="button" class="cal" data-open-picker aria-label="Open the calendar"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button>
           </div>
         </div>
         {{ select("transcript", "Transcript", choices.transcript, filters.transcript) }}
@@ -67,13 +73,8 @@
           </div>
         </div>
         {{ select("primary", "Primary claim (C03)", choices.primary, filters.primary) }}
-        <div class="field">
-          <label for="vertical">Vertical (C04)</label>
-          <select id="vertical" name="vertical">
-            <option value="">Any</option>
-            {% for v in verticals %}<option value="{{ v }}"{% if filters.vertical == v %} selected{% endif %}>{{ v | replace("_", " ") | lower | capitalize if v in ("UNMAPPED", "NO_ELIGIBLE_VERTICAL") else v }}</option>{% endfor %}
-          </select>
-        </div>
+        {% set vertical_options = [] %}{% for v in verticals %}{% set _ = vertical_options.append((v, v | replace("_", " ") | lower | capitalize if v in ("UNMAPPED", "NO_ELIGIBLE_VERTICAL") else v)) %}{% endfor %}
+        {{ multi("vertical", "Vertical (C04)", vertical_options, filters.vertical) }}
         {{ select("grounding", "Has a claim that is", choices.grounding, filters.grounding) }}
         {{ select("account", "Has a claim with", choices.account, filters.account) }}
       </fieldset>

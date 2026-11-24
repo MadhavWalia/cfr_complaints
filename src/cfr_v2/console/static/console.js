@@ -163,3 +163,41 @@
     try { sessionStorage.removeItem(key); } catch (e) {}
   });
 })();
+
+/* DLS Date Picker: the calendar icon opens the browser's calendar for its field; in a range, for
+   the start date until it is set, then for the end date. */
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-open-picker]");
+  if (!button) return;
+  const inputs = [...button.parentElement.querySelectorAll('input[type="date"]')];
+  const input = inputs.find((i) => !i.value) || inputs[inputs.length - 1];
+  if (!input) return;
+  input.focus();
+  try { input.showPicker(); } catch (e) {}
+});
+
+/* DLS Multi Select: a field that opens a panel of checkboxes. The field says how many are chosen;
+   the panel closes on Escape or a click outside it. Without JavaScript it is still a working
+   disclosure of checkboxes. */
+(() => {
+  const label = (ms) => {
+    const chosen = [...ms.querySelectorAll('input[type="checkbox"]:checked')];
+    const out = ms.querySelector("[data-ms-value]");
+    if (!out) return;
+    out.textContent = chosen.length === 0 ? (ms.dataset.none || "Any")
+      : chosen.length === 1 ? chosen[0].closest("label").textContent.trim()
+      : `${chosen.length} items`;
+  };
+  document.addEventListener("change", (event) => {
+    const ms = event.target.closest("details.ms");
+    if (ms) label(ms);
+  });
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll("details.ms[open]").forEach((ms) => { if (!ms.contains(event.target)) ms.open = false; });
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const ms = event.target.closest && event.target.closest("details.ms[open]");
+    if (ms) { ms.open = false; ms.querySelector("summary").focus(); }
+  });
+})();
