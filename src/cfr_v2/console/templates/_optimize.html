@@ -13,7 +13,7 @@
         <td data-label="Version"><span class="mono">{{ row.version }}</span></td>
         <td data-label="Gold sets"><span>{% if row.gold_sets %}{{ row.gold_sets | length }}<span class="detail">latest: {{ row.gold_sets[0].summary or "checked" }}</span>{% else %}<span class="muted">none yet</span>{% endif %}</span></td>
         <td data-label="Last run"><span>{% if row.last_run %}<span class="pill {{ row.last_run.job.status.pill }}">{{ row.last_run.job.status.value }}</span><span class="detail">{{ row.last_run.job.summary or row.last_run.job.created_at | stamp }}</span>{% else %}<span class="muted">none yet</span>{% endif %}</span></td>
-        <td data-label=""><span>{% if current %}<span class="muted">chosen</span>{% else %}<a class="btn secondary" href="/optimize?prompt={{ row.prompt.prompt_id }}">Choose</a>{% endif %}</span></td>
+        <td data-label=""><span>{% if current %}<span class="muted">chosen</span>{% else %}<a class="btn secondary sm" href="/optimize?prompt={{ row.prompt.prompt_id }}">Choose</a>{% endif %}</span></td>
       </tr>
       {% endfor %}
       </tbody>

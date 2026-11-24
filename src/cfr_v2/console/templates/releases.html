@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_fields.html" as fields %}
 {% block main %}
-<div class="head"><h1>Releases</h1><div class="actions"><a class="btn secondary" href="#new-release">New release</a></div></div>
+<div class="head"><h1>Releases</h1><div class="actions"><a class="btn secondary cta" href="#new-release">New Release</a></div></div>
 {% if written %}
 <div class="panel written" role="status">
   <p><strong>Wrote <span class="mono">registry/releases/{{ written.release_id }}.yaml</span></strong>{% if base %}, from {{ base.release_id }}{% endif %}.</p>
@@ -33,7 +33,7 @@
   {% else %}
   <form method="post" action="/releases/{{ r.release_id }}/current" class="actions">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="btn secondary" type="submit">Make current</button>
+    <button class="btn secondary" type="submit">Make Current</button>
     <span class="muted">New cases are then admitted under <span class="mono">{{ r.release_id }}</span>, instead of <span class="mono">{{ release_id }}</span>.</span>
   </form>
   {% endif %}
@@ -87,7 +87,7 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {% if form_error %}<p class="form-error" role="alert">{{ form_error }}</p>{% endif %}
     {% for f in new_release %}{{ fields.field(f, values.get(f.name), ctx, "release-" ~ f.name) }}{% endfor %}
-    <button class="btn primary" type="submit">Write the file</button>
+    <button class="btn primary" type="submit">Write the File</button>
   </form>
 </section>
 {% endblock %}

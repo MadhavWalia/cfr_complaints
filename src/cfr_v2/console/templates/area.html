@@ -28,7 +28,7 @@
     {% endfor %}
     {% set est = command.estimate(ctx) if command.estimate else none %}
     {% if est %}<p class="estimate" data-text="{{ est.text }}" data-per="{{ est.per }}"{% if est.field %} data-field="{{ command.id }}-{{ est.field }}"{% endif %}>{{ est.render() }}</p>{% endif %}
-    <button class="btn primary" type="submit">{{ command.action }}</button>
+    <button class="btn primary" type="submit">{{ command.action | button_label }}</button>
   </form>
 </details>
 {% endfor %}

@@ -255,24 +255,26 @@ def test_the_long_parts_of_a_result_are_accordions_closed_by_default(client, mon
     folds = re.findall(r'<details class="fold[^"]*"( open)?><summary>(.*?)</summary>', page, flags=re.DOTALL)
     summaries = [" ".join(re.sub(r"<[^>]+>", " ", text).split()) for _, text in folds]
     assert summaries == [
-        "Allegations 1",  # Pass 1
+        "Allegations 1",  # Pass 1: Panel accordions
         "Requests 1",
         "Agent statements 1",
         "Customer data 2 accounts",  # Pass 2: what it was given
-        "Verification points 1",  # Pass 2, under the claim
-        "Reasoning",  # C04, under the vertical
-        "Sections it relied on 1",
-        "All sections it was shown 1",
+        "Show Hide verification points (1)",  # Text accordions: "Show" closed, "Hide" open
+        "Show Hide reasoning",  # C04, under the vertical
+        "Show Hide sections it relied on (1)",
+        "Show Hide all sections it was shown (1)",
     ]
     assert not any(opened for opened, _ in folds)  # closed until asked
     # what stays in view: the claim, its tags, and the vertical with its confidence
     assert re.search(
-        r"Grounded · account <span class=\"nowrap\">A1 · Platinum Card \(case account\)</span>.*?"
-        r"<details class=\"fold\"><summary>Verification points",
+        r"Grounded · account <span class=\"nowrap\">A1 · Platinum Card, the case account</span>.*?"
+        r"<details class=\"fold\"><summary><span class=\"when-closed\">Show</span>",
         page,
         re.DOTALL,
     )
-    assert re.search(r'<span class="vertical">fees_and_interest</span>.*?82%.*?<summary>Reasoning', page, re.DOTALL)
+    assert re.search(
+        r'<span class="vertical">fees_and_interest</span>.*?82%.*?</span> reasoning</summary>', page, re.DOTALL
+    )
 
 
 def test_a_withheld_result_says_why_and_a_run_without_a_trace_has_no_links(client, monkeypatch):
@@ -409,7 +411,7 @@ def test_pass2_shows_the_customer_data_it_was_given_and_which_claims_used_it(cli
         "Customer accounts Pass 2 was given",
         "the case received date (2026-10-02)",
         "current data, not history",
-        '<th scope="col"><span class="mono">A1</span><span class="case-account">case account</span></th>',
+        '<th scope="col"><span class="mono">A1</span><span class="badge information">Case account</span></th>',
         "Platinum Card",
         "Other cardholder",  # a field only one account has still gets its column
         '<th scope="row">Status at case</th>',
@@ -557,7 +559,7 @@ def test_the_cases_page_offers_the_filters_and_shows_those_in_use(client, monkey
         'name="vertical"',
     ):
         assert text in page, text
-    assert '<span class="count">3 on</span>' in page
+    assert '<span class="count">(3 on)</span>' in page
     assert "<span>2 or more claims</span>" in page and "<span>Primary claim: ambiguous</span>" in page
     # removing a chip keeps the rest; "Clear these" keeps the main row
     assert 'href="/cases?state=FAILED&amp;transcript=absent&amp;primary=AMBIGUOUS&amp;release="' in page
@@ -619,3 +621,47 @@ def test_the_indexer_reads_only_results_it_lacks(tmp_path):
     assert indexer.start(RefsDb(), store, wait=True) is progress  # checked moments ago: no new pass
     now[0] = 60.0
     assert indexer.start(RefsDb(), store, wait=True).total == 1  # only the unreadable one is retried
+
+
+# --- the timeline as a multi-step tracker, and button labels ------------------------------------
+
+
+def _events(*states):
+    from datetime import timedelta
+
+    return tuple(cases.Event(s, AT + timedelta(minutes=i), {}) for i, s in enumerate(states))
+
+
+def test_the_tracker_shows_every_stage_and_where_a_run_stopped():
+    run = fake_case()
+    assert {s.kind for s in cases.steps(run)} == {"done"}  # Plan ready: every stage done
+
+    going = cases.CaseRun(run.row, _events("ADMITTED", "UNDERSTANDING"), run.stages, run.job)
+    assert [s.kind for s in cases.steps(going)] == ["done", "current", "todo", "todo", "todo", "todo"]
+    assert cases.steps(going)[1].gap == 60.0
+
+    failed = cases.CaseRun(
+        run.row, _events("ADMITTED", "UNDERSTANDING", "SELECTING", "ROUTING", "FAILED"), run.stages, run.job
+    )
+    found = cases.steps(failed)
+    assert [(s.label, s.kind) for s in found][3:] == [
+        ("C04 routing", "failed"),
+        ("C05 planning", "todo"),
+        ("Plan ready", "todo"),
+    ]
+    assert found[3].ended == AT.replace(minute=4)
+
+    cancelled = cases.CaseRun(run.row, _events("ADMITTED", "CANCELLED"), run.stages, run.job)
+    assert [s.kind for s in cases.steps(cancelled)][:2] == ["stopped", "todo"]
+
+
+def test_button_labels_are_title_case_and_assets_carry_a_version(tmp_path):
+    from cfr_v2.console.app import asset_version
+    from cfr_v2.console.formats import title
+
+    assert title("Delete the job and its files") == "Delete the Job and Its Files"
+    assert title("Run the trial") == "Run the Trial" and title("Export LDR-0037 notes") == "Export LDR-0037 Notes"
+    (tmp_path / "console.css").write_text("a{}")
+    first = asset_version(tmp_path)
+    (tmp_path / "console.css").write_text("a{color:red}")
+    assert asset_version(tmp_path) != first and len(first) == 10

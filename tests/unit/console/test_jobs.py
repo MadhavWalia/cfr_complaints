@@ -187,7 +187,7 @@ def test_a_form_starts_a_real_job_whose_log_streams_and_whose_output_downloads(t
     assert "Intake query" in client.get("/intake").text  # recent jobs under the area's commands
 
     # Run again: the form opens filled in from the job; a failed job says why, with the fix
-    assert "Run again" in page and f'href="/intake?again={job_id}#intake.sql"' in page
+    assert "Run Again" in page and f'href="/intake?again={job_id}#intake.sql"' in page
     again = client.get(f"/intake?again={job_id}").text
     assert "Filled in from" in again and 'id="intake.sql" open' in again
     assert client.get(f"/routing?again={job_id}").status_code == 404  # another area's command
@@ -244,7 +244,7 @@ def test_a_running_job_shows_its_progress_and_the_count_of_running_jobs(tmp_path
         page = client.get(f"/jobs/{job.id}").text
         assert "<title>(1 running) Snapshot · pdfs · CFR console</title>" in page
         assert 'href="/jobs?status=running"' in page and "30%" in page and "every 5s" in page
-        assert "Tell me when it ends" in page
+        assert "Tell Me When It Ends" in page
     finally:
         runner.stop(job.id, force=True)
         _wait(runner, job.id)

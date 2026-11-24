@@ -57,3 +57,17 @@ def shell(argv: Sequence[str]) -> str:
     """The command as it would be typed: ``python -m …`` rather than the interpreter's full path."""
     parts = ["python" if i == 0 and a == sys.executable else a for i, a in enumerate(argv)]
     return shlex.join(parts)
+
+
+_MINOR = frozenset(
+    ["a", "an", "and", "as", "at", "but", "by", "for", "in", "into", "of", "on", "or", "the", "to", "with"]
+)
+
+
+def title(label: str) -> str:
+    """A button label in title case, as the DLS asks: "Admit the Window", "Delete the Job and Its Files".
+    Minor words stay lower case unless first; words already capitalised (ids, acronyms) are kept."""
+    words = label.split(" ")
+    return " ".join(
+        w if (i and w.lower() in _MINOR) or not w[:1].islower() else w[:1].upper() + w[1:] for i, w in enumerate(words)
+    )

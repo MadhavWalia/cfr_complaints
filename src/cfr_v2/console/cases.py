@@ -184,6 +184,52 @@ class CaseRun:
         return {ref for s in self.stages for ref in s.refs}
 
 
+@dataclass(frozen=True)
+class Step:
+    """One stage of the line on the case page's tracker (the DLS Multi-Step Tracker)."""
+
+    label: str
+    kind: str  # done, current, failed, todo
+    at: datetime | None = None
+    gap: float | None = None  # seconds since the step before it
+    detail: Mapping[str, Any] = field(default_factory=dict)
+    ended: datetime | None = None  # when it failed or was cancelled in this stage
+
+
+TERMINAL = ("PLAN_READY", "FAILED", "CANCELLED")
+
+
+def steps(run: CaseRun) -> list[Step]:
+    """Every stage of the line, in order: the ones reached with their time, the latest one current
+    while the run goes on, the one it failed or was cancelled in marked so, then the ones not reached."""
+    reached = {e.state: e for e in run.events}
+    last = run.events[-1].state if run.events else None
+    found: list[Step] = []
+    previous: datetime | None = None
+    for state, label in LINE:
+        event = reached.get(state)
+        if event is None:
+            found.append(Step(label, "todo"))
+            continue
+        kind = "current" if state == last and last not in TERMINAL else "done"
+        found.append(Step(label, kind, event.at, _gap(previous, event.at), event.detail))
+        previous = event.at
+    stopped = next((reached[s] for s in ("FAILED", "CANCELLED") if s in reached), None)
+    if stopped is not None:
+        kind = "failed" if stopped.state == "FAILED" else "stopped"
+        where = max((i for i, step in enumerate(found) if step.kind != "todo"), default=None)
+        if where is None:
+            found.insert(0, Step(STATE_LABELS[stopped.state], kind, stopped.at, None, stopped.detail))
+        else:  # the stage it was in when it failed or was cancelled
+            step = found[where]
+            found[where] = Step(step.label, kind, step.at, step.gap, {**step.detail, **stopped.detail}, stopped.at)
+    return found
+
+
+def _gap(before: datetime | None, at: datetime) -> float | None:
+    return None if before is None else (at - before).total_seconds()
+
+
 def _row(r: Sequence[Any]) -> CaseRow:
     return CaseRow(*r)
 
@@ -658,5 +704,6 @@ __all__ = [
     "read_case",
     "read_releases",
     "read_result",
+    "steps",
     "trace_url",
 ]

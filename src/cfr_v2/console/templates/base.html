@@ -11,9 +11,9 @@
   <script>
     try { const t = localStorage.getItem("cfr-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
   </script>
-  <link rel="stylesheet" href="{{ url_for('static', path='console.css') }}">
-  <script src="{{ url_for('static', path='htmx.min.js') }}" defer></script>
-  <script src="{{ url_for('static', path='console.js') }}" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', path='console.css') }}?v={{ asset_version }}">
+  <script src="{{ url_for('static', path='htmx.min.js') }}?v={{ asset_version }}" defer></script>
+  <script src="{{ url_for('static', path='console.js') }}?v={{ asset_version }}" defer></script>
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{ csrf }}"}'>
   <a class="skip" href="#main">Skip to content</a>

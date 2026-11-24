@@ -10,7 +10,7 @@
 {% endmacro %}
 {% block main %}
 <div class="head"><h1>Cases</h1>
-  <div class="actions"><a class="btn secondary" href="/evaluation?fill=evaluation.routing_export{% if release_filter %}&amp;release={{ release_filter | urlencode }}{% endif %}#evaluation.routing_export">Routing results to Excel</a></div>
+  <div class="actions"><a class="btn secondary cta" href="/evaluation?fill=evaluation.routing_export{% if release_filter %}&amp;release={{ release_filter | urlencode }}{% endif %}#evaluation.routing_export">Export Routing Results</a></div>
 </div>
 <form class="find-form" method="get" action="/cases" role="search">
   <div class="find">
@@ -32,20 +32,21 @@
         {% for r in releases %}<option value="{{ r }}"{% if release_filter == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
       </select>
     </div>
-    <button class="btn secondary" type="submit">Show</button>
+    <button class="btn secondary sm" type="submit">Search</button>
   </div>
   <details class="fold more-filters">
-    <summary>More filters{% if filters.more %} <span class="count">{{ filters.more }} on</span>{% endif %}</summary>
+    <summary><span class="when-closed">Show</span><span class="when-open">Hide</span> more filters{% if filters.more %} <span class="count">({{ filters.more }} on)</span>{% endif %}</summary>
     <div class="filter-groups">
       <fieldset>
         <legend>Admission</legend>
-        <div class="field">
-          <label for="admitted_from">Admitted from</label>
-          <input id="admitted_from" name="admitted_from" type="date" value="{{ filters.admitted_from or '' }}">
-        </div>
-        <div class="field">
-          <label for="admitted_to">Admitted to</label>
-          <input id="admitted_to" name="admitted_to" type="date" value="{{ filters.admitted_to or '' }}">
+        <div class="field range">
+          <span class="label" id="admitted-label">Admitted between</span>
+          <span class="help" id="admitted-help">Both days included. Leave one empty for no limit.</span>
+          <div class="pair" role="group" aria-labelledby="admitted-label" aria-describedby="admitted-help">
+            <input id="admitted_from" name="admitted_from" type="date" value="{{ filters.admitted_from or '' }}" aria-label="From">
+            <span class="muted" aria-hidden="true">to</span>
+            <input id="admitted_to" name="admitted_to" type="date" value="{{ filters.admitted_to or '' }}" aria-label="To">
+          </div>
         </div>
         {{ select("transcript", "Transcript", choices.transcript, filters.transcript) }}
         {{ select("baseline", "Customer accounts", choices.baseline, filters.baseline) }}
@@ -54,10 +55,11 @@
         <legend>Results</legend>
         <div class="field range">
           <span class="label" id="claims-label">Claims</span>
-          <div class="pair" role="group" aria-labelledby="claims-label">
-            <input id="claims_min" name="claims_min" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_min if filters.claims_min is not none else '' }}" placeholder="From" aria-label="At least">
+          <span class="help" id="claims-help">How many claims Pass 2 found. Leave one empty for no limit.</span>
+          <div class="pair" role="group" aria-labelledby="claims-label" aria-describedby="claims-help">
+            <input id="claims_min" name="claims_min" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_min if filters.claims_min is not none else '' }}" placeholder="Any" aria-label="At least">
             <span class="muted" aria-hidden="true">to</span>
-            <input id="claims_max" name="claims_max" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_max if filters.claims_max is not none else '' }}" placeholder="To" aria-label="At most">
+            <input id="claims_max" name="claims_max" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_max if filters.claims_max is not none else '' }}" placeholder="Any" aria-label="At most">
           </div>
         </div>
         {{ select("primary", "Primary claim (C03)", choices.primary, filters.primary) }}
@@ -77,8 +79,8 @@
       </fieldset>
     </div>
     <div class="filter-actions">
-      <button class="btn secondary" type="submit">Show</button>
-      {% if filters.more %}<a href="{{ clear_more }}">Clear these</a>{% endif %}
+      <button class="btn secondary sm" type="submit">Apply Filters</button>
+      {% if filters.more %}<a href="{{ clear_more }}">Clear these filters</a>{% endif %}
     </div>
   </details>
 </form>

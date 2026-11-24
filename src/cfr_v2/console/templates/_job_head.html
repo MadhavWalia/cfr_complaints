@@ -18,7 +18,7 @@
     {% if diagnosis %}<p>{{ diagnosis.explanation }}</p>
     {% elif job.reason %}<p class="muted">The line above is the last error in the log; the log below has the rest.</p>
     {% else %}<p class="muted">It exited with code {{ job.exit_code }} without naming an error. The end of the log below is the best clue.</p>{% endif %}
-    {% if diagnosis and diagnosis.href %}<p><a class="btn primary" href="{{ diagnosis.href }}">{{ diagnosis.action }}</a></p>{% endif %}
+    {% if diagnosis and diagnosis.href %}<p><a class="btn primary cta" href="{{ diagnosis.href }}">{{ diagnosis.action | button_label }}</a></p>{% endif %}
   </div>
   {% elif job.status.value == "lost" %}
   <div class="failure" role="status">
@@ -30,20 +30,20 @@
   {% if steps %}
   <div class="next">
     <h2>Next</h2>
-    <p class="actions">{% for label, href in steps %}<a class="btn {{ 'primary' if loop.first else 'secondary' }}" href="{{ href }}">{{ label }}</a>{% endfor %}</p>
+    <p class="actions">{% for label, href in steps %}<a class="btn cta {{ 'primary' if loop.first else 'secondary' }}" href="{{ href }}">{{ label | button_label }}</a>{% endfor %}</p>
   </div>
   {% endif %}
   {% if job.finished and command and job.form is not none %}
-  <p class="actions"><a class="btn secondary" href="/{{ command.area }}?again={{ job.id }}#{{ command.id }}">Run again</a><span class="muted">Opens its form with the same values, to check before starting.</span></p>
+  <p class="actions"><a class="btn secondary cta" href="/{{ command.area }}?again={{ job.id }}#{{ command.id }}">Run Again</a><span class="muted">Opens its form with the same values, to check before starting.</span></p>
   {% endif %}
   <details class="cmdline"><summary>Command</summary><p class="mono">{{ job.argv | shell }}</p></details>
   {% if job.status.value == "running" %}
-  <p class="notify" hidden><button type="button" class="btn secondary" data-notify>Tell me when it ends</button><span class="muted" data-notify-note>A browser notification, while this tab stays open.</span></p>
+  <p class="notify" hidden><button type="button" class="btn secondary" data-notify>Tell Me When It Ends</button><span class="muted" data-notify-note>A browser notification, while this tab stays open.</span></p>
   <form method="post" action="/jobs/{{ job.id }}/stop" class="actions">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {% if job.stop_requested %}
     <input type="hidden" name="force" value="1">
-    <button class="btn secondary" type="submit">Force stop</button>
+    <button class="btn secondary" type="submit">Force Stop</button>
     <span class="muted">Ends it at once, without letting it finish its current step.</span>
     {% else %}
     <button class="btn secondary" type="submit">Stop</button>
@@ -62,7 +62,7 @@
     <summary>Delete this job</summary>
     <form method="post" action="/jobs/{{ job.id }}/delete" class="actions">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button class="btn secondary" type="submit">Delete the job and its files</button>
+      <button class="btn secondary" type="submit">Delete the Job and Its Files</button>
       <span class="muted">Its log, uploads and outputs. This can't be undone.</span>
     </form>
   </details>

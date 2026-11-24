@@ -3,14 +3,15 @@
 {% macro claim_text(id) %}{% set c = claims.get(id) %}{% if c %}{{ c.statement }}{% else %}<span class="mono">{{ id }}</span>{% endif %}{% endmacro %}
 {% macro words(value) %}{{ (value or "") | replace("_", " ") | lower | capitalize }}{% endmacro %}
 {% macro section(p) %}<li>{{ p.file_name }} · {{ p.section_title }} <span class="muted">p. {{ p.page_start }}{% if p.page_end != p.page_start %}–{{ p.page_end }}{% endif %}</span></li>{% endmacro %}
+{% macro show(what, n=none) %}<summary><span class="when-closed">Show</span><span class="when-open">Hide</span> {{ what }}{% if n is not none %} <span class="count">({{ n }})</span>{% endif %}</summary>{% endmacro %}
 {% macro claim_accounts(c, customer) %}{% set refs = c.account_refs or [] %}{% set res = c.account_resolution or "NONE" %}
 {%- if res == "NOT_APPLICABLE" %}not about an account
 {%- elif not refs %}no account named
-{%- else %}{{ "account" if refs | length == 1 else "possible accounts" }} {% for r in refs %}<span class="nowrap">{{ customer.label(r) if customer else r }}{% if customer and customer.is_case_account(r) %} (case account){% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+{%- else %}{{ "account" if refs | length == 1 else "possible accounts" }} {% for r in refs %}<span class="nowrap">{{ customer.label(r) if customer else r }}{% if customer and customer.is_case_account(r) %}, the case account{% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}
 {%- endif %}{% endmacro %}
 {% macro customer_fold(data, customer) %}
 {% if baseline is none %}
-<details class="fold group"><summary>Customer data <span class="count">none</span></summary>
+<details class="fold group"><summary>Customer data <span class="count">no accounts</span></summary>
 <div class="accounts"><p class="note muted">No customer accounts were found for this case at admission, so Pass 2 had only Pass 1's items{% if customer and customer.received %} and the case received date ({{ customer.received }}){% endif %}. Claims can't name an account.</p></div></details>
 {% elif baseline.reason is defined %}
 <details class="fold group"><summary>Customer data</summary><div class="accounts"><p class="note muted">{{ baseline.reason }}</p></div></details>
@@ -21,7 +22,7 @@
   <div class="table-wrap">
     <table class="account-grid">
       <caption class="visually-hidden">Customer accounts Pass 2 was given, one column per account</caption>
-      <thead><tr><th scope="col"><span class="visually-hidden">Field</span></th>{% for a in customer.accounts %}<th scope="col"><span class="mono">{{ a.account_ref }}</span>{% if a.is_case_account %}<span class="case-account">case account</span>{% endif %}</th>{% endfor %}</tr></thead>
+      <thead><tr><th scope="col"><span class="visually-hidden">Field</span></th>{% for a in customer.accounts %}<th scope="col"><span class="mono">{{ a.account_ref }}</span>{% if a.is_case_account %}<span class="badge information">Case account</span>{% endif %}</th>{% endfor %}</tr></thead>
       <tbody>
         {% for key, label in customer.columns %}<tr><th scope="row">{{ label }}</th>{% for a in customer.accounts %}<td>{{ a.get(key) or "—" }}</td>{% endfor %}</tr>
         {% endfor %}<tr class="used"><th scope="row">Claims naming it</th>{% for a in customer.accounts %}<td>{{ customer.claims_by_account.get(a.account_ref, 0) or "—" }}</td>{% endfor %}</tr>
@@ -60,17 +61,15 @@
 
 <section class="section" aria-labelledby="timeline-h">
   <h2 id="timeline-h">Timeline</h2>
-  {% if run.events %}
-  <ol class="timeline">
-    {% for e in run.events %}
-    <li class="{{ 'failed' if e.state in ('FAILED', 'CANCELLED') else '' }}">
-      <span class="t">{{ e.at.isoformat() | stamp }}{% if loop.previtem %} <span class="gap muted">+{{ (e.at - loop.previtem.at).total_seconds() | took }}</span>{% endif %}</span>
-      <span class="s">{{ e.label }}</span>
-      {% if e.detail %}<span class="d mono">{% for k, v in e.detail.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}
+  <ol class="tracker">
+    {% for step in steps %}
+    <li class="{{ step.kind }}">
+      <span class="s">{{ step.label }}</span>
+      <span class="t">{% if step.at %}{{ step.at.isoformat() | stamp }}{% if step.gap is not none %} <span class="gap muted">+{{ step.gap | took }}</span>{% endif %}{% elif step.kind == "todo" %}not reached{% endif %}{% if step.ended %} · {{ "failed" if step.kind == "failed" else "cancelled" }} {{ step.ended.isoformat() | stamp }}{% endif %}</span>
+      {% if step.detail %}<span class="d mono">{% for k, v in step.detail.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}
     </li>
     {% endfor %}
   </ol>
-  {% else %}<p class="muted">No events yet.</p>{% endif %}
 </section>
 
 <section class="section" aria-labelledby="results-h">
@@ -104,7 +103,7 @@
       <ul class="items">{% for c in data.claims %}<li>
         <p>{{ c.statement }}</p>
         <p class="tags">{{ words(c.grounding_status) }} · {{ claim_accounts(c, customer) }}{% if c.event_window_start %} · <span class="nowrap">{{ c.event_window_start }}</span> to <span class="nowrap">{{ c.event_window_end or "?" }}</span>{% endif %}</p>
-        {% if c.evidence_needs %}<details class="fold"><summary>Verification points <span class="count">{{ c.evidence_needs | length }}</span></summary>
+        {% if c.evidence_needs %}<details class="fold">{{ show("verification points", c.evidence_needs | length) }}
         <ul class="needs">{% for n in c.evidence_needs %}<li>{{ n.description }} <span class="mono muted">{{ n.source_type }}</span></li>{% endfor %}</ul></details>{% endif %}
       </li>{% endfor %}</ul>
       {% if data.other_checks %}<h4>Other checks <span class="count">{{ data.other_checks | length }}</span></h4>
@@ -121,21 +120,21 @@
         {% if c.outcome == "ROUTED" %}
           {% for v in c.candidates %}
           <p class="route"><span class="vertical">{{ v.vertical_id }}</span> <span class="muted">{{ "%.0f" | format(v.confidence * 100) }}% · source: {{ (v.source or "") | lower }}</span></p>
-          {% if v.rationale %}<details class="fold"><summary>Reasoning</summary><p class="why">{{ v.rationale }}</p></details>{% endif %}
-          {% if v.procedures %}<details class="fold"><summary>Sections it relied on <span class="count">{{ v.procedures | length }}</span></summary>
+          {% if v.rationale %}<details class="fold">{{ show("reasoning") }}<p class="why">{{ v.rationale }}</p></details>{% endif %}
+          {% if v.procedures %}<details class="fold">{{ show("sections it relied on", v.procedures | length) }}
           <ul class="needs">{% for p in v.procedures %}{{ section(p) }}{% endfor %}</ul></details>{% endif %}
           {% endfor %}
         {% else %}
           <p class="route"><span class="vertical">{{ words(c.outcome) }}</span></p>
         {% endif %}
-        {% if c.rationale %}<details class="fold"><summary>Reasoning{% if c.outcome == "ROUTED" %} for the claim{% endif %}</summary><p class="why">{{ c.rationale }}</p></details>{% endif %}
-        {% if c.sections_seen %}<details class="fold"><summary>All sections it was shown <span class="count">{{ c.sections_seen | length }}</span></summary>
+        {% if c.rationale %}<details class="fold">{{ show("reasoning for the claim" if c.outcome == "ROUTED" else "reasoning") }}<p class="why">{{ c.rationale }}</p></details>{% endif %}
+        {% if c.sections_seen %}<details class="fold">{{ show("all sections it was shown", c.sections_seen | length) }}
         <ul class="needs">{% for p in c.sections_seen %}{{ section(p) }}{% endfor %}</ul></details>{% endif %}
       </li>{% endfor %}</ul>
       {% endif %}
-      <details class="raw"><summary>JSON</summary>
+      <details class="raw">{{ show("JSON") }}
         <pre class="log">{{ data | tojson(indent=2) }}</pre>
-        <p><a href="/cases/{{ run.row.case_run_id }}/results/{{ stage.refs[0] }}" download>Download</a></p>
+        <p><a href="/cases/{{ run.row.case_run_id }}/results/{{ stage.refs[0] }}" download>Download the JSON</a></p>
       </details>
     {% elif data.reason is defined %}
     <p class="muted">{{ data.reason }}</p>

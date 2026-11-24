@@ -186,8 +186,8 @@ def test_a_failed_job_says_why_and_offers_the_fix(tmp_path):
 
     page = client.get(f"/jobs/{job.id}").text
     assert "Why it failed" in page and "StoreMismatchError: lightrag_store was built from" in page
-    assert "a store holds only one" in page and 'href="/procedures#procedures.build">Build the store' in page
-    assert f'href="/procedures?again={job.id}#procedures.build">Run again' in page
+    assert "a store holds only one" in page and 'href="/procedures#procedures.build">Build the Store' in page
+    assert f'href="/procedures?again={job.id}#procedures.build">Run Again' in page
     journal = client.get("/partials/journal").text
     assert "StoreMismatchError: lightrag_store was built" in journal and "exit 1" not in journal
     again = client.get(f"/procedures?again={job.id}").text
@@ -197,7 +197,7 @@ def test_a_failed_job_says_why_and_offers_the_fix(tmp_path):
     runner.folder(lost.id).mkdir()
     runner._save(lost)
     lost_page = client.get(f"/jobs/{lost.id}").text
-    assert "Outcome unknown" in lost_page and "Run again" not in lost_page
+    assert "Outcome unknown" in lost_page and "Run Again" not in lost_page
     assert "outcome unknown" in client.get("/partials/journal").text
 
 

@@ -244,7 +244,7 @@ def test_every_area_renders_its_forms(console):
     for path, _ in AREAS:
         assert client.get(path).status_code == 200, path
     system = client.get("/system").text
-    assert "Queue" in system and "Start the worker" in system and "Can't read the state database" in system
+    assert "Queue" in system and "Start the Worker" in system and "Can't read the state database" in system
     assert (
         'id="routing.trial"' in client.get("/routing").text
         and 'a finished <a href="/evaluation#evaluation.trial">C02 and C03 trial</a> job' in client.get("/routing").text

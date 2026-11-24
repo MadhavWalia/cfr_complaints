@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import hashlib
 import logging
 import secrets
 from collections.abc import AsyncIterable
@@ -75,6 +76,17 @@ ERROR_TITLES = {
 }
 
 
+def asset_version(static: Path) -> str:
+    """A short hash of the stylesheet and scripts, put in their URLs so a browser never keeps an old
+    copy after an update."""
+    digest = hashlib.sha256()
+    for name in ("console.css", "console.js", "htmx.min.js"):
+        path = static / name
+        if path.is_file():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
 def _with_connect_timeout(url: str) -> str:
     if "connect_timeout=" in url:
         return url
@@ -113,9 +125,16 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     app.state.store = None  # set by tests to an in-memory store
     app.state.indexer = None  # the Cases filters' fact index (facts.py), opened when first needed
     templates = Jinja2Templates(directory=HERE / "templates")
-    templates.env.globals.update(areas=AREAS, catalogue=commands.BY_ID, tag_help=commands.TAGS)
+    templates.env.globals.update(
+        asset_version=asset_version(HERE / "static"), areas=AREAS, catalogue=commands.BY_ID, tag_help=commands.TAGS
+    )
     templates.env.filters.update(
-        when=formats.when, stamp=formats.stamp, took=formats.took, size=formats.size, shell=formats.shell
+        when=formats.when,
+        stamp=formats.stamp,
+        button_label=formats.title,
+        took=formats.took,
+        size=formats.size,
+        shell=formats.shell,
     )
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
@@ -464,6 +483,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             "case.html",
             title=f"Case {run.row.case_no}",
             run=run,
+            steps=cases.steps(run),
             results=results,
             claims=claims,
             baseline=baseline,
