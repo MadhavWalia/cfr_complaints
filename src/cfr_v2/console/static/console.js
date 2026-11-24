@@ -164,18 +164,6 @@
   });
 })();
 
-/* DLS Date Picker: the calendar icon opens the browser's calendar for its field; in a range, for
-   the start date until it is set, then for the end date. */
-document.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-open-picker]");
-  if (!button) return;
-  const inputs = [...button.parentElement.querySelectorAll('input[type="date"]')];
-  const input = inputs.find((i) => !i.value) || inputs[inputs.length - 1];
-  if (!input) return;
-  input.focus();
-  try { input.showPicker(); } catch (e) {}
-});
-
 /* DLS Multi Select: a field that opens a panel of checkboxes. The field says how many are chosen;
    the panel closes on Escape or a click outside it. Without JavaScript it is still a working
    disclosure of checkboxes. */
@@ -199,5 +187,72 @@ document.addEventListener("click", (event) => {
     if (event.key !== "Escape") return;
     const ms = event.target.closest && event.target.closest("details.ms[open]");
     if (ms) { ms.open = false; ms.querySelector("summary").focus(); }
+  });
+})();
+
+/* DLS Split Button for uploads: the main action opens the file chooser; the chevron's menu holds the
+   related actions (replace, remove). The chosen files are named under it. */
+(() => {
+  const names = (box) => {
+    const input = box.querySelector('input[type="file"]');
+    const out = box.querySelector("[data-upload-names]");
+    const files = [...input.files].map((f) => f.name);
+    out.textContent = files.length ? files.join(", ") : (input.multiple ? "No files chosen." : "No file chosen.");
+    out.classList.toggle("chosen", files.length > 0);
+  };
+  document.addEventListener("click", (event) => {
+    const box = event.target.closest("[data-upload]");
+    if (!box) return;
+    const input = box.querySelector('input[type="file"]');
+    if (event.target.closest("[data-upload-choose]")) input.click();
+    else if (event.target.closest("[data-upload-clear]")) { input.value = ""; names(box); }
+    else return;
+    const more = box.querySelector("details.split-more");
+    if (more) more.open = false;
+  });
+  document.addEventListener("change", (event) => {
+    const box = event.target.closest && event.target.closest("[data-upload]");
+    if (box && event.target.type === "file") names(box);
+  });
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll("details.split-more[open]").forEach((d) => { if (!d.contains(event.target)) d.open = false; });
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const d = event.target.closest && event.target.closest("details.split-more[open]");
+    if (d) { d.open = false; d.querySelector("summary").focus(); }
+  });
+})();
+
+/* DLS Stepper: minus and plus step the field within its minimum and maximum; each is marked
+   unavailable at its end. The field still takes a typed value. */
+(() => {
+  const sync = (box) => {
+    const input = box.querySelector("input");
+    const value = parseFloat(input.value);
+    const [down, up] = box.querySelectorAll("[data-step]");
+    const atMin = input.min !== "" && !Number.isNaN(value) && value <= parseFloat(input.min);
+    const atMax = input.max !== "" && !Number.isNaN(value) && value >= parseFloat(input.max);
+    down.setAttribute("aria-disabled", String(atMin));
+    up.setAttribute("aria-disabled", String(atMax));
+  };
+  document.querySelectorAll("[data-stepper]").forEach(sync);
+  document.body.addEventListener("htmx:afterSwap", () => document.querySelectorAll("[data-stepper]").forEach(sync));
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-stepper] [data-step]");
+    if (!button || button.getAttribute("aria-disabled") === "true") return;
+    const box = button.closest("[data-stepper]");
+    const input = box.querySelector("input");
+    if (input.value === "") input.value = input.min || "0";
+    try { button.dataset.step === "1" ? input.stepUp() : input.stepDown(); } catch (e) { return; }
+    const step = input.step && input.step !== "any" ? input.step : "1";
+    const places = (step.split(".")[1] || "").length;
+    input.value = parseFloat(input.value).toFixed(places);  // 0.35, not 0.35000000000000003
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    sync(box);
+  });
+  document.addEventListener("input", (event) => {
+    const box = event.target.closest && event.target.closest("[data-stepper]");
+    if (box) sync(box);
   });
 })();

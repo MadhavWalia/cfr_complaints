@@ -80,7 +80,7 @@ def asset_version(static: Path) -> str:
     """A short hash of the stylesheet and scripts, put in their URLs so a browser never keeps an old
     copy after an update."""
     digest = hashlib.sha256()
-    for name in ("console.css", "console.js", "htmx.min.js"):
+    for name in ("console.css", "console.js", "datepicker.js", "htmx.min.js"):
         path = static / name
         if path.is_file():
             digest.update(path.read_bytes())

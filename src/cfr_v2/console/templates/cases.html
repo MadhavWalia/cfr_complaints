@@ -49,13 +49,13 @@
       <fieldset>
         <legend>Admission</legend>
         <div class="field range">
-          <span class="label" id="admitted-label">Admitted between</span>
+          <span class="label" id="admitted-label">Admitted between <span class="muted">(YYYY-MM-DD)</span></span>
           <span class="help" id="admitted-help">Both days included. Leave one empty for no limit.</span>
           <div class="date-range" role="group" aria-labelledby="admitted-label" aria-describedby="admitted-help" data-date-range>
-            <input id="admitted_from" name="admitted_from" type="date" value="{{ filters.admitted_from or '' }}" aria-label="Start date">
+            <input id="admitted_from" name="admitted_from" type="text" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" maxlength="10" autocomplete="off" spellcheck="false" value="{{ filters.admitted_from or '' }}" aria-label="Start date">
             <span aria-hidden="true">–</span>
-            <input id="admitted_to" name="admitted_to" type="date" value="{{ filters.admitted_to or '' }}" aria-label="End date">
-            <button type="button" class="cal" data-open-picker aria-label="Open the calendar"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button>
+            <input id="admitted_to" name="admitted_to" type="text" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" maxlength="10" autocomplete="off" spellcheck="false" value="{{ filters.admitted_to or '' }}" aria-label="End date">
+            <button type="button" class="cal" data-datepicker data-label="admission dates" aria-label="Choose admission dates" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button>
           </div>
         </div>
         {{ select("transcript", "Transcript", choices.transcript, filters.transcript) }}

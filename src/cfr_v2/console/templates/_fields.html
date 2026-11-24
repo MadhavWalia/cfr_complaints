@@ -1,24 +1,26 @@
 {# Form fields and copyable values, shared by the area pages and the release form (LDR-0025). #}
 {% macro field(f, value, ctx, fid) %}
     {% set hid = fid ~ "-help" %}
+    {# Hint text: the field's own, else what a stepper's range or an upload's file types say. #}
+    {% set help = f.help or (("Between " ~ "{:g}".format(f.minimum) ~ " and " ~ "{:g}".format(f.maximum) ~ ".") if f.stepper else ("Accepts " ~ f.accept.replace(",", ", ") ~ ".") if f.kind in ("file", "files") and f.accept else none) %}
     <div class="field{% if f.kind == 'check' %} check{% endif %}">
       {% if f.kind == "check" %}
-      <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}{% if help %} aria-describedby="{{ hid }}"{% endif %}>
       <label for="{{ fid }}">{{ f.label }}</label>
       {% else %}
       {% set options = f.options(ctx) if f.kind in ("choice", "job") else none %}
       {% if f.kind == "job" and not options %}
       <p class="label">{{ f.label }}</p>
       {% else %}
-      <label for="{{ fid }}">{{ f.label }}{% if not f.required and not f.either %} <span class="muted">(optional)</span>{% endif %}</label>
+      <label for="{{ fid }}">{{ f.label }}{% if f.kind == "date" %} <span class="muted">(YYYY-MM-DD)</span>{% endif %}{% if not f.required and not f.either %} <span class="muted">(optional)</span>{% endif %}</label>
       {% endif %}
-      {% if f.help %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}
+      {% if help %}<p class="help muted" id="{{ hid }}">{{ help }}</p>{% endif %}
       {% if f.kind in ("choice", "job") %}
       {% if f.kind == "job" and not options %}
       {% set source = catalogue[f.source] %}
       <p class="muted none">None yet: a finished <a href="/{{ source.area }}#{{ source.id }}">{{ source.title }}</a> job appears here.</p>
       {% else %}
-      <select id="{{ fid }}" name="{{ f.name }}"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      <select id="{{ fid }}" name="{{ f.name }}"{% if help %} aria-describedby="{{ hid }}"{% endif %}>
         {% if not f.required %}<option value="">None</option>{% endif %}
         {% for v, l in options %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}
       </select>
@@ -27,7 +29,7 @@
       {% set options = f.options(ctx) %}
       {% set other = value and value not in (options | map("first") | list) %}
       <div class="ref-pick">
-        <select id="{{ fid }}" name="{{ f.name }}"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+        <select id="{{ fid }}" name="{{ f.name }}"{% if help %} aria-describedby="{{ hid }}"{% endif %}>
           {% if not value %}<option value="" selected>{{ "Choose one" if f.required else "None" }}</option>{% elif not f.required %}<option value="">None</option>{% endif %}
           {% for v, l in options %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}
           <option value="__other__"{% if other %} selected{% endif %}>Another ref…</option>
@@ -35,24 +37,39 @@
         <input class="mono other" id="{{ fid }}-other" name="{{ f.name }}_other" aria-label="{{ f.label }}: another ref" placeholder="sha256:…" spellcheck="false" autocomplete="off"{% if other %} value="{{ value }}"{% endif %}>
       </div>
       {% elif f.kind in ("file", "files") %}
-      <input type="file" id="{{ fid }}" name="{{ f.name }}"{% if f.kind == "files" %} multiple{% endif %}{% if f.accept %} accept="{{ f.accept }}"{% endif %}{% if f.required %} required{% endif %}{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      {% set many = f.kind == "files" %}
+      <div class="upload" data-upload>
+        <input class="file-native" type="file" id="{{ fid }}" name="{{ f.name }}" tabindex="-1"{% if many %} multiple{% endif %}{% if f.accept %} accept="{{ f.accept }}"{% endif %}{% if f.required %} required{% endif %}{% if help %} aria-describedby="{{ hid }}"{% endif %}>
+        <div class="split" role="group" aria-label="{{ f.label }}">
+          <button type="button" class="btn secondary split-main" data-upload-choose><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>{{ "Choose Files" if many else "Choose File" }}</button>
+          <details class="split-more">
+            <summary class="btn secondary" aria-label="More actions for {{ f.label }}"><svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+            <div class="menu" role="menu">
+              <button type="button" role="menuitem" data-upload-choose>{{ "Replace Files" if many else "Replace File" }}</button>
+              <button type="button" role="menuitem" data-upload-clear>{{ "Remove All Files" if many else "Remove File" }}</button>
+            </div>
+          </details>
+        </div>
+        <p class="upload-names" data-upload-names aria-live="polite">{{ "No files chosen." if many else "No file chosen." }}</p>
+      </div>
       {% elif f.kind == "lines" %}
-      <textarea id="{{ fid }}" name="{{ f.name }}" rows="4" spellcheck="false" class="mono"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>{{ value or "" }}</textarea>
+      <textarea id="{{ fid }}" name="{{ f.name }}" rows="4" spellcheck="false" class="mono"{% if help %} aria-describedby="{{ hid }}"{% endif %}>{{ value or "" }}</textarea>
       {% else %}
-      {% if f.kind == "date" %}<div class="date-box">{% endif %}
+      {% if f.kind == "date" %}<div class="date-box">{% elif f.stepper %}<div class="stepper" data-stepper>{% endif %}
       <input id="{{ fid }}" name="{{ f.name }}"
-        type="{{ 'number' if f.kind in ('int', 'float') else 'date' if f.kind == 'date' else 'text' }}"
-        {%- if f.kind == "float" %} step="any"{% endif %}
+        {% if f.kind == "date" %}type="text" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" maxlength="10" autocomplete="off" spellcheck="false"{% else %}type="{{ 'number' if f.kind in ('int', 'float') else 'text' }}"{% endif %}
+        {%- if f.stepper %} step="{{ '{:g}'.format(f.step_value) }}" inputmode="decimal"{% elif f.kind == "float" %} step="any"{% endif %}
         {%- if f.kind == "path" %} class="mono" spellcheck="false" autocomplete="off"{% endif %}
         {%- if value is not none %} value="{{ value }}"{% endif %}
         {%- if f.minimum is not none %} min="{{ f.minimum }}"{% endif %}
         {%- if f.maximum is not none %} max="{{ f.maximum }}"{% endif %}
         {%- if f.required %} required{% endif %}
-        {%- if f.help %} aria-describedby="{{ hid }}"{% endif %}>
-      {% if f.kind == "date" %}<button type="button" class="cal" data-open-picker aria-label="Open the calendar for {{ f.label }}"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button></div>{% endif %}
+        {%- if help %} aria-describedby="{{ hid }}"{% endif %}>
+      {% if f.stepper %}<span class="steps"><button type="button" data-step="-1" aria-label="Decrease {{ f.label }}"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button><span class="divider" aria-hidden="true"></span><button type="button" data-step="1" aria-label="Increase {{ f.label }}"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button></span></div>{% endif %}
+      {% if f.kind == "date" %}<button type="button" class="cal" data-datepicker data-label="a date for {{ f.label }}" aria-label="Choose a date for {{ f.label }}" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button></div>{% endif %}
       {% endif %}
       {% endif %}
-      {% if f.help and f.kind == "check" %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}
+      {% if help and f.kind == "check" %}<p class="help muted" id="{{ hid }}">{{ help }}</p>{% endif %}
     </div>
 {% endmacro %}
 

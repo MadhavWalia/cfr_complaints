@@ -344,3 +344,28 @@ def test_every_command_says_what_it_does_and_counts_calls_where_it_can(ctx, tmp_
         "Up to 15 gpt-5 calls: 5 cases, Pass 1, Pass 2 and C03 each.",
     )
     assert BY_ID["routing.backfill"].estimate(ctx) is None  # no count yet
+
+
+def test_bounded_numbers_are_steppers_and_uploads_are_split_buttons(console):
+    from cfr_v2.console.commands import Field
+
+    assert Field("n", "N", "int", minimum=1, maximum=32).stepper  # a few dozen steps
+    assert not Field("n", "N", "int", minimum=1, maximum=500).stepper  # too wide: a text field (DLS)
+    assert not Field("n", "N", "int", minimum=1).stepper  # unbounded
+    assert not Field("x", "X", "float", minimum=0, maximum=1).stepper  # a float needs its step
+    assert Field("x", "X", "float", minimum=0, maximum=1, step=0.05).stepper
+    _, client = console
+    page = client.get("/evaluation").text
+    assert "data-stepper" in page and 'step="0.05"' in page and "Between 0 and 1." in page
+    assert 'aria-label="Increase Quote overlap to match"' in page
+    assert "data-upload" in page and "Choose Files</button>" in page and "Remove All Files" in page
+    assert "Accepts .xlsx." in page
+
+
+def test_date_fields_are_text_with_the_calendar_button(console):
+    _, client = console
+    page = client.get("/intake").text
+    assert 'type="date"' not in page  # the browser's picker is replaced by the console's calendar
+    assert 'pattern="\\d{4}-\\d{2}-\\d{2}"' in page and "(YYYY-MM-DD)" in page
+    assert 'data-datepicker data-label="a date for From" aria-label="Choose a date for From"' in page
+    assert '<script type="module" src="' in page and "/static/datepicker.js?v=" in page

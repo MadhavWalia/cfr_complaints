@@ -67,6 +67,22 @@ class Field:
     must: Literal["dir", "file"] | None = None  # a path field: what must exist there
     source: str | None = None  # a job field: the command whose outputs it takes
     either: bool = False  # one of a pair the command needs exactly one of: not marked optional
+    step: float | None = None  # a number field's step; ints step by 1
+
+    STEPPER_MAX_STEPS = 64  # DLS Stepper: small, bounded ranges only; a wider one stays a text field
+
+    @property
+    def step_value(self) -> float:
+        return self.step if self.step is not None else 1
+
+    @property
+    def stepper(self) -> bool:
+        """Whether the form shows this number as a DLS Stepper (bounded, a few dozen steps at most)."""
+        if self.kind not in ("int", "float") or self.minimum is None or self.maximum is None:
+            return False
+        if self.kind == "float" and self.step is None:
+            return False
+        return (self.maximum - self.minimum) / self.step_value <= self.STEPPER_MAX_STEPS
 
     def initial(self, ctx: Context) -> Any:
         return self.default(ctx) if callable(self.default) else self.default
@@ -980,7 +996,16 @@ CATALOGUE: tuple[Command, ...] = (
                 help="The first wins for shared cases.",
             ),
             Field("run_missing", "Run Pass 1 for cases without a result", "check", help="Real gpt-5 calls."),
-            Field("min_overlap", "Quote overlap to match", "float", required=True, default=0.3, minimum=0, maximum=1),
+            Field(
+                "min_overlap",
+                "Quote overlap to match",
+                "float",
+                required=True,
+                default=0.3,
+                minimum=0,
+                maximum=1,
+                step=0.05,
+            ),
         ),
         args=lambda v, folder: [
             "run",

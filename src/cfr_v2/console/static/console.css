@@ -254,11 +254,11 @@ a.btn.cta:hover { text-decoration: underline; text-underline-offset: 3px; }
 .search-box input { padding-right: 44px; }
 .search-box .icon { position: absolute; right: var(--s4); top: 50%; translate: 0 -50%; width: 20px; height: 20px; color: var(--text-link); pointer-events: none; }
 .search-box input::-webkit-search-cancel-button { display: none; }
-/* DLS Date Picker: the calendar icon, in Link blue, at the field's end opens the calendar. A range
-   is one field: start – end, one icon. */
+/* DLS Date Picker: a text field labelled with its format (YYYY-MM-DD), the calendar button in Link
+   blue at its end; the button opens the calendar dialog (datepicker.js). A range is one field:
+   start – end, one button. */
 .date-box, .date-range { position: relative; }
 .date-box input { padding-right: 52px; }
-input[type="date"]::-webkit-calendar-picker-indicator { display: none; }
 .cal { position: absolute; right: 2px; top: 50%; translate: 0 -50%; display: inline-grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; background: none; color: var(--text-link); cursor: pointer; }
 .cal:hover { background: var(--tertiary-bg-hover); }
 .cal:active { background: var(--tertiary-bg-pressed); }
@@ -266,7 +266,67 @@ input[type="date"]::-webkit-calendar-picker-indicator { display: none; }
 .date-range { min-width: 0; overflow: hidden; display: flex; align-items: center; gap: var(--s1); height: var(--field-h); padding: 0 52px 0 var(--s4); border: 1px solid var(--border-emphasis); border-radius: var(--radius); background: var(--surface-foreground); color: var(--text-subtle); }
 .date-range:hover { border-color: var(--text-subtle); }
 .date-range:focus-within { outline: 2px solid var(--focus); border-color: transparent; }
-.filter-groups .date-range input, .date-range input { flex: 0 1 9.5em; min-width: 0; height: auto; padding: 0; border: 0; background: none; font: inherit; color: var(--text-regular); outline: none; }
+.filter-groups .date-range input, .date-range input { flex: 0 1 11ch; min-width: 0; font-variant-numeric: tabular-nums; height: auto; padding: 0; border: 0; background: none; font: inherit; color: var(--text-regular); outline: none; }
+
+/* The calendar dialog (datepicker.js): beside its field, Foreground, 8 px corners and a shadow; the
+   month between previous/next buttons; a 7-column grid of 44 px days. Today is underlined; the
+   chosen day is Bright Blue; a range's days between are Selected. Centred on phones. */
+dialog.calendar { position: fixed; inset: auto; margin: 0; padding: 0; width: 352px; max-width: calc(100vw - 16px); border: 1px solid var(--border-subtle); border-radius: var(--radius); background: var(--surface-foreground); color: var(--text-regular); box-shadow: 0 8px 24px rgb(0 0 0 / .16); }
+dialog.calendar::backdrop { background: transparent; }
+.cal-body { padding: var(--s3) var(--s4) var(--s4); }
+.cal-head { display: flex; align-items: center; justify-content: space-between; }
+.cal-title { font-size: 16px; line-height: 24px; font-weight: 600; color: var(--text-emphasis); }
+.cal-nav { display: inline-grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; background: none; color: var(--text-link); cursor: pointer; }
+.cal-nav:hover { background: var(--tertiary-bg-hover); }
+.cal-nav:active { background: var(--tertiary-bg-pressed); }
+.cal-nav .icon { width: 20px; height: 20px; }
+.cal-prompt { margin: 0 0 var(--s2); text-align: center; font-size: 14px; color: var(--text-subtle); }
+.calendar table { table-layout: fixed; border-collapse: collapse; }
+.calendar th { height: 32px; padding: 0; border: 0; background: none; text-align: center; font-size: 12px; font-weight: 600; color: var(--text-subtle); }
+.calendar td { height: 44px; padding: 0; border: 0; text-align: center; vertical-align: middle; font-variant-numeric: tabular-nums; }
+.calendar td[data-date] { border-radius: var(--round); cursor: pointer; }
+.calendar td[data-date]:hover { background: var(--tertiary-bg-hover); }
+.calendar td[data-date]:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.calendar td[aria-current="date"] { color: var(--text-link); text-decoration: underline; text-underline-offset: 4px; font-weight: 600; }
+.calendar td.between { border-radius: 0; background: var(--selected-bg); color: var(--selected-text); }
+.calendar td[aria-selected="true"] { background: var(--primary-bg); color: var(--on-primary); font-weight: 600; }
+.calendar td.start { border-radius: var(--round) 0 0 var(--round); }
+.calendar td.end { border-radius: 0 var(--round) var(--round) 0; }
+.cal-foot { display: flex; justify-content: flex-end; margin-top: var(--s3); }
+@media (max-width: 567px) {
+  dialog.calendar { inset: 0; margin: auto; height: fit-content; }
+  dialog.calendar::backdrop { background: rgb(0 0 0 / .32); }
+}
+
+/* DLS Stepper: the value at the start of a 48 field, minus and plus in Link blue at its end with a
+   divider between; each unavailable at its limit. Bounded number fields only (Field.stepper). */
+.stepper { position: relative; }
+.stepper input { padding-right: 104px; -moz-appearance: textfield; }
+.stepper input::-webkit-inner-spin-button, .stepper input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper .steps { position: absolute; right: 2px; top: 50%; translate: 0 -50%; display: flex; align-items: center; }
+.stepper .steps button { display: inline-grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; background: none; color: var(--text-link); cursor: pointer; }
+.stepper .steps button:hover { background: var(--tertiary-bg-hover); }
+.stepper .steps button:active { background: var(--tertiary-bg-pressed); }
+.stepper .steps button[aria-disabled="true"] { color: var(--disabled-text); background: none; cursor: not-allowed; }
+.stepper .steps .icon { width: 20px; height: 20px; }
+.stepper .divider { width: 1px; height: 24px; background: var(--border-regular); }
+
+/* DLS Split Button for uploads: the main action and a chevron for the related ones, a divider
+   between, one 44 Secondary button outline; the menu below on Foreground with a shadow. */
+.upload { position: relative; display: grid; gap: var(--s2); justify-items: start; }
+.file-native { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+.split { position: relative; display: inline-flex; }
+.split > .split-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split-more > summary { list-style: none; width: 44px; padding: 0; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-color: var(--border-brand); position: relative; }
+.split-more > summary::-webkit-details-marker { display: none; }
+.split-more > summary::before { content: ""; position: absolute; left: -1px; top: 10px; bottom: 10px; width: 1px; background: var(--secondary-text); opacity: .5; }  /* the divider */
+.split-more > summary .icon { width: 20px; height: 20px; transition: rotate 120ms ease-out; }
+.split-more[open] > summary .icon { rotate: 180deg; }
+.split .menu { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 100%; padding: var(--s2) 0; border: 1px solid var(--border-subtle); border-radius: var(--radius); background: var(--surface-foreground); box-shadow: 0 8px 24px rgb(0 0 0 / .16); display: grid; }
+.split .menu button { min-height: 44px; padding: 0 var(--s4); border: 0; background: none; text-align: left; font: 16px/1.5 var(--sans); color: var(--text-regular); white-space: nowrap; cursor: pointer; }
+.split .menu button:hover, .split .menu button:focus-visible { background: var(--gray-tertiary-bg-hover); }
+.upload-names { margin: 0; font-size: 14px; color: var(--text-subtle); overflow-wrap: anywhere; }
+.upload-names.chosen { color: var(--text-regular); }
 
 /* DLS Multi Select: a 48 field showing what is chosen ("Any", the one, or "3 items") opens a panel
    of 24 px checkboxes on Foreground, 8 px corners and a shadow, over the content below. */
@@ -481,7 +541,7 @@ tr.lit td:first-child > span::after, tr.lit td:first-child > time::after {
 .command > summary:hover { background: var(--gray-tertiary-bg-hover); }
 .command > summary:active { background: var(--gray-tertiary-bg-pressed); }
 .command[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.command > summary h2 { font-size: 14px; }
+.command > summary h2 { font-size: 16px; line-height: 24px; font-weight: 600; }  /* Body Bold: a command title, not a section heading */
 /* DLS Accordion: the chevron sits at the panel's right edge, down when closed and up when open. */
 .command > summary::after {
   content: ""; position: absolute; right: var(--s5); top: 22px; width: 8px; height: 8px;

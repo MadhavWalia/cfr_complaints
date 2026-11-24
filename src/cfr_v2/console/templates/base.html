@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="{{ url_for('static', path='console.css') }}?v={{ asset_version }}">
   <script src="{{ url_for('static', path='htmx.min.js') }}?v={{ asset_version }}" defer></script>
   <script src="{{ url_for('static', path='console.js') }}?v={{ asset_version }}" defer></script>
+  <script type="module" src="{{ url_for('static', path='datepicker.js') }}?v={{ asset_version }}"></script>
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{ csrf }}"}'>
   <a class="skip" href="#main">Skip to content</a>
@@ -24,6 +25,9 @@
     <symbol id="i-next" viewBox="0 0 20 20"><path d="M7.5 4.5 13 10l-5.5 5.5"/></symbol>
     <symbol id="i-calendar" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="13" rx="2"/><path d="M3 8h14M7 2.5v3M13 2.5v3"/></symbol>
     <symbol id="i-chevron-down" viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 20 20"><path d="M10 13V3.5M6 7l4-4 4 4M3.5 13v2.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V13"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 20 20"><path d="M4.5 10h11"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 20 20"><path d="M4.5 10h11M10 4.5v11"/></symbol>
     <symbol id="i-close" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></symbol>
     <symbol id="i-theme" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5Z" fill="currentColor"/></symbol>
     <symbol id="i-menu" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></symbol>
