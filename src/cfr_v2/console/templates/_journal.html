@@ -25,7 +25,7 @@
   </div>
   {% else %}
   <div class="empty">
-    <h3>No jobs yet</h3>
+    <h{{ empty_level or 3 }}>No jobs yet</h{{ empty_level or 3 }}>
     <p>Everything you start here, from admitting cases to a LightRAG build, appears in this journal, newest first, with its live log and its files.</p>
   </div>
   {% endif %}

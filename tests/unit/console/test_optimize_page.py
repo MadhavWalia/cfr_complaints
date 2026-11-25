@@ -81,9 +81,14 @@ def test_the_page_lists_the_prompts_and_sets_the_forms_to_the_chosen_one(console
         assert title in page
     assert '<a class="area" href="/optimize"' in page and "No runs yet" in page
     chosen = client.get("/optimize?prompt=c03.primary_selection").text
-    assert 'aria-current="true"' in chosen and "set to C03 selection and its latest gold set" in chosen
-    assert '<option value="c03.primary_selection" selected>' in chosen
-    assert '<option value="20261113-100000-aaaa" selected>' in chosen  # the gold set, in Baseline and Optimize
+    assert "set to C03 selection and its latest gold set" in chosen
+    assert (
+        'class="btn secondary sm pressed"' in chosen
+        and 'aria-current="true" aria-label="C03 selection: chosen"' in chosen
+    )
+    assert chosen.count(">Chosen</a>") == 1 and 'aria-label="Choose C02 Pass 1"' in chosen
+    assert 'name="prompt" value="c03.primary_selection" checked>' in chosen
+    assert 'value="20261113-100000-aaaa" checked>' in chosen  # the gold set, in Baseline and Optimize
     assert "24 examples: 12 train" in chosen
 
 

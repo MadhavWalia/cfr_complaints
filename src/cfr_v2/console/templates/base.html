@@ -11,14 +11,24 @@
   <script>
     try { const t = localStorage.getItem("cfr-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
   </script>
-  <link rel="stylesheet" href="{{ url_for('static', path='console.css') }}">
-  <script src="{{ url_for('static', path='htmx.min.js') }}" defer></script>
-  <script src="{{ url_for('static', path='console.js') }}" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', path='console.css') }}?v={{ asset_version }}">
+  <script src="{{ url_for('static', path='htmx.min.js') }}?v={{ asset_version }}" defer></script>
+  <script src="{{ url_for('static', path='console.js') }}?v={{ asset_version }}" defer></script>
+  <script type="module" src="{{ url_for('static', path='datepicker.js') }}?v={{ asset_version }}"></script>
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{ csrf }}"}'>
   <a class="skip" href="#main">Skip to content</a>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <symbol id="i-external" viewBox="0 0 16 16"><path d="M9 3h4v4M13 3 7.5 8.5M11 9.5V13H3V5h3.5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="6"/><path d="m13 13 5 5"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 20 20"><path d="M12.5 4.5 7 10l5.5 5.5"/></symbol>
+    <symbol id="i-next" viewBox="0 0 20 20"><path d="M7.5 4.5 13 10l-5.5 5.5"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="13" rx="2"/><path d="M3 8h14M7 2.5v3M13 2.5v3"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 20 20"><path d="M10 13V3.5M6 7l4-4 4 4M3.5 13v2.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V13"/></symbol>
+    <symbol id="i-tick" viewBox="0 0 20 20"><path d="m4 10.5 4 4 8-9"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 20 20"><path d="M4.5 10h11"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 20 20"><path d="M4.5 10h11M10 4.5v11"/></symbol>
     <symbol id="i-close" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></symbol>
     <symbol id="i-theme" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11A5.5 5.5 0 0 0 8 2.5Z" fill="currentColor"/></symbol>
     <symbol id="i-menu" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></symbol>
@@ -43,7 +53,7 @@
       <nav id="rail-nav" aria-label="Areas">
         <ul>
           {% for path, label in areas %}
-          <li><a class="area" href="{{ path }}"{% if current == path %} aria-current="page"{% endif %}><svg class="icon" aria-hidden="true"><use href="#i-{{ 'pipeline' if path == '/' else path[1:] }}"/></svg><span>{{ label }}</span></a></li>
+          <li><a class="area" href="{{ path }}"{% if current == path or (path != "/" and current.startswith(path ~ "/")) %} aria-current="page"{% endif %}><svg class="icon" aria-hidden="true"><use href="#i-{{ 'pipeline' if path == '/' else path[1:] }}"/></svg><span>{{ label }}</span></a></li>
           {% endfor %}
         </ul>
       </nav>

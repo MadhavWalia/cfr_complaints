@@ -1,51 +1,53 @@
 {% extends "base.html" %}
+{% import "_fields.html" as fields %}
 {% macro select(name, label, options, value, any="Any") %}
 <div class="field">
-  <label for="{{ name }}">{{ label }}</label>
-  <select id="{{ name }}" name="{{ name }}">
-    <option value="">{{ any }}</option>
-    {% for v, text in options.items() %}<option value="{{ v }}"{% if value == v %} selected{% endif %}>{{ text }}</option>{% endfor %}
-  </select>
+  <span class="label" id="{{ name }}-label">{{ label }}</span>
+  {{ fields.dropdown(name, name, [("", any)] + options.items() | list, value or "") }}
+</div>
+{% endmacro %}
+{% macro multi(name, label, options, chosen, empty="Any") %}
+<div class="field">
+  <span class="label" id="{{ name }}-label">{{ label }}</span>
+  {{ fields.multi(name, name, options, chosen, empty) }}
 </div>
 {% endmacro %}
 {% block main %}
 <div class="head"><h1>Cases</h1>
-  <div class="actions"><a class="btn secondary" href="/evaluation?fill=evaluation.routing_export{% if release_filter %}&amp;release={{ release_filter | urlencode }}{% endif %}#evaluation.routing_export">Routing results to Excel</a></div>
+  <div class="actions"><a class="btn secondary cta" href="/evaluation/routing?fill=evaluation.routing_export{% if release_filter %}&amp;release={{ release_filter | urlencode }}{% endif %}#evaluation.routing_export">Export Routing Results</a></div>
 </div>
 <form class="find-form" method="get" action="/cases" role="search">
   <div class="find">
-    <div class="field">
+    <div class="field wide">
       <label for="q">Case number or run id</label>
-      <input id="q" name="q" type="search" value="{{ filters.q }}" class="mono" spellcheck="false" autocomplete="off">
+      <p class="help" id="q-help">Part of a case number, or a whole run id.</p>
+      <div class="search-box">
+        <input id="q" name="q" type="search" value="{{ filters.q }}" class="mono" spellcheck="false" autocomplete="off" placeholder="Search case runs" aria-describedby="q-help">
+        <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+      </div>
     </div>
+    {{ multi("state", "Stage", states, filters.state) }}
+    {% set release_options = [("", "All releases")] %}{% for r in releases %}{% set _ = release_options.append((r, r)) %}{% endfor %}
     <div class="field">
-      <label for="state">Stage</label>
-      <select id="state" name="state">
-        <option value="">Any</option>
-        {% for value, label in states %}<option value="{{ value }}"{% if filters.state == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
-      </select>
+      <span class="label" id="release-label">Release</span>
+      {{ fields.dropdown("release", "release", release_options, release_filter or "") }}
     </div>
-    <div class="field">
-      <label for="release">Release</label>
-      <select id="release" name="release">
-        <option value=""{% if not release_filter %} selected{% endif %}>All releases</option>
-        {% for r in releases %}<option value="{{ r }}"{% if release_filter == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
-      </select>
-    </div>
-    <button class="btn secondary" type="submit">Show</button>
+    <button class="btn secondary" type="submit">Search</button>
   </div>
   <details class="fold more-filters">
-    <summary>More filters{% if filters.more %} <span class="count">{{ filters.more }} on</span>{% endif %}</summary>
+    <summary><span class="when-closed">Show</span><span class="when-open">Hide</span> more filters{% if filters.more %} <span class="count">({{ filters.more }} on)</span>{% endif %}</summary>
     <div class="filter-groups">
       <fieldset>
         <legend>Admission</legend>
-        <div class="field">
-          <label for="admitted_from">Admitted from</label>
-          <input id="admitted_from" name="admitted_from" type="date" value="{{ filters.admitted_from or '' }}">
-        </div>
-        <div class="field">
-          <label for="admitted_to">Admitted to</label>
-          <input id="admitted_to" name="admitted_to" type="date" value="{{ filters.admitted_to or '' }}">
+        <div class="field range">
+          <span class="label" id="admitted-label">Admitted between <span class="muted">(YYYY-MM-DD)</span></span>
+          <span class="help" id="admitted-help">Both days included. Leave one empty for no limit.</span>
+          <div class="date-range" role="group" aria-labelledby="admitted-label" aria-describedby="admitted-help" data-date-range>
+            <input id="admitted_from" name="admitted_from" type="text" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" maxlength="10" autocomplete="off" spellcheck="false" value="{{ filters.admitted_from or '' }}" aria-label="Start date">
+            <span aria-hidden="true">–</span>
+            <input id="admitted_to" name="admitted_to" type="text" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" maxlength="10" autocomplete="off" spellcheck="false" value="{{ filters.admitted_to or '' }}" aria-label="End date">
+            <button type="button" class="cal" data-datepicker data-label="admission dates" aria-label="Choose admission dates" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button>
+          </div>
         </div>
         {{ select("transcript", "Transcript", choices.transcript, filters.transcript) }}
         {{ select("baseline", "Customer accounts", choices.baseline, filters.baseline) }}
@@ -54,20 +56,16 @@
         <legend>Results</legend>
         <div class="field range">
           <span class="label" id="claims-label">Claims</span>
-          <div class="pair" role="group" aria-labelledby="claims-label">
-            <input id="claims_min" name="claims_min" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_min if filters.claims_min is not none else '' }}" placeholder="From" aria-label="At least">
+          <span class="help" id="claims-help">How many claims Pass 2 found. Leave one empty for no limit.</span>
+          <div class="pair" role="group" aria-labelledby="claims-label" aria-describedby="claims-help">
+            <div class="stepper" data-stepper><input id="claims_min" name="claims_min" type="number" step="1" inputmode="numeric" min="0" max="99" value="{{ filters.claims_min if filters.claims_min is not none else '' }}" placeholder="Any" aria-label="At least">{{ fields.steps("claims, at least") }}</div>
             <span class="muted" aria-hidden="true">to</span>
-            <input id="claims_max" name="claims_max" type="number" inputmode="numeric" min="0" max="99" value="{{ filters.claims_max if filters.claims_max is not none else '' }}" placeholder="To" aria-label="At most">
+            <div class="stepper" data-stepper><input id="claims_max" name="claims_max" type="number" step="1" inputmode="numeric" min="0" max="99" value="{{ filters.claims_max if filters.claims_max is not none else '' }}" placeholder="Any" aria-label="At most">{{ fields.steps("claims, at most") }}</div>
           </div>
         </div>
         {{ select("primary", "Primary claim (C03)", choices.primary, filters.primary) }}
-        <div class="field">
-          <label for="vertical">Vertical (C04)</label>
-          <select id="vertical" name="vertical">
-            <option value="">Any</option>
-            {% for v in verticals %}<option value="{{ v }}"{% if filters.vertical == v %} selected{% endif %}>{{ v | replace("_", " ") | lower | capitalize if v in ("UNMAPPED", "NO_ELIGIBLE_VERTICAL") else v }}</option>{% endfor %}
-          </select>
-        </div>
+        {% set vertical_options = [] %}{% for v in verticals %}{% set _ = vertical_options.append((v, v | replace("_", " ") | lower | capitalize if v in ("UNMAPPED", "NO_ELIGIBLE_VERTICAL") else v)) %}{% endfor %}
+        {{ multi("vertical", "Vertical (C04)", vertical_options, filters.vertical) }}
         {{ select("grounding", "Has a claim that is", choices.grounding, filters.grounding) }}
         {{ select("account", "Has a claim with", choices.account, filters.account) }}
       </fieldset>
@@ -77,8 +75,8 @@
       </fieldset>
     </div>
     <div class="filter-actions">
-      <button class="btn secondary" type="submit">Show</button>
-      {% if filters.more %}<a href="{{ clear_more }}">Clear these</a>{% endif %}
+      <button class="btn secondary sm" type="submit">Apply Filters</button>
+      {% if filters.more %}<a href="{{ clear_more }}">Clear these filters</a>{% endif %}
     </div>
   </details>
 </form>
@@ -91,15 +89,15 @@
 {% if progress and progress.running %}{% include "_case_facts.html" %}{% endif %}
 
 {% if error %}
-<div class="panel error-box" role="status">
+<div class="notice critical" role="status">
   <strong>Can't read the state database ({{ error }}).</strong>
-  <p class="muted">Is Postgres running? Start it with <span class="mono">docker compose up -d</span>, then reload.</p>
+  <p>Check that Postgres is running: start it with <span class="mono">docker compose up -d</span>, then reload.</p>
 </div>
 {% elif rows %}
 <div class="table-wrap">
   <table class="stack">
     <caption class="visually-hidden">Case runs, newest first</caption>
-    <thead><tr><th scope="col">Case</th><th scope="col">Stage</th><th scope="col" class="num">Claims</th><th scope="col">Release</th><th scope="col">Admitted</th><th scope="col">Last change</th></tr></thead>
+    <thead><tr><th scope="col">Case</th><th scope="col">Stage</th><th scope="col" class="num">Claims</th><th scope="col">Release</th><th scope="col">Admitted</th><th scope="col">Last Change</th></tr></thead>
     <tbody>
     {% for r in rows %}
     <tr>
@@ -108,22 +106,24 @@
       <td data-label="Claims" class="num"><span>{{ r.claims if r.claims is not none else "—" }}</span></td>
       <td data-label="Release"><span class="mono">{{ r.release_id or "not pinned" }}</span></td>
       <td data-label="Admitted"><span>{{ r.admitted_at.isoformat() | stamp }}</span></td>
-      <td data-label="Last change"><span>{{ r.updated_at.isoformat() | stamp if r.updated_at else "—" }}</span></td>
+      <td data-label="Last Change"><span>{{ r.updated_at.isoformat() | stamp if r.updated_at else "—" }}</span></td>
     </tr>
     {% endfor %}
     </tbody>
   </table>
 </div>
-<nav class="pager" aria-label="Pages">
-  {% if offset > 0 %}<a href="/cases?{{ (query | dictsort | list + [('offset', [offset - page_rows, 0] | max)]) | urlencode }}">Newer</a>{% endif %}
-  <span class="muted">{{ offset + 1 }}–{{ offset + rows | length }}</span>
-  {% if more %}<a href="/cases?{{ (query | dictsort | list + [('offset', offset + page_rows)]) | urlencode }}">Older</a>{% endif %}
+<nav class="pager" aria-label="Pages of case runs">
+  <span class="range">Case runs {{ offset + 1 }}–{{ offset + rows | length }}</span>
+  {% if offset > 0 %}<a href="/cases?{{ (query | dictsort | list + [('offset', [offset - page_rows, 0] | max)]) | urlencode }}" aria-label="Newer case runs" title="Newer"><svg class="icon" aria-hidden="true"><use href="#i-prev"/></svg></a>
+  {% else %}<span role="link" aria-disabled="true" aria-label="Newer case runs (this is the first page)"><svg class="icon" aria-hidden="true"><use href="#i-prev"/></svg></span>{% endif %}
+  {% if more %}<a href="/cases?{{ (query | dictsort | list + [('offset', offset + page_rows)]) | urlencode }}" aria-label="Older case runs" title="Older"><svg class="icon" aria-hidden="true"><use href="#i-next"/></svg></a>
+  {% else %}<span role="link" aria-disabled="true" aria-label="Older case runs (this is the last page)"><svg class="icon" aria-hidden="true"><use href="#i-next"/></svg></span>{% endif %}
 </nav>
 {% elif only_current %}
-<div class="empty"><h3>No case runs under {{ release_filter }} yet</h3><p>It's the release new cases use. <a href="/intake">Admit cases</a>, or <a href="/cases?release=">show every release</a>.</p></div>
+<div class="empty"><h2>No case runs under {{ release_filter }} yet</h2><p>It's the release new cases use. <a href="/intake">Admit cases</a>, or <a href="/cases?release=">show every release</a>.</p></div>
 {% elif filters.active or release_filter or offset %}
-<div class="empty"><h3>No case runs match</h3><p>Try part of a case number, or clear a filter. <a href="/cases?release=">Show all</a></p></div>
+<div class="empty"><h2>No case runs match</h2><p>Try part of a case number, or clear a filter. <a href="/cases?release=">Show all</a></p></div>
 {% else %}
-<div class="empty"><h3>No case runs yet</h3><p>Cases appear here once they are admitted. <a href="/intake">Admit cases</a> from a date window, a list of case numbers, or synthetic ones.</p></div>
+<div class="empty"><h2>No case runs yet</h2><p>Cases appear here once they are admitted. <a href="/intake">Admit cases</a> from a date window, a list of case numbers, or synthetic ones.</p></div>
 {% endif %}
 {% endblock %}

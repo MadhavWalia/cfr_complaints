@@ -30,7 +30,9 @@ from cfr_v2.registry.manifests import ReleaseRegistry
 
 from . import formats
 
-FieldKind = Literal["text", "int", "float", "date", "check", "choice", "file", "files", "path", "lines", "job", "ref"]
+FieldKind = Literal[
+    "text", "int", "float", "date", "check", "choice", "mode", "file", "files", "path", "lines", "job", "ref"
+]
 OTHER = "__other__"  # a ref field's "Another ref…" choice: the value is then typed in <name>_other
 
 
@@ -67,6 +69,14 @@ class Field:
     must: Literal["dir", "file"] | None = None  # a path field: what must exist there
     source: str | None = None  # a job field: the command whose outputs it takes
     either: bool = False  # one of a pair the command needs exactly one of: not marked optional
+    step: float | None = None  # a number field's step; ints step by 1
+    when: tuple[str, ...] = ()  # shown only while the form's mode field has one of these values
+    count: str | None = None  # a lines field: the live count's noun, e.g. "case number"
+
+    @property
+    def stepper(self) -> bool:
+        """Whether the form shows this field as a DLS Stepper: every number field does."""
+        return self.kind in ("int", "float")
 
     def initial(self, ctx: Context) -> Any:
         return self.default(ctx) if callable(self.default) else self.default
@@ -121,7 +131,7 @@ class Field:
                 if text not in {value for value, _ in self.options(ctx)}:
                     raise FormError(f"{self.label}: choose one of the finished jobs.")
                 return ctx.outputs(text)
-            case "choice":
+            case "choice" | "mode":
                 if text not in {value for value, _ in self.options(ctx)}:
                     raise FormError(f"{self.label}: choose one of the options.")
             case "ref":
@@ -199,7 +209,7 @@ class Next:
             return self.page(job)
         target = BY_ID[self.command or ""]
         query = urlencode({"fill": target.id, "from": job.id, **self.values(job)})
-        return f"/{target.area}?{query}#{target.id}"
+        return f"{target.page}?{query}#{target.id}"
 
 
 @dataclass(frozen=True)
@@ -219,6 +229,12 @@ class Command:
     next: tuple[Next, ...] = ()  # what usually follows a finished job of this command
     tags: tuple[str, ...] = ()  # from TAGS
     estimate: Callable[[Context], Estimate | None] | None = None  # model calls, when they can be counted
+    group: str | None = None  # a tab within the area: the evaluation stage (LDR-0042)
+
+    @property
+    def page(self) -> str:
+        """The page its form is on."""
+        return f"/{self.area}/{self.group}" if self.group else f"/{self.area}"
 
     def next_links(self, job: Any) -> list[tuple[str, str]]:
         """``(label, href)`` for each next step that applies to ``job``."""
@@ -387,10 +403,6 @@ def _build_estimate(ctx: Context) -> Estimate | None:
                 "About {calls} gpt-5 calls for the newest snapshot: {n} sections, about 3 each.", sections, 3
             )
     return None
-
-
-def _trial_estimate(ctx: Context) -> Estimate:
-    return Estimate("Up to {calls} gpt-5 calls: {n} cases, Pass 1, Pass 2 and C03 each.", 5, 3, field="sample")
 
 
 def _backfill_estimate(ctx: Context) -> Estimate | None:
@@ -576,6 +588,164 @@ def _resume_backfill(v: Values, folder: Path) -> list[str]:
     return ["--out", str(out)]
 
 
+# --- evaluation by stage (LDR-0042) ----------------------------------------------------------------
+
+# key, title, what its workbook holds (one row per ...), the headline metric's name
+REVIEWED = (
+    (
+        "intake",
+        "Intake (C01)",
+        "one row per case, with the first 1,500 characters of its redacted transcript",
+        "Right call",
+    ),
+    (
+        "pass1",
+        "Pass 1 (C02)",
+        "one row per allegation, request and agent statement, with every quote it came from",
+        "Allegation precision",
+    ),
+    (
+        "pass2",
+        "Pass 2 (C02)",
+        "one row per claim, with its allegations, account, event window and evidence needs",
+        "Claim precision",
+    ),
+    (
+        "selection",
+        "Selection (C03)",
+        "one row per case, with its claims in the order raised and C03's answer",
+        "Top-1 accuracy",
+    ),
+    (
+        "routing",
+        "Routing (C04)",
+        "one row per claim, with its vertical, reasoning and the procedure sections it relied on",
+        "Correct vertical",
+    ),
+)
+WHICH = (("all", "All cases"), ("sample", "Random sample"), ("chosen", "Chosen cases"))
+CASES_MIN, CASES_MAX = 10, 500
+
+
+def _which(values: Values, ctx: Context) -> None:
+    """The case fields that go with the chosen mode (the others are ignored)."""
+    if values["admitted_from"] and values["admitted_to"] and values["admitted_to"] < values["admitted_from"]:
+        raise FormError("Admitted to: on or after Admitted from.")
+    if values["which"] != "chosen":
+        return
+    listed, file = values["case_nos"], values["cases_file"]
+    if bool(listed) == bool(file):
+        raise FormError("Chosen cases: type the case numbers or choose a file, not both.")
+    if listed and not CASES_MIN <= len(listed) <= CASES_MAX:
+        raise FormError(f"Case numbers: {len(listed)} given; between {CASES_MIN} and {CASES_MAX}, please.")
+
+
+def _review_commands(key: str, title: str, holds: str, headline: str) -> tuple[Command, Command]:
+    def export_args(v: Values, folder: Path) -> list[str]:
+        which = v["which"]
+        cases = (
+            ["--sample", str(v["sample"]), *_opt("--seed", v["seed"])]
+            if which == "sample"
+            else [a for c in v["case_nos"] for a in ("--case-no", c)] + _opt("--cases-file", v["cases_file"])
+            if which == "chosen"
+            else []
+        )
+        name = f"{key}_review_{v['release']}_{date.today().isoformat()}.xlsx"
+        return [
+            "export", key, "--release", v["release"],
+            *_opt("--admitted-from", v["admitted_from"]), *_opt("--admitted-to", v["admitted_to"]),
+            *cases, "--out", _out(folder, name),
+        ]  # fmt: skip
+
+    def export_title(v: Values) -> str:
+        which = {"all": "all cases", "sample": f"{v['sample']} at random", "chosen": "chosen cases"}[v["which"]]
+        return f"{title} review · {v['release']} · {which}"
+
+    export = Command(
+        id=f"evaluation.{key}_export",
+        area="evaluation",
+        group=key,
+        title="Export for review",
+        effect=f"Writes a workbook of {title}'s stored results, {holds}, then empty columns for the reviewer "
+        "with dropdowns. Reads stored results only, so it's safe while a worker runs. The workbook holds text "
+        f"from cases. {KEEP_LOCAL}",
+        module="cfr_v2.evaluation",
+        fields=(
+            Field(
+                "release",
+                "Release",
+                "choice",
+                required=True,
+                default=lambda ctx: ctx.env.get("CFR_RELEASE_ID"),
+                choices=_releases,
+            ),
+            Field("admitted_from", "Admitted from", "date", help="The first admission day to include."),
+            Field("admitted_to", "Admitted to", "date", help="The last one, included."),
+            Field("which", "Cases", "mode", required=True, default="all", choices=WHICH),
+            Field(
+                "sample",
+                "How many",
+                "int",
+                required=True,
+                default=100,
+                minimum=CASES_MIN,
+                maximum=CASES_MAX,
+                step=10,
+                when=("sample",),
+            ),
+            Field(
+                "seed",
+                "Seed",
+                "text",
+                help="The same seed picks the same cases again. Left empty, one is made up and recorded in the workbook.",
+                when=("sample",),
+            ),
+            Field(
+                "case_nos",
+                "Case numbers",
+                "lines",
+                help=f"One per line, or separated by commas or spaces. {CASES_MIN} to {CASES_MAX}.",
+                when=("chosen",),
+                count="case number",
+                either=True,
+            ),
+            Field(
+                "cases_file",
+                "Or a file of them",
+                "file",
+                accept=".txt,.csv",
+                help="A .txt or .csv of case numbers.",
+                when=("chosen",),
+                either=True,
+            ),
+        ),
+        args=export_args,
+        check=_which,
+        job_title=export_title,
+        summarize=_printed(r"^([\d,]+ cases exported, [\d,]+ rows)"),
+        action="Write the workbook",
+        tags=("changes nothing", "keep output local"),
+    )
+    score = Command(
+        id=f"evaluation.{key}_score",
+        area="evaluation",
+        group=key,
+        title="Upload and score",
+        effect=f"Reads a reviewed {title} workbook and computes the stage's metrics: {headline.lower()} and the rest, "
+        "each with how many rows it counts and a 95% range. Rows whose results were edited, or whose answers aren't "
+        "one of the choices, are left out and named. Writes the metrics as JSON (counts only) and as a workbook that "
+        "also holds the reviewers' notes.",
+        module="cfr_v2.evaluation",
+        fields=(Field("workbook", "Reviewed workbook", "file", required=True, accept=".xlsx"),),
+        args=lambda v, folder: ["score", key, str(v["workbook"]), "--out-dir", str(folder / "outputs")],
+        job_title=lambda v: f"{title} score · {Path(getattr(v['workbook'], 'filename', '') or v['workbook']).name}",
+        summarize=_printed(rf"^({re.escape(headline)} .*)$"),
+        action="Score the review",
+        tags=("changes nothing",),
+    )
+    return export, score
+
+
 ALLOW_INCOMPATIBLE = Field(
     "allow_incompatible",
     "Allow a release that doesn't match this code",
@@ -682,45 +852,6 @@ CATALOGUE: tuple[Command, ...] = (
         tags=("changes nothing",),
     ),
     # --- Routing --------------------------------------------------------------------------------
-    Command(
-        id="routing.trial",
-        area="routing",
-        title="Router trial",
-        effect="Routes the claims in a C02 trial's review files, outside the workflow: per claim, one LightRAG "
-        "search (one gpt-5 call) and one router call. Writes nothing to the database or the artifact store. "
-        f"Its review files and routing.xlsx hold claim and procedure text. {KEEP_LOCAL}",
-        module="cfr_v2.routing",
-        fields=(
-            Field("claims_job", "Claims from a C02 trial", "job", source="evaluation.trial", either=True),
-            Field("claims_path", "Or a folder of review files", "path", must="dir", either=True),
-            Field("procedures", "Snapshot", "ref", required=True, default=_release_snapshot, choices=known_snapshots),
-            _store_field(STORE_HELP),
-            Field("verticals", "Verticals document", "path", required=True, default=VERTICALS_DOCUMENT, must="file"),
-            Field("cases", "Cases", "int", minimum=1, help="Only the first N cases; otherwise all."),
-            Field("concurrency", "Claims at once", "int", required=True, default=4, minimum=1, maximum=32),
-        ),
-        args=lambda v, folder: [
-            v["procedures"],
-            *_store_args(v),
-            "--verticals",
-            str(v["verticals"]),
-            "--claims-from",
-            str((v["claims_job"] / "c02_trial") if v["claims_job"] else v["claims_path"]),
-            *_opt("--cases", v["cases"]),
-            "--concurrency",
-            str(v["concurrency"]),
-            "--out",
-            _out(folder, "router_trial"),
-        ],
-        check=_all(
-            _one_of("claims_job", "claims_path", message="Claims: choose a C02 trial or type a folder, not both."),
-            _store_check(build=False),
-        ),
-        job_title=lambda v: "Router trial" + (f" · {v['cases']} cases" if v["cases"] else ""),
-        summarize=_wrote("router_trial", "file"),
-        action="Route the claims",
-        tags=("calls gpt-5", "keep output local"),
-    ),
     Command(
         id="routing.publish",
         area="routing",
@@ -901,106 +1032,9 @@ CATALOGUE: tuple[Command, ...] = (
         action="Search",
         tags=("calls gpt-5", "keep output local"),
     ),
-    # --- Evaluation -----------------------------------------------------------------------------
     Command(
-        id="evaluation.trial",
-        area="evaluation",
-        title="C02 and C03 trial",
-        effect="Runs Pass 1, Pass 2 and primary selection on admitted cases, outside the workflow: real gpt-5 "
-        "calls, nothing written to the database or the artifact store. Prints counts, latency, tokens and a "
-        f"cost projection. Its review files hold redacted transcript excerpts. {KEEP_LOCAL}",
-        module="cfr_v2.understanding",
-        fields=(
-            Field("sample", "Random cases", "int", required=True, default=5, minimum=1, maximum=200),
-            Field("case_run_ids", "Or these case runs", "lines", help="Ids, one per line; they replace the sample."),
-            Field("pass1_only", "Pass 1 only", "check"),
-            Field("workers", "Cases at once", "int", required=True, default=8, minimum=1, maximum=32),
-            Field("total_cases", "Project the cost for", "int", required=True, default=10358, minimum=1),
-        ),
-        args=lambda v, folder: [
-            *(
-                [a for i in v["case_run_ids"] for a in ("--case-run-id", i)]
-                if v["case_run_ids"]
-                else ["--sample", str(v["sample"])]
-            ),
-            "--workers",
-            str(v["workers"]),
-            *_flag(v["pass1_only"], "--pass1-only"),
-            "--total-cases",
-            str(v["total_cases"]),
-            "--out",
-            _out(folder, "c02_trial"),
-        ],
-        job_title=lambda v: (
-            f"C02 trial · {len(v['case_run_ids']) or v['sample']} cases" + (" · Pass 1" if v["pass1_only"] else "")
-        ),
-        summarize=_wrote("c02_trial", "review file"),
-        action="Run the trial",
-        next=(Next("Route these claims", "routing.trial", lambda job: {"claims_job": job.id}),),
-        tags=("calls gpt-5", "keep output local"),
-        estimate=_trial_estimate,
-    ),
-    Command(
-        id="evaluation.gold_template",
-        area="evaluation",
-        title="Gold workbook",
-        effect="Writes an empty gold workbook for labellers, for the cases listed. Runs nothing.",
-        module="cfr_v2.understanding.score",
-        fields=(
-            Field("case_nos", "Case numbers", "lines", help="One per line.", either=True),
-            Field("cases_file", "Or a text file of them", "file", accept=".txt,.csv", either=True),
-        ),
-        args=lambda v, folder: [
-            "template",
-            *[a for c in v["case_nos"] for a in ("--case-no", c)],
-            *_opt("--cases-file", v["cases_file"]),
-            _out(folder, "gold_template.xlsx"),
-        ],
-        check=_one_of("case_nos", "cases_file", message="Cases: type case numbers or choose a file, not both."),
-        job_title=lambda v: "Gold workbook" + (f" · {len(v['case_nos'])} cases" if v["case_nos"] else ""),
-        summarize=lambda folder, code: "gold_template.xlsx" if code == 0 else None,
-        action="Write the workbook",
-        next=(Next("Score Pass 1 against the workbooks", "evaluation.score"),),
-        tags=("changes nothing",),
-    ),
-    Command(
-        id="evaluation.score",
-        area="evaluation",
-        title="Score Pass 1",
-        effect="Scores committed Pass 1 results against the labellers' workbooks: recall, precision, F1 and "
-        "agreement. Needs RESTRICTED read access. Its report holds counts and case numbers only.",
-        module="cfr_v2.understanding.score",
-        fields=(
-            Field(
-                "gold",
-                "Gold workbooks",
-                "files",
-                required=True,
-                accept=".xlsx",
-                help="The first wins for shared cases.",
-            ),
-            Field("run_missing", "Run Pass 1 for cases without a result", "check", help="Real gpt-5 calls."),
-            Field("min_overlap", "Quote overlap to match", "float", required=True, default=0.3, minimum=0, maximum=1),
-        ),
-        args=lambda v, folder: [
-            "run",
-            *[str(p) for p in v["gold"]],
-            *_flag(v["run_missing"], "--run-missing"),
-            "--min-overlap",
-            str(v["min_overlap"]),
-            "--out",
-            _out(folder, "pass1_score.json"),
-        ],
-        job_title=lambda v: f"Score Pass 1 · {len(v['gold'])} workbook{'' if len(v['gold']) == 1 else 's'}",
-        summarize=lambda folder, code: (
-            "pass1_score.json" if (folder / "outputs" / "pass1_score.json").is_file() else None
-        ),
-        action="Score",
-        tags=("changes nothing",),
-    ),
-    Command(
-        id="evaluation.sources_export",
-        area="evaluation",
+        id="procedures.sources_export",
+        area="procedures",
         title="Export evidence sources",
         effect="Writes an evidence-source version, with its proposals and change log, to a workbook to edit.",
         module="cfr_v2.registry.evidence_sources",
@@ -1012,8 +1046,8 @@ CATALOGUE: tuple[Command, ...] = (
         tags=("changes nothing",),
     ),
     Command(
-        id="evaluation.sources_import",
-        area="evaluation",
+        id="procedures.sources_import",
+        area="procedures",
         title="Import evidence sources",
         effect="Applies an edited workbook's backends, proposals and change log to its version in registry/. "
         "That changes files in the repository: review them with git diff, then commit.",
@@ -1025,8 +1059,8 @@ CATALOGUE: tuple[Command, ...] = (
         tags=("changes repository files",),
     ),
     Command(
-        id="evaluation.sources_check",
-        area="evaluation",
+        id="procedures.sources_check",
+        area="procedures",
         title="Check evidence sources",
         effect="Validates and lints every evidence-source version in registry/. Changes nothing.",
         module="cfr_v2.registry.evidence_sources",
@@ -1035,42 +1069,9 @@ CATALOGUE: tuple[Command, ...] = (
         action="Check",
         tags=("changes nothing",),
     ),
+    # --- Evaluation: per stage, export for review, then score the review (LDR-0042) -------------
+    *(command for stage in REVIEWED for command in _review_commands(*stage)),
     # --- System ---------------------------------------------------------------------------------
-    Command(
-        id="evaluation.routing_export",
-        area="evaluation",
-        title="Routing results to Excel",
-        effect="Writes routing_results.xlsx: one row per claim of every case run at Plan ready under the release, "
-        "with its case number, the claim, whether C03 chose it as primary (Y/N), the vertical, the reasoning and the "
-        "procedure sections it relied on, then three empty columns to review it: Correct? (Y/N), Correct vertical "
-        "(if not) and Reason it's wrong. Reads stored results only, so it's safe while a worker runs; run it "
-        f"again later for the cases that finished since. The workbook holds claims and reasoning from cases. {KEEP_LOCAL}",
-        module="cfr_v2.console.export",
-        fields=(
-            Field(
-                "release",
-                "Release",
-                "choice",
-                required=True,
-                default=lambda ctx: ctx.env.get("CFR_RELEASE_ID"),
-                choices=_releases,
-            ),
-            Field("admitted_from", "Admitted from", "date", help="The first admission day to include."),
-            Field("admitted_to", "Admitted to", "date", help="The last one, included."),
-        ),
-        args=lambda v, folder: [
-            "--release",
-            v["release"],
-            *_opt("--admitted-from", v["admitted_from"]),
-            *_opt("--admitted-to", v["admitted_to"]),
-            "--out",
-            _out(folder, "routing_results.xlsx"),
-        ],
-        job_title=lambda v: f"Routing results · {v['release']}",
-        summarize=_printed(r"^([\d,]+ case runs exported, [\d,]+ rows)"),
-        action="Write the workbook",
-        tags=("changes nothing", "keep output local"),
-    ),
     Command(
         id="system.worker",
         area="system",

@@ -7,7 +7,7 @@
   <ul class="plain">
     <li><a href="#new-procedures">Use a new set of procedures</a></li>
     <li><a href="#run-cases">Run a few cases through the pipeline</a></li>
-    <li><a href="#trial">Try the models on cases, outside the workflow</a></li>
+    <li><a href="#review">Review a stage and get its metrics</a></li>
     <li><a href="#fresh">Start over on new cases, leaving earlier runs behind</a></li>
     <li><a href="#failed">Find out why something failed</a></li>
     <li><a href="#stages">The stages</a> · <a href="#words">Words</a></li>
@@ -36,12 +36,14 @@
   </ol>
 </section>
 
-<section class="section howto" id="trial" aria-labelledby="trial-h">
-  <h2 id="trial-h">Try the models on cases, outside the workflow</h2>
+<section class="section howto" id="review" aria-labelledby="review-h">
+  <h2 id="review-h">Review a stage and get its metrics</h2>
   <ol>
-    <li><a href="/evaluation#evaluation.trial">Run the C02 and C03 trial</a> on a few admitted cases. It writes nothing to the database; the form counts its model calls.</li>
-    <li>From its job page, <strong>Route these claims</strong> (Next) to try C04 on the same claims, and download <span class="mono">routing.xlsx</span> to judge.</li>
-    <li>Review files hold case text: keep them on this machine, and delete the jobs once reviewed.</li>
+    <li>On <a href="/evaluation">Evaluation</a>, open the stage's tab: Intake, Pass 1, Pass 2, Selection or Routing.</li>
+    <li><strong>Export for review</strong>: all cases, a random sample, or the cases you list, from stored results. It calls no model, and is safe while a worker runs.</li>
+    <li>Fill in the blue columns in Excel, and your name on the about sheet. Leave the other columns as they are.</li>
+    <li><strong>Upload and score</strong> the workbook. The metrics show on the tab, and every stage's latest on the Overview.</li>
+    <li>Workbooks hold case text: keep them on this machine, and delete the jobs once scored.</li>
   </ol>
 </section>
 

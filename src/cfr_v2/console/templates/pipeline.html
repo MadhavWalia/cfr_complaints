@@ -4,9 +4,9 @@
 <div class="head">
   <h1>Pipeline</h1>
   <div class="actions">
-    <a class="btn secondary" href="/intake">Admit cases</a>
-    {% if worker %}<a class="btn primary" href="/jobs/{{ worker.id }}">Stop worker</a>
-    {% else %}<a class="btn primary" href="/system#system.worker">Start worker</a>{% endif %}
+    <a class="btn secondary cta" href="/intake">Admit Cases</a>
+    {% if worker %}<a class="btn primary cta" href="/jobs/{{ worker.id }}">Stop Worker</a>
+    {% else %}<a class="btn primary cta" href="/system#system.worker">Start Worker</a>{% endif %}
   </div>
 </div>
 {% include "_pipeline_status.html" %}

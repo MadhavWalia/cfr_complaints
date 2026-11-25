@@ -4,16 +4,16 @@
   <div class="table-wrap">
     <table class="stack">
       <caption class="visually-hidden">The pipeline's prompts, their gold sets and last runs</caption>
-      <thead><tr><th scope="col">Prompt</th><th scope="col">Version</th><th scope="col">Gold sets</th><th scope="col">Last run</th><th scope="col"><span class="visually-hidden">Choose</span></th></tr></thead>
+      <thead><tr><th scope="col">Prompt</th><th scope="col">Version</th><th scope="col">Gold Sets</th><th scope="col">Last Run</th><th scope="col"><span class="visually-hidden">Choose</span></th></tr></thead>
       <tbody>
       {% for row in prompt_rows %}
       {% set current = chosen is not none and chosen.prompt.prompt_id == row.prompt.prompt_id %}
-      <tr{% if current %} class="chosen" aria-current="true"{% endif %}>
+      <tr{% if current %} class="chosen"{% endif %}>
         <td data-label="Prompt"><span><a href="/optimize?prompt={{ row.prompt.prompt_id }}">{{ row.prompt.title }}</a><span class="detail">{{ row.prompt.does }}</span></span></td>
         <td data-label="Version"><span class="mono">{{ row.version }}</span></td>
         <td data-label="Gold sets"><span>{% if row.gold_sets %}{{ row.gold_sets | length }}<span class="detail">latest: {{ row.gold_sets[0].summary or "checked" }}</span>{% else %}<span class="muted">none yet</span>{% endif %}</span></td>
         <td data-label="Last run"><span>{% if row.last_run %}<span class="pill {{ row.last_run.job.status.pill }}">{{ row.last_run.job.status.value }}</span><span class="detail">{{ row.last_run.job.summary or row.last_run.job.created_at | stamp }}</span>{% else %}<span class="muted">none yet</span>{% endif %}</span></td>
-        <td data-label=""><span>{% if current %}<span class="muted">chosen</span>{% else %}<a class="btn secondary" href="/optimize?prompt={{ row.prompt.prompt_id }}">Choose</a>{% endif %}</span></td>
+        <td data-label=""><span>{# DLS Secondary button: the chosen prompt's stays in its Pressed state, a tick before "Chosen". #}{% if current %}<a class="btn secondary sm pressed" href="/optimize?prompt={{ row.prompt.prompt_id }}" aria-current="true" aria-label="{{ row.prompt.title }}: chosen"><svg class="icon" aria-hidden="true"><use href="#i-tick"/></svg>Chosen</a>{% else %}<a class="btn secondary sm" href="/optimize?prompt={{ row.prompt.prompt_id }}" aria-label="Choose {{ row.prompt.title }}">Choose</a>{% endif %}</span></td>
       </tr>
       {% endfor %}
       </tbody>

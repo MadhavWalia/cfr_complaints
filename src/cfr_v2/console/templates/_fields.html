@@ -1,56 +1,114 @@
 {# Form fields and copyable values, shared by the area pages and the release form (LDR-0025). #}
 {% macro field(f, value, ctx, fid) %}
     {% set hid = fid ~ "-help" %}
-    <div class="field{% if f.kind == 'check' %} check{% endif %}">
+    {# Hint text: the field's own, else what a stepper's range or an upload's file types say. #}
+    {% set help = f.help or (("Between " ~ "{:g}".format(f.minimum) ~ " and " ~ "{:g}".format(f.maximum) ~ ".") if f.stepper and f.minimum is not none and f.maximum is not none else ("Accepts " ~ f.accept.replace(",", ", ") ~ ".") if f.kind in ("file", "files") and f.accept else none) %}
+    {% set when = (' data-when="' ~ f.when | join(" ") ~ '"') | safe if f.when else "" %}
+    {% if f.kind == "mode" %}
+    {# DLS Segmented Control: 2-5 options, one selected, a check on it. Native radios: arrow keys
+       move between them, and the form works without JavaScript. Fields with ``when`` show for
+       their option only (console.css). #}
+    {% set chosen = value or f.initial(ctx) %}
+    <fieldset class="field mode"{{ when }}>
+      <legend class="label">{{ f.label }}</legend>
+      <div class="segmented">
+        {% for v, l in f.options(ctx) %}<label><input type="radio" name="{{ f.name }}" value="{{ v }}" data-mode{% if v == chosen %} checked{% endif %}><svg class="icon" aria-hidden="true"><use href="#i-tick"/></svg><span>{{ l }}</span></label>{% endfor %}
+      </div>
+    </fieldset>
+    {% else %}
+    <div class="field{% if f.kind == 'check' %} check{% endif %}"{{ when }}>
       {% if f.kind == "check" %}
-      <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}{% if help %} aria-describedby="{{ hid }}"{% endif %}>
       <label for="{{ fid }}">{{ f.label }}</label>
       {% else %}
       {% set options = f.options(ctx) if f.kind in ("choice", "job") else none %}
       {% if f.kind == "job" and not options %}
       <p class="label">{{ f.label }}</p>
+      {% elif f.kind in ("choice", "job", "ref") %}
+      <span class="label" id="{{ fid }}-label">{{ f.label }}{% if not f.required and not f.either %} <span class="muted">(optional)</span>{% endif %}</span>
       {% else %}
-      <label for="{{ fid }}">{{ f.label }}{% if not f.required and not f.either %} <span class="muted">(optional)</span>{% endif %}</label>
+      <label for="{{ fid }}">{{ f.label }}{% if f.kind == "date" %} <span class="muted">(YYYY-MM-DD)</span>{% endif %}{% if not f.required and not f.either %} <span class="muted">(optional)</span>{% endif %}</label>
       {% endif %}
+      {% if help %}<p class="help muted" id="{{ hid }}">{{ help }}</p>{% endif %}
       {% if f.kind in ("choice", "job") %}
       {% if f.kind == "job" and not options %}
       {% set source = catalogue[f.source] %}
-      <p class="muted none">None yet: a finished <a href="/{{ source.area }}#{{ source.id }}">{{ source.title }}</a> job appears here.</p>
+      <p class="muted none">None yet: a finished <a href="{{ source.page }}#{{ source.id }}">{{ source.title }}</a> job appears here.</p>
       {% else %}
-      <select id="{{ fid }}" name="{{ f.name }}"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
-        {% if not f.required %}<option value="">None</option>{% endif %}
-        {% for v, l in options %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}
-      </select>
+      {{ dropdown(f.name, fid, ([] if f.required else [("", "None")]) + options, value, hid if help else none) }}
       {% endif %}
       {% elif f.kind == "ref" %}
       {% set options = f.options(ctx) %}
       {% set other = value and value not in (options | map("first") | list) %}
       <div class="ref-pick">
-        <select id="{{ fid }}" name="{{ f.name }}"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
-          {% if not value %}<option value="" selected>{{ "Choose one" if f.required else "None" }}</option>{% elif not f.required %}<option value="">None</option>{% endif %}
-          {% for v, l in options %}<option value="{{ v }}"{% if v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}
-          <option value="__other__"{% if other %} selected{% endif %}>Another ref…</option>
-        </select>
+        {% set empty = [("", "Choose one" if f.required else "None")] if not value else [] if f.required else [("", "None")] %}
+        {{ dropdown(f.name, fid, empty + options + [("__other__", "Another ref…")], "__other__" if other else value, hid if help else none) }}
         <input class="mono other" id="{{ fid }}-other" name="{{ f.name }}_other" aria-label="{{ f.label }}: another ref" placeholder="sha256:…" spellcheck="false" autocomplete="off"{% if other %} value="{{ value }}"{% endif %}>
       </div>
       {% elif f.kind in ("file", "files") %}
-      <input type="file" id="{{ fid }}" name="{{ f.name }}"{% if f.kind == "files" %} multiple{% endif %}{% if f.accept %} accept="{{ f.accept }}"{% endif %}{% if f.required %} required{% endif %}{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+      {% set many = f.kind == "files" %}
+      <div class="upload" data-upload>
+        <input class="file-native" type="file" id="{{ fid }}" name="{{ f.name }}" tabindex="-1"{% if many %} multiple{% endif %}{% if f.accept %} accept="{{ f.accept }}"{% endif %}{% if f.required %} required{% endif %}{% if help %} aria-describedby="{{ hid }}"{% endif %}>
+        <div class="split" role="group" aria-label="{{ f.label }}">
+          <button type="button" class="btn secondary split-main" data-upload-choose><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>{{ "Choose Files" if many else "Choose File" }}</button>
+          <details class="split-more">
+            <summary class="btn secondary" aria-label="More actions for {{ f.label }}"><svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+            <div class="menu" role="menu">
+              <button type="button" role="menuitem" data-upload-choose>{{ "Replace Files" if many else "Replace File" }}</button>
+              <button type="button" role="menuitem" data-upload-clear>{{ "Remove All Files" if many else "Remove File" }}</button>
+            </div>
+          </details>
+        </div>
+        <p class="upload-names" data-upload-names aria-live="polite">{{ "No files chosen." if many else "No file chosen." }}</p>
+      </div>
       {% elif f.kind == "lines" %}
-      <textarea id="{{ fid }}" name="{{ f.name }}" rows="4" spellcheck="false" class="mono"{% if f.help %} aria-describedby="{{ hid }}"{% endif %}>{{ value or "" }}</textarea>
+      <textarea id="{{ fid }}" name="{{ f.name }}" rows="{{ 3 if f.count else 4 }}" spellcheck="false" class="mono"{% if help %} aria-describedby="{{ hid }}"{% endif %}{% if f.count %} data-count="{{ f.count }}"{% endif %}>{{ value or "" }}</textarea>
+      {% if f.count %}<p class="count muted" aria-live="polite" data-count-for="{{ fid }}"></p>{% endif %}
       {% else %}
+      {% if f.kind == "date" %}<div class="date-box">{% elif f.stepper %}<div class="stepper" data-stepper>{% endif %}
       <input id="{{ fid }}" name="{{ f.name }}"
-        type="{{ 'number' if f.kind in ('int', 'float') else 'date' if f.kind == 'date' else 'text' }}"
-        {%- if f.kind == "float" %} step="any"{% endif %}
+        {% if f.kind == "date" %}type="text" inputmode="numeric" pattern="\d{4}-\d{2}-\d{2}" maxlength="10" autocomplete="off" spellcheck="false"{% else %}type="{{ 'number' if f.kind in ('int', 'float') else 'text' }}"{% endif %}
+        {%- if f.stepper %} step="{{ '{:g}'.format(f.step) if f.step else 'any' if f.kind == 'float' else 1 }}" inputmode="{{ 'numeric' if f.kind == 'int' else 'decimal' }}"{% endif %}
         {%- if f.kind == "path" %} class="mono" spellcheck="false" autocomplete="off"{% endif %}
         {%- if value is not none %} value="{{ value }}"{% endif %}
         {%- if f.minimum is not none %} min="{{ f.minimum }}"{% endif %}
         {%- if f.maximum is not none %} max="{{ f.maximum }}"{% endif %}
         {%- if f.required %} required{% endif %}
-        {%- if f.help %} aria-describedby="{{ hid }}"{% endif %}>
+        {%- if help %} aria-describedby="{{ hid }}"{% endif %}>
+      {% if f.stepper %}{{ steps(f.label) }}</div>{% endif %}
+      {% if f.kind == "date" %}<button type="button" class="cal" data-datepicker data-label="a date for {{ f.label }}" aria-label="Choose a date for {{ f.label }}" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button></div>{% endif %}
       {% endif %}
       {% endif %}
-      {% if f.help %}<p class="help muted" id="{{ hid }}">{{ f.help }}</p>{% endif %}
+      {% if help and f.kind == "check" %}<p class="help muted" id="{{ hid }}">{{ help }}</p>{% endif %}
     </div>
+    {% endif %}
 {% endmacro %}
+
+{# DLS Dropdown, single select: the Multi Select's field and panel, holding radios, so one value.
+   `options` are (value, text) pairs; the field shows the chosen one's text (the first when none
+   matches). Name it with an element whose id is `fid ~ "-label"`. Without JavaScript it is a
+   working disclosure of radios. #}
+{% macro dropdown(name, fid, options, value, describedby=none) %}
+{% set current = (options | selectattr(0, "equalto", value) | first) or (options | first) %}
+<details class="ms single">
+  <summary aria-labelledby="{{ fid }}-label {{ fid }}-value"{% if describedby %} aria-describedby="{{ describedby }}"{% endif %}><span data-ms-value id="{{ fid }}-value">{{ current[1] if current else "" }}</span><svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+  <div class="ms-panel" role="radiogroup" aria-labelledby="{{ fid }}-label">
+    {% for v, text in options %}<label><input type="radio" name="{{ name }}" value="{{ v }}"{% if current and v == current[0] %} checked{% endif %}>{{ text }}</label>{% endfor %}
+  </div>
+</details>
+{% endmacro %}
+
+{# DLS Multi Select: the same field, holding checkboxes. `chosen` is the values ticked. #}
+{% macro multi(name, fid, options, chosen, empty="Any") %}
+<details class="ms" data-none="{{ empty }}">
+  <summary aria-labelledby="{{ fid }}-label {{ fid }}-value"><span data-ms-value id="{{ fid }}-value">{% if not chosen %}{{ empty }}{% elif chosen | length == 1 %}{{ (options | selectattr(0, "equalto", chosen[0]) | map(attribute=1) | first) or chosen[0] }}{% else %}{{ chosen | length }} items{% endif %}</span><svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+  <div class="ms-panel" role="group" aria-labelledby="{{ fid }}-label">
+    {% for v, text in options %}<label><input type="checkbox" name="{{ name }}" value="{{ v }}"{% if v in chosen %} checked{% endif %}>{{ text }}</label>{% endfor %}
+  </div>
+</details>
+{% endmacro %}
+
+{# DLS Stepper's minus and plus, inside a `.stepper[data-stepper]` beside its number input. #}
+{% macro steps(label) %}<span class="steps"><button type="button" data-step="-1" aria-label="Decrease {{ label }}"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button><span class="divider" aria-hidden="true"></span><button type="button" data-step="1" aria-label="Increase {{ label }}"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button></span>{% endmacro %}
 
 {% macro copy(value, short=true) %}<span class="copyable"><span class="mono" title="{{ value }}">{{ (value[:19] ~ "…") if short and value | length > 22 else value }}</span><button type="button" class="copy" data-copy="{{ value }}" aria-label="Copy {{ value[:19] }}…">Copy</button></span>{% endmacro %}

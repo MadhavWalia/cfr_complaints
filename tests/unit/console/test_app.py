@@ -186,8 +186,8 @@ def test_a_failed_job_says_why_and_offers_the_fix(tmp_path):
 
     page = client.get(f"/jobs/{job.id}").text
     assert "Why it failed" in page and "StoreMismatchError: lightrag_store was built from" in page
-    assert "a store holds only one" in page and 'href="/procedures#procedures.build">Build the store' in page
-    assert f'href="/procedures?again={job.id}#procedures.build">Run again' in page
+    assert "a store holds only one" in page and 'href="/procedures#procedures.build">Build the Store' in page
+    assert f'href="/procedures?again={job.id}#procedures.build">Run Again' in page
     journal = client.get("/partials/journal").text
     assert "StoreMismatchError: lightrag_store was built" in journal and "exit 1" not in journal
     again = client.get(f"/procedures?again={job.id}").text
@@ -197,7 +197,7 @@ def test_a_failed_job_says_why_and_offers_the_fix(tmp_path):
     runner.folder(lost.id).mkdir()
     runner._save(lost)
     lost_page = client.get(f"/jobs/{lost.id}").text
-    assert "Outcome unknown" in lost_page and "Run again" not in lost_page
+    assert "Outcome unknown" in lost_page and "Run Again" not in lost_page
     assert "outcome unknown" in client.get("/partials/journal").text
 
 
@@ -258,22 +258,21 @@ def test_what_needs_attention_comes_first_with_its_action(tmp_path, monkeypatch)
 
 def test_area_pages_show_what_each_command_does(tmp_path, monkeypatch):
     _, client = _client(tmp_path, _status(), monkeypatch)
-    page = client.get("/evaluation").text
+    page = client.get("/procedures").text
     assert '<li class="badge cost" title="Spends model calls on the gateway">calls gpt-5</li>' in page
-    assert 'data-field="evaluation.trial-sample"' in page and "Up to 15 gpt-5 calls" in page
-    assert ">changes nothing</li>" in page
+    assert ">changes nothing</li>" in client.get("/evaluation/routing").text
 
 
 def test_the_help_page_covers_the_recurring_tasks_and_the_words(tmp_path, monkeypatch):
     _, client = _client(tmp_path, _status(), monkeypatch)
     page = client.get("/help").text
-    for anchor in ("new-procedures", "run-cases", "trial", "failed", "stages", "words"):
+    for anchor in ("new-procedures", "run-cases", "review", "failed", "stages", "words"):
         assert f'id="{anchor}"' in page, anchor
     for link in (
         "/procedures#procedures.snapshot",
         "/releases#new-release",
         "/system#system.worker",
-        "/evaluation#evaluation.trial",
+        "/evaluation",
     ):
         assert f'href="{link}"' in page, link
     assert '<a class="area" href="/help"' in page and 'href="/help#stages"' in client.get("/").text
@@ -337,4 +336,4 @@ def test_cancel_queued_runs_is_a_system_form_over_the_release_files(tmp_path):
         .get("/system?fill=system.cancel&release=cfr-v2-phase-d")
         .text
     )
-    assert 'id="system.cancel" open' in page and '<option value="cfr-v2-phase-d" selected' in page
+    assert 'id="system.cancel" open' in page and 'value="cfr-v2-phase-d" checked' in page

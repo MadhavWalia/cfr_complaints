@@ -163,3 +163,156 @@
     try { sessionStorage.removeItem(key); } catch (e) {}
   });
 })();
+
+/* DLS Multi Select and Dropdown (its single-select form): a field that opens a panel of
+   checkboxes or radios. The field says what is chosen; the panel closes on Escape or a click
+   outside it, and a dropdown also on a pick (a click, Space or Enter; arrow keys only move the
+   choice). Without JavaScript each is still a working disclosure. */
+(() => {
+  const label = (ms) => {
+    const chosen = [...ms.querySelectorAll("input:checked")];
+    const out = ms.querySelector("[data-ms-value]");
+    if (!out) return;
+    out.textContent = chosen.length === 0 ? (ms.dataset.none || "Any")
+      : chosen.length === 1 ? chosen[0].closest("label").textContent.trim()
+      : `${chosen.length} items`;
+  };
+  const close = (ms) => { ms.open = false; ms.querySelector("summary").focus(); };
+  document.addEventListener("change", (event) => {
+    const ms = event.target.closest?.("details.ms");
+    if (ms) label(ms);
+  });
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll("details.ms[open]").forEach((ms) => { if (!ms.contains(event.target)) ms.open = false; });
+    // event.detail is 0 for the click a browser fires when arrow keys move a radio
+    if (event.detail > 0 && event.target.matches?.("details.ms.single input[type=radio]")) close(event.target.closest("details.ms"));
+  });
+  document.addEventListener("keydown", (event) => {
+    const ms = event.target.closest?.("details.ms[open]");
+    if (!ms) return;
+    if (event.key === "Escape") close(ms);
+    else if (ms.classList.contains("single") && event.target.type === "radio" && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();  // Enter would send the form; the pick is the radio's
+      if (!event.target.checked) { event.target.checked = true; event.target.dispatchEvent(new Event("change", { bubbles: true })); }
+      close(ms);
+    }
+  });
+})();
+
+/* DLS Split Button for uploads: the main action opens the file chooser; the chevron's menu holds the
+   related actions (replace, remove). The chosen files are named under it. */
+(() => {
+  const names = (box) => {
+    const input = box.querySelector('input[type="file"]');
+    const out = box.querySelector("[data-upload-names]");
+    const files = [...input.files].map((f) => f.name);
+    out.textContent = files.length ? files.join(", ") : (input.multiple ? "No files chosen." : "No file chosen.");
+    out.classList.toggle("chosen", files.length > 0);
+  };
+  document.addEventListener("click", (event) => {
+    const box = event.target.closest("[data-upload]");
+    if (!box) return;
+    const input = box.querySelector('input[type="file"]');
+    if (event.target.closest("[data-upload-choose]")) input.click();
+    else if (event.target.closest("[data-upload-clear]")) { input.value = ""; names(box); }
+    else return;
+    const more = box.querySelector("details.split-more");
+    if (more) more.open = false;
+  });
+  document.addEventListener("change", (event) => {
+    const box = event.target.closest && event.target.closest("[data-upload]");
+    if (box && event.target.type === "file") names(box);
+  });
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll("details.split-more[open]").forEach((d) => { if (!d.contains(event.target)) d.open = false; });
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const d = event.target.closest && event.target.closest("details.split-more[open]");
+    if (d) { d.open = false; d.querySelector("summary").focus(); }
+  });
+})();
+
+/* DLS Stepper: minus and plus step a number field by its step (1 when it takes any value), within
+   its minimum and maximum; each is marked unavailable at its end. The field still takes a typed
+   value. */
+(() => {
+  const bound = (input, name) => (input[name] === "" ? null : parseFloat(input[name]));
+  const sync = (box) => {
+    const input = box.querySelector("input");
+    const value = parseFloat(input.value);
+    const [down, up] = box.querySelectorAll("[data-step]");
+    const min = bound(input, "min");
+    const max = bound(input, "max");
+    down.setAttribute("aria-disabled", String(min !== null && value <= min));
+    up.setAttribute("aria-disabled", String(max !== null && value >= max));
+  };
+  const syncAll = () => document.querySelectorAll("[data-stepper]").forEach(sync);
+  syncAll();
+  document.body.addEventListener("htmx:afterSwap", syncAll);
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-stepper] [data-step]");
+    if (!button || button.getAttribute("aria-disabled") === "true") return;
+    const box = button.closest("[data-stepper]");
+    const input = box.querySelector("input");
+    const step = input.step && input.step !== "any" ? input.step : "1";
+    const places = (step.split(".")[1] || "").length;
+    const min = bound(input, "min");
+    const max = bound(input, "max");
+    const current = parseFloat(input.value);
+    let next = Number.isNaN(current) ? (min ?? 0) : current + Number(button.dataset.step) * parseFloat(step);
+    if (min !== null) next = Math.max(min, next);
+    if (max !== null) next = Math.min(max, next);
+    input.value = next.toFixed(places);  // 0.35, not 0.35000000000000003
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  document.addEventListener("input", (event) => {
+    const box = event.target.closest?.("[data-stepper]");
+    if (box) sync(box);
+  });
+})();
+
+/* A list typed into a text area (Chosen cases): how many, live, as the server will count them:
+   split on lines, commas, semicolons and spaces, repeats removed. */
+(() => {
+  const update = (area) => {
+    const out = document.querySelector(`[data-count-for="${area.id}"]`);
+    if (!out) return;
+    const items = area.value.split(/[\s,;]+/).filter(Boolean);
+    const unique = new Set(items).size;
+    const noun = area.dataset.count;
+    const repeats = items.length - unique;
+    out.textContent = unique === 0 ? "" : `${unique.toLocaleString("en")} ${noun}${unique === 1 ? "" : "s"}` +
+      (repeats ? ` (${repeats} repeat${repeats === 1 ? "" : "s"} removed)` : "");
+  };
+  document.querySelectorAll("textarea[data-count]").forEach(update);
+  document.addEventListener("input", (event) => { if (event.target.matches?.("textarea[data-count]")) update(event.target); });
+})();
+
+/* DLS Sortable data table: a header button sorts by its column, again to reverse; the order is
+   announced with aria-sort. Cells carry their value in data-value (a rate's value, a count). */
+(() => {
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("table[data-sortable] th button[data-sort]");
+    if (!button) return;
+    const th = button.closest("th");
+    const table = th.closest("table");
+    const index = Number(button.dataset.sort);
+    const descending = th.getAttribute("aria-sort") !== "descending";
+    table.querySelectorAll("th[aria-sort]").forEach((h) => h.removeAttribute("aria-sort"));
+    th.setAttribute("aria-sort", descending ? "descending" : "ascending");
+    const body = table.tBodies[0];
+    const key = (row) => {
+      const raw = row.cells[index]?.dataset.value ?? "";
+      const number = Number.parseFloat(raw);
+      return Number.isNaN(number) ? raw.toLowerCase() : number;
+    };
+    const rows = [...body.rows].sort((a, b) => {
+      const x = key(a), y = key(b);
+      const order = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y));
+      return descending ? -order : order;
+    });
+    body.append(...rows);
+  });
+})();
