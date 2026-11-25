@@ -6,6 +6,7 @@
 <nav class="toc" aria-label="On this page">
   <ul class="plain">
     <li><a href="#new-procedures">Use a new set of procedures</a></li>
+    <li><a href="#add-documents">Add procedure documents to the store</a></li>
     <li><a href="#run-cases">Run a few cases through the pipeline</a></li>
     <li><a href="#review">Review a stage and get its metrics</a></li>
     <li><a href="#fresh">Start over on new cases, leaving earlier runs behind</a></li>
@@ -23,6 +24,18 @@
     <li>On <a href="/releases">Releases</a>, <strong>Make current</strong> the new release: new cases are admitted under it from then on.</li>
     <li>Restart the worker once the runs queued under the old release are done: a worker serves one snapshot.</li>
   </ol>
+</section>
+
+<section class="section howto" id="add-documents" aria-labelledby="add-documents-h">
+  <h2 id="add-documents-h">Add procedure documents to the store</h2>
+  <ol>
+    <li><a href="/procedures#procedures.add">Add documents</a>: choose the new PDFs and the snapshot they join, usually the current release's. A PDF for a procedure already there becomes its new version when its dates are later; Leave out drops a withdrawn one. Read the log's checks, then use Next.</li>
+    <li><a href="/procedures#procedures.append">Preview the append</a>: how many passages are new, gone, changed and unchanged, the gpt-5 calls it will take, and the disk it needs. It changes nothing.</li>
+    <li>Stop the worker on <a href="/system">System</a>, and let the queue empty: the append changes the store the current release uses, in place, and won't start while runs are queued or running.</li>
+    <li><strong>Append them</strong> from the preview's job page (Next), ticking <em>I've read this</em>. Keep a copy first if you may want the old snapshot back. Stop saves what's in progress; Run Again finishes it.</li>
+    <li><a href="/procedures#procedures.search">Try a search</a>, then <a href="/releases#new-release">make a release</a> with the new snapshot and make it current. Routing has no store until then.</li>
+  </ol>
+  <p class="muted">Build the store again instead when most documents changed, when the models changed (the append refuses), or after about five appends: merged descriptions only grow.</p>
 </section>
 
 <section class="section howto" id="run-cases" aria-labelledby="run-cases-h">
@@ -84,7 +97,7 @@
     <div><dt>Case run</dt><dd>One pass of one case through the pipeline. A case can have several, under different releases.</dd></div>
     <div><dt>Release</dt><dd>A file in <span class="mono">registry/releases/</span> naming the stage versions, the procedure snapshot and the knowledge document a run is processed with. Each run keeps the release it was admitted under.</dd></div>
     <div><dt>Snapshot</dt><dd>The procedure PDFs, extracted, redacted and stored together, named by a <span class="mono">sha256:</span> ref.</dd></div>
-    <div><dt>LightRAG store</dt><dd>The search index built from one snapshot, in the folder <span class="mono">lightrag_store_</span> and the start of the snapshot's hash. C04 searches it.</dd></div>
+    <div><dt>LightRAG store</dt><dd>The search index of one snapshot, in the folder <span class="mono">lightrag_store_</span> and the start of the snapshot's hash. C04 searches it. Built from a snapshot, or appended to: moved in place from an earlier snapshot to a later one.</dd></div>
     <div><dt>Knowledge document</dt><dd>The definitions of the verticals, published as a ref for a release to pin. It stays out of git.</dd></div>
     <div><dt>Vertical</dt><dd>Where a claim is routed: one of the areas the knowledge document defines.</dd></div>
     <div><dt>Worker</dt><dd>The process that takes queued runs through the stages. It refuses to start over runs whose release doesn't match the code.</dd></div>

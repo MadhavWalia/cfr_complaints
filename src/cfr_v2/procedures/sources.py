@@ -1,6 +1,7 @@
 """Where procedure PDFs come from (LDR-0019): one pipeline, two sources.
 
-``ManualPdfSource`` reads a folder of downloaded PDFs. ``ConfluenceSource`` is a stub until API
+``ManualPdfSource`` reads a folder of downloaded PDFs. ``ChosenPdfSource`` reads PDFs chosen one by
+one, to add to an earlier snapshot (LDR-0043). ``ConfluenceSource`` is a stub until API
 access is granted (OQ-30). The site's host name stays in configuration: this repo is public.
 """
 
@@ -45,11 +46,52 @@ class ManualPdfSource:
         if not self.folder.is_dir():
             raise ProcedureSourceError(f"not a folder: {self.folder}")
         return [
-            SourceDocument(
-                path.name, str(path), datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date()
-            )
+            SourceDocument(path.name, str(path), datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date())
             for path in sorted(self.folder.iterdir())
             if path.suffix.lower() == ".pdf"
+        ]
+
+    def fetch(self, document: SourceDocument) -> bytes:
+        return Path(document.locator).read_bytes()
+
+
+PDF_MAGIC = b"%PDF-"
+
+
+class ChosenPdfSource:
+    """PDFs chosen one by one (a folder among them stands for its PDFs), to add to an earlier
+    snapshot. Each must be a PDF by its first bytes, not only its name. A file uploaded through
+    the console carries no date of its own, so ``dated=False`` leaves the file date to the file
+    name (``date_from_file_name``) rather than the upload's."""
+
+    name = "manual"
+
+    def __init__(self, paths: Sequence[Path], *, dated: bool = True) -> None:
+        self.paths = list(paths)
+        self.dated = dated
+
+    def list_documents(self) -> list[SourceDocument]:
+        files: list[Path] = []
+        for path in self.paths:
+            if path.is_dir():
+                files += sorted(p for p in path.iterdir() if p.suffix.lower() == ".pdf")
+            elif path.is_file():
+                files.append(path)
+            else:
+                raise ProcedureSourceError(f"no such file: {path}")
+        if not files:
+            raise ProcedureSourceError("no PDF files given")
+        for path in files:
+            with path.open("rb") as handle:
+                if handle.read(len(PDF_MAGIC)) != PDF_MAGIC:
+                    raise ProcedureSourceError(f"not a PDF: {path.name}")
+        return [
+            SourceDocument(
+                path.name,
+                str(path),
+                datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date() if self.dated else None,
+            )
+            for path in files
         ]
 
     def fetch(self, document: SourceDocument) -> bytes:

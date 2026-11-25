@@ -240,10 +240,10 @@ a.btn.cta:hover { text-decoration: underline; text-underline-offset: 3px; }
 .btn.secondary.pressed, .btn.secondary.pressed:hover { background: var(--secondary-bg-pressed); color: var(--selected-text); }
 .btn[disabled], .btn[aria-disabled="true"] { background: var(--disabled-bg); color: var(--disabled-text); border-color: transparent; cursor: not-allowed; }
 
-.form { display: grid; gap: var(--s4); justify-items: start; }
+.form { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); justify-items: start; }
 /* DLS Text Input: label, then hint text, then the field, then any message; 8 between the hint
    and the field, the hint tight under its label. */
-.field { display: grid; gap: var(--s2); width: 100%; max-width: 27.5rem; }
+.field { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s2); width: 100%; max-width: 27.5rem; min-width: 0; }
 .field label, .field .label { font-weight: 500; margin: 0; }
 .field > .help { margin-top: calc(-1 * var(--s1)); }
 .field.check { grid-template-columns: auto 1fr; align-items: center; column-gap: var(--s3); row-gap: 0; min-height: 3rem; }
@@ -340,7 +340,7 @@ details.ms > summary::-webkit-details-marker { display: none; }
 details.ms > summary:hover { border-color: var(--text-subtle); }
 details.ms > summary:focus-visible { outline: 2px solid var(--focus); border-color: transparent; }
 details.ms[open] > summary { border-color: var(--focus); }
-details.ms > summary [data-ms-value] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.ms > summary [data-ms-value] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.ms > summary .icon { width: 1.25rem; height: 1.25rem; color: var(--text-link); transition: rotate 120ms ease-out; }
 details.ms[open] > summary .icon { rotate: 180deg; }
 .ms-panel { position: absolute; z-index: 20; top: calc(100% + 0.25rem); left: 0; right: 0; max-height: 20rem; overflow-y: auto; padding: var(--s2) 0; border: 1px solid var(--border-subtle); border-radius: var(--radius); background: var(--surface-foreground); box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / .16); }
@@ -386,7 +386,7 @@ details.ms.single .ms-panel label:has(:checked)::after { content: ""; flex: none
 .filled-from { color: var(--text-subtle); max-width: var(--measure); font-size: 0.875rem; }
 .estimate { font-weight: 500; color: var(--text-emphasis); max-width: var(--measure); }
 
-.ref-pick { display: grid; gap: var(--s2); }
+.ref-pick { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s2); }  /* a long label truncates, never widens the page */
 .ref-pick .other { display: none; }
 .ref-pick:has(input[value="__other__"]:checked) .other { display: block; }
 

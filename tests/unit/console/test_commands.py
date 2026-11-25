@@ -298,8 +298,8 @@ def test_snapshots_are_offered_with_where_they_were_seen_and_their_store(ctx, tm
     (tmp_path / "registry" / "releases" / "cfr-v2-phase-x.yaml").write_text("procedure_snapshot: sha256:built\n")
     choices = dict(commands.known_snapshots(ctx))
     assert list(choices) == ["sha256:new", "sha256:built"]
-    assert "taken" in choices["sha256:new"] and choices["sha256:new"].endswith("no store yet")
-    assert "pinned by cfr-v2-phase-x" in choices["sha256:built"] and choices["sha256:built"].endswith("store built")
+    assert "taken" in choices["sha256:new"] and choices["sha256:new"].endswith("no store")
+    assert "pinned by cfr-v2-phase-x" in choices["sha256:built"] and choices["sha256:built"].endswith("store complete")
     # "Another ref…" reads the typed one; a ref must look like one
     form = {"procedures": commands.OTHER, "procedures_other": "sha256:built"}
     assert BY_ID["procedures.build"].parse(form, ctx)["procedures"] == "sha256:built"
@@ -310,8 +310,8 @@ def test_snapshots_are_offered_with_where_they_were_seen_and_their_store(ctx, tm
 def test_a_finished_job_links_to_what_usually_follows(ctx):
     snapshot = Job("20261112-121420-9af6", "procedures.snapshot", "Snapshot", ("x",), JobStatus.DONE,
                    "2026-11-12T12:14:20+00:00", summary="sha256:" + "b" * 64)  # fmt: skip
-    [(label, href)] = BY_ID["procedures.snapshot"].next_links(snapshot)
-    assert label == "Build its LightRAG store"
+    (label, href), (preview, _) = BY_ID["procedures.snapshot"].next_links(snapshot)
+    assert (label, preview) == ("Build its LightRAG store", "Preview adding it to a store")
     assert (
         href == f"/procedures?fill=procedures.build&from={snapshot.id}&procedures=sha256%3A{'b' * 64}#procedures.build"
     )

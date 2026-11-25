@@ -49,6 +49,7 @@ class Context:
     env: Mapping[str, str]
     done_jobs: Callable[[str], Sequence[Any]] = lambda command: ()  # finished, successful, newest first
     outputs: Callable[[str], Path] = lambda job_id: Path(job_id)  # a job's outputs/ folder
+    running: Callable[[], Sequence[Any]] = lambda: ()  # jobs running now
 
 
 Default = Any  # a value, or a callable taking the Context
@@ -72,6 +73,7 @@ class Field:
     step: float | None = None  # a number field's step; ints step by 1
     when: tuple[str, ...] = ()  # shown only while the form's mode field has one of these values
     count: str | None = None  # a lines field: the live count's noun, e.g. "case number"
+    per_line: bool = False  # a lines field whose values hold spaces (file names): one per line, as typed
 
     @property
     def stepper(self) -> bool:
@@ -124,7 +126,8 @@ class Field:
                 except ValueError:
                     raise FormError(f"{self.label}: a date as YYYY-MM-DD.") from None
             case "lines":
-                return tuple(dict.fromkeys(v for v in re.split(r"[\s,;]+", text) if v))
+                split = text.splitlines() if self.per_line else re.split(r"[\s,;]+", text)
+                return tuple(dict.fromkeys(v.strip() for v in split if v.strip()))
             case "path":
                 return self._path(text, ctx)
             case "job":
@@ -172,6 +175,7 @@ TAGS = {
     "calls gpt-5": "Spends model calls on the gateway",
     "long-running": "Runs for hours, or until stopped",
     "keep output local": "Its files hold case or procedure text: keep them on this machine",
+    "deletes files": "Deletes files on this machine for good",
 }
 
 
@@ -230,6 +234,8 @@ class Command:
     tags: tuple[str, ...] = ()  # from TAGS
     estimate: Callable[[Context], Estimate | None] | None = None  # model calls, when they can be counted
     group: str | None = None  # a tab within the area: the evaluation stage (LDR-0042)
+    # A DLS Notification above the form, for what must be read before starting: (tone, title, text)
+    warning: tuple[str, str, str] | None = None
 
     @property
     def page(self) -> str:
@@ -350,9 +356,10 @@ def known_snapshots(ctx: Context) -> list[tuple[str, str]]:
     """Snapshots the console knows: from snapshot jobs, release pins and stores on disk, each
     labelled with where it was seen and whether its LightRAG store is built here."""
     seen: dict[str, list[str]] = {}
-    for job in ctx.done_jobs("procedures.snapshot"):
-        if job.summary and job.summary.startswith("sha256:"):
-            seen.setdefault(job.summary, []).append(f"taken {formats.when(job.created_at)}")
+    for command, verb in (("procedures.snapshot", "taken"), ("procedures.add", "added to")):
+        for job in ctx.done_jobs(command):
+            if job.summary and job.summary.startswith("sha256:"):
+                seen.setdefault(job.summary, []).append(f"{verb} {formats.when(job.created_at)}")
     for path in sorted((ctx.root / "registry" / "releases").glob("*.yaml"), reverse=True):
         try:
             pinned = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("procedure_snapshot")
@@ -363,15 +370,148 @@ def known_snapshots(ctx: Context) -> list[tuple[str, str]]:
     for folder in sorted(ctx.root.glob(f"{stores.STORE_PREFIX}*")):
         if (ref := stores.built_from(folder)) is not None:
             seen.setdefault(ref, [])
+        elif (heading := (stores.read_marker(folder) or {}).get("appending_to")) is not None:
+            seen.setdefault(heading, [])  # an append in progress: Run Again needs it offered
     choices = []
     for ref, where in seen.items():
         try:
-            built = stores.built_from(stores.store_dir(ref, root=ctx.root, env=ctx.env)) == ref
+            label = " · ".join([f"{ref.removeprefix('sha256:')[:12]}…", *where, _store_word(ref, ctx)])
         except ValueError:
             continue
-        label = " · ".join([f"{ref.removeprefix('sha256:')[:12]}…", *where, "store built" if built else "no store yet"])
         choices.append((ref, label))
     return choices
+
+
+def _store_word(ref: str, ctx: Context) -> str:
+    """Store complete, appending, or no store: for a snapshot's label."""
+    folder = stores.store_dir(ref, root=ctx.root, env=ctx.env)
+    marker = stores.read_marker(folder)
+    if stores.built_from(folder) == ref:
+        return "store complete"
+    if (
+        marker
+        and stores.state(marker) == stores.APPENDING
+        and ref in (marker.get("procedures_ref"), marker.get("appending_to"))
+    ):
+        return "store appending"
+    for info in stores.list_stores(ctx.root, ctx.env):  # an append in progress, still under the old name
+        if info.state == stores.APPENDING and info.appending_to == ref:
+            return "store appending"
+    return "no store"
+
+
+def _newest_snapshot(ctx: Context) -> str | None:
+    """For an append: the newest snapshot taken or added to here, else the newest snapshot."""
+    for command in ("procedures.add", "procedures.snapshot"):
+        for job in ctx.done_jobs(command):
+            if job.summary and job.summary.startswith("sha256:"):
+                return job.summary
+    return _release_snapshot(ctx)
+
+
+def _removable_stores(ctx: Context) -> list[tuple[str, str]]:
+    """Stores Remove may delete: none a release pins or ``CFR_LIGHTRAG_WORKDIR`` names."""
+    found = []
+    for info in stores.list_stores(ctx.root, ctx.env):
+        if stores.removable(info, ctx.env, ctx.root) is None:
+            holds = (info.snapshot or "no recorded snapshot").removeprefix("sha256:")[:12]
+            found.append(
+                (
+                    info.folder.name,
+                    f"{info.folder.name} · holds {holds}… · {info.state or 'no marker'} · {formats.size(info.bytes)}",
+                )
+            )
+    return found
+
+
+STORE_JOBS = (
+    "procedures.build",
+    "procedures.append",
+    "procedures.search",
+    "procedures.remove_store",
+    "routing.backfill",
+)
+
+
+IN_PLACE_WARNING = (
+    "caution",
+    "This changes the store the current release uses.",
+    (
+        "While it runs, and until a release pins the new snapshot, routing can't search procedures. Stop the worker "
+        "first: an append won't start while one runs or case runs are queued. Afterwards the store holds the new "
+        "snapshot only: going back means rebuilding the old one, unless you keep a copy first."
+    ),
+)
+
+
+def _store_busy(ctx: Context) -> str | None:
+    for job in ctx.running():
+        if job.command in STORE_JOBS or job.command == "system.worker":
+            return job.title
+    return None
+
+
+def _append_check(values: Values, ctx: Context) -> None:
+    base, new = values["from_ref"], values["procedures"]
+    if base == new:
+        raise FormError("New snapshot: that's the one the store holds. Choose a later snapshot.")
+    try:
+        folder = values["workdir"] or stores.store_dir(base, root=ctx.root, env=ctx.env)
+        target = stores.store_dir(new, root=ctx.root, env=ctx.env)
+    except ValueError:
+        raise FormError("Snapshot: a ref such as sha256:…") from None
+    marker = stores.read_marker(folder)
+    if marker is None:
+        last = ((stores.read_marker(target) or {}).get("lineage") or [{}])[-1]
+        if not values["workdir"] and stores.built_from(target) == new and last.get("from") == base:
+            raise FormError(f"Store: already appended. {target.name} holds the new snapshot.")
+        raise FormError(f"Store: there's no store for {base[:19]}… at {folder.name}. Build it first.")
+    if stores.state(marker) == stores.APPENDING:
+        if marker.get("procedures_ref") != base or marker.get("appending_to") != new:
+            raise FormError(
+                f"Store: {folder.name} is part-way through an append to {str(marker.get('appending_to'))[:19]}…. "
+                "Finish that one first: Run Again on its job."
+            )
+    elif marker.get("procedures_ref") != base:
+        raise FormError(
+            f"Store: {folder.name} holds {str(marker.get('procedures_ref'))[:19]}…, not the snapshot chosen."
+        )
+    renamed = not values["workdir"] and not ctx.env.get(stores.WORKDIR_ENV)
+    if renamed and target.exists() and target.resolve() != Path(folder).resolve():
+        raise FormError(
+            f"New snapshot: it already has a store, {target.name}. Remove that one first, under Remove a store."
+        )
+    if values["count_only"]:
+        return
+    if not values["confirm"]:
+        raise FormError("Tick “I've read this” to change the store in place, or keep Preview only on.")
+    if busy := _store_busy(ctx):
+        raise FormError(
+            f"{busy} is running. Stop the worker under System, or wait for the job to end, then append."
+            if "orker" in busy
+            else f"{busy} is running against a store: wait for it to end, then append."
+        )
+
+
+def _remove_check(values: Values, ctx: Context) -> None:
+    if not values["confirm"]:
+        raise FormError(f"Tick “Delete {values['folder']} for good” to remove it.")
+    if busy := _store_busy(ctx):
+        raise FormError(f"{busy} is running: wait for it to end, then remove the store.")
+
+
+def _append_estimate(ctx: Context) -> Estimate | None:
+    """From the newest preview: about three calls per passage to insert."""
+    for job in ctx.done_jobs("procedures.append"):
+        if job.summary and (match := re.match(r"([\d,]+) new · [\d,]+ gone · ([\d,]+) changed", job.summary)):
+            inserting = int(match.group(1).replace(",", "")) + int(match.group(2).replace(",", ""))
+            return Estimate(
+                "About {calls} gpt-5 calls for the last preview's {n} passages to insert, about 3 each; deletes "
+                "make few.",
+                inserting,
+                3,
+            )
+    return None
 
 
 def known_verticals(ctx: Context) -> list[tuple[str, str]]:
@@ -956,7 +1096,67 @@ CATALOGUE: tuple[Command, ...] = (
         job_title=lambda v: f"Snapshot · {v['folder'].name}",
         summarize=_printed(r"^snapshot: (\S+)"),
         action="Take the snapshot",
-        next=(Next("Build its LightRAG store", "procedures.build", lambda job: {"procedures": job.summary or ""}),),
+        next=(
+            Next("Build its LightRAG store", "procedures.build", lambda job: {"procedures": job.summary or ""}),
+            Next(
+                "Preview adding it to a store",
+                "procedures.append",
+                lambda job: {"procedures": job.summary or "", "count_only": "on"},
+            ),
+        ),
+        tags=("writes the database",),
+    ),
+    Command(
+        id="procedures.add",
+        area="procedures",
+        title="Add documents",
+        effect="Makes a snapshot of the previous one's documents plus the PDFs chosen, and prints its ref. A PDF "
+        "for a procedure already there becomes its new version when its dates are later. Only the chosen PDFs are "
+        "read; they are stored, then deleted from this job's folder.",
+        module="cfr_v2.procedures",
+        fields=(
+            Field("pdfs", "PDFs to add", "files", required=True, accept=".pdf"),
+            Field(
+                "previous",
+                "Add to",
+                "ref",
+                required=True,
+                default=_release_snapshot,
+                choices=known_snapshots,
+                help="The snapshot they join: its documents are kept, none read again.",
+            ),
+            Field(
+                "leave_out",
+                "Leave out",
+                "lines",
+                per_line=True,
+                help="Earlier documents to drop, for a withdrawn procedure: a procedure key or file name per line.",
+            ),
+        ),
+        args=lambda v, folder: [
+            "snapshot",
+            "--add-to",
+            v["previous"],
+            *[str(p) for p in v["pdfs"]],
+            *[a for name in v["leave_out"] for a in ("--leave-out", name)],
+            "--undated",
+            "--delete-after",
+        ],
+        job_title=lambda v: f"Add documents · {len(v['pdfs'])} PDF{'' if len(v['pdfs']) == 1 else 's'}",
+        summarize=_printed(r"^snapshot: (\S+)"),
+        action="Add them",
+        next=(
+            Next(
+                "Preview the append",
+                "procedures.append",
+                lambda job: {
+                    "procedures": job.summary or "",
+                    "from_ref": (job.form or {}).get("previous", ""),
+                    "count_only": "on",
+                },
+            ),
+            Next("Build a new store instead", "procedures.build", lambda job: {"procedures": job.summary or ""}),
+        ),
         tags=("writes the database",),
     ),
     Command(
@@ -1005,6 +1205,99 @@ CATALOGUE: tuple[Command, ...] = (
         estimate=_build_estimate,
     ),
     Command(
+        id="procedures.append",
+        area="procedures",
+        title="Append to the store",
+        effect="Moves a store, in place, to a later snapshot: deletes the passages it no longer holds, inserts the "
+        "new ones (about three gpt-5 calls each) and renames the folder after the new snapshot. Preview first: "
+        "counts, cost and disk, with no model calls. Stop saves what's in progress; Run Again resumes.",
+        module="cfr_v2.procedures",
+        fields=(
+            Field(
+                "from_ref",
+                "Store of",
+                "ref",
+                required=True,
+                default=_release_snapshot,
+                choices=known_snapshots,
+                help="The snapshot the store holds now. Its store is the one that changes.",
+            ),
+            Field(
+                "procedures", "New snapshot", "ref", required=True, default=_newest_snapshot, choices=known_snapshots
+            ),
+            Field("count_only", "Preview only", "check", default=True, help="Counts, cost and disk; changes nothing."),
+            Field(
+                "remove_gone",
+                "Remove passages it no longer holds",
+                "check",
+                default=True,
+                help="Superseded and left-out documents. Off is cheaper; search ignores them either way.",
+            ),
+            Field(
+                "backup",
+                "Keep a copy first",
+                "check",
+                help="Copies the store before changing it, so the old snapshot can come back. Needs its size again on disk.",
+            ),
+            Field("concurrency", "Passages at once", "int", required=True, default=16, minimum=1, maximum=64),
+            Field(
+                "save_every",
+                "Save every … passages",
+                "int",
+                default=64,
+                minimum=1,
+                maximum=1024,
+                help="Deletes count too. Each save rewrites the whole store.",
+            ),
+            _store_field("Empty: the folder of the snapshot the store holds now."),
+            Field("confirm", "I've read this: the store changes in place", "check"),
+        ),
+        check=_append_check,
+        args=lambda v, folder: [
+            "lightrag-append",
+            v["procedures"],
+            "--from",
+            v["from_ref"],
+            *_store_args(v),
+            "--concurrency",
+            str(v["concurrency"]),
+            *(["--save-every", str(v["save_every"])] if v.get("save_every") else []),
+            *_flag(v["count_only"], "--count-only"),
+            *_flag(not v["remove_gone"], "--keep-gone"),
+            *_flag(v["backup"] and not v["count_only"], "--backup"),
+            *_flag(not v["count_only"], "--in-place"),
+        ],
+        job_title=lambda v: f"Append · {v['procedures'][:19]}…" + (" · preview" if v["count_only"] else ""),
+        summarize=_printed(
+            r"^(?:preview: )?([\d,]+ new · [\d,]+ gone · .+|\d+ of \d+ passages in the graph; \d+ failed|already appended)"
+        ),
+        action="Start",
+        next=(
+            Next(
+                "Append them",
+                "procedures.append",
+                lambda job: {k: v for k, v in (job.form or {}).items() if k not in ("count_only", "confirm")},
+                when=lambda job: job.status.value == "done" and "--count-only" in job.argv,
+            ),
+            Next(
+                "Try a search",
+                "procedures.search",
+                lambda job: {"procedures": (job.form or {}).get("procedures", "")},
+                when=lambda job: job.status.value == "done" and "--in-place" in job.argv,
+            ),
+            Next(
+                "Make a release with this snapshot",
+                page=lambda job: (
+                    f"/releases?{urlencode({'snapshot': (job.form or {}).get('procedures', '')})}#new-release"
+                ),
+                when=lambda job: job.status.value == "done" and "--in-place" in job.argv,
+            ),
+        ),
+        tags=("calls gpt-5", "long-running"),
+        estimate=_append_estimate,
+        warning=IN_PLACE_WARNING,
+    ),
+    Command(
         id="procedures.search",
         area="procedures",
         title="Try a search",
@@ -1031,6 +1324,29 @@ CATALOGUE: tuple[Command, ...] = (
         check=_store_check(build=False),
         action="Search",
         tags=("calls gpt-5", "keep output local"),
+    ),
+    Command(
+        id="procedures.remove_store",
+        area="procedures",
+        title="Remove a store",
+        effect="Deletes a LightRAG store's folder for good. Only stores no release pins are offered: the Stores "
+        "table says why the others aren't.",
+        module="cfr_v2.procedures",
+        fields=(
+            Field("folder", "Store", "choice", required=True, choices=_removable_stores),
+            Field("confirm", "Delete it for good", "check"),
+        ),
+        check=_remove_check,
+        args=lambda v, folder: ["remove-store", v["folder"], "--yes"],
+        job_title=lambda v: f"Remove · {v['folder']}",
+        summarize=_printed(r"^removed (.+)$"),
+        action="Remove",
+        tags=("deletes files",),
+        warning=(
+            "critical",
+            "Deleting a store can't be undone.",
+            "Building it again takes hours of model calls. Remove only a store you won't go back to.",
+        ),
     ),
     Command(
         id="procedures.sources_export",

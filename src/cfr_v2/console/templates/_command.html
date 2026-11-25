@@ -15,6 +15,7 @@
 {% endif %}
   <form method="post" action="/commands/{{ command.id }}" enctype="multipart/form-data" class="form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if command.warning %}<div class="notice {{ command.warning[0] }}" role="note"><strong>{{ command.warning[1] }}</strong><p>{{ command.warning[2] }}</p></div>{% endif %}
     {% if filled == command.id and error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
     {% if filled == command.id and again %}<p class="filled-from" role="status">Filled in from <a href="/jobs/{{ again.id }}">{{ again.title }}</a>, {{ again.created_at | stamp }}.{% if command.fields | selectattr("kind", "in", ["file", "files"]) | list %} Choose its files again: they aren't kept for this.{% endif %} Check, then start it.</p>
     {% elif filled == command.id and source %}<p class="filled-from" role="status">Filled in from <a href="/jobs/{{ source.id }}">{{ source.title }}</a>. Check, then start it.</p>{% endif %}

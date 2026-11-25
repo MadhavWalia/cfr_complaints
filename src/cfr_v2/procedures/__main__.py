@@ -5,7 +5,12 @@
     python -m cfr_v2.procedures extract /path/to/pdfs --out extract_trial
     python -m cfr_v2.procedures snapshot /path/to/pdfs [--previous sha256:...]
     python -m cfr_v2.procedures snapshot --confluence
+    python -m cfr_v2.procedures snapshot --add-to sha256:<previous> new1.pdf new2.pdf [--leave-out KEY]
     python -m cfr_v2.procedures lightrag-build sha256:<snapshot>
+    python -m cfr_v2.procedures lightrag-append sha256:<new> --from sha256:<old> --count-only
+    python -m cfr_v2.procedures lightrag-append sha256:<new> --from sha256:<old> --in-place [--backup]
+    python -m cfr_v2.procedures stores
+    python -m cfr_v2.procedures remove-store lightrag_store_<hash> --yes
     python -m cfr_v2.procedures search sha256:<snapshot> "fee charged after the card was cancelled"
 
 ``inspect`` and the printed output of ``extract`` and ``snapshot`` carry file names, dates, counts
@@ -21,15 +26,26 @@ progress before ending; a crash redoes the passages since the last save. Each sn
 ``--workdir`` puts it elsewhere. A ref from the ``index`` command this replaced also works.
 ``search`` is for trying queries against that store: **it prints section
 titles, and passages with ``--text``, so keep its output local too.**
+
+Adding documents (LDR-0043): ``snapshot --add-to`` makes a snapshot of the previous one's documents
+plus the PDFs given, choosing each procedure's current version again. ``lightrag-append`` then
+moves the previous snapshot's store to the new one **in place**: it deletes the passages the new
+snapshot no longer holds (``--keep-gone`` keeps them), inserts the new ones, and renames the
+folder after the new snapshot. ``--count-only`` previews it with no model calls. While it runs,
+nothing can search the store, so it refuses to start while case runs are queued or running.
+``stores`` lists the stores here; ``remove-store`` deletes one that no release pins.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import signal
 import sys
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cfr_v2.contracts import ProcedureDocument, ProcedureStatus
@@ -37,8 +53,15 @@ from cfr_v2.contracts import ProcedureDocument, ProcedureStatus
 from .corpus import SnapshotResult, build_snapshot, load_snapshot, same_name_different_files
 from .extract import MAX_SECTION_CHARS
 from .inspect import FRONT_LABELS, DocumentReport, inspect_pdf
-from .sources import ConfluenceSettings, ConfluenceSource, ManualPdfSource, ProcedureSource, ProcedureSourceError
-from .stores import override_hint, store_dir
+from .sources import (
+    ChosenPdfSource,
+    ConfluenceSettings,
+    ConfluenceSource,
+    ManualPdfSource,
+    ProcedureSource,
+    ProcedureSourceError,
+)
+from .stores import WORKDIR_ENV, list_stores, override_hint, removable, store_dir
 
 MAX_PDF_BYTES = 200 * 1024 * 1024  # procedure PDFs with images are larger than case artifacts
 
@@ -231,7 +254,11 @@ def write_review(result: SnapshotResult, folder: Path) -> None:
 
 
 def _source(args: argparse.Namespace) -> ProcedureSource:
-    return ConfluenceSource(ConfluenceSettings.from_env()) if args.confluence else ManualPdfSource(args.folder)
+    if args.confluence:
+        return ConfluenceSource(ConfluenceSettings.from_env())
+    if getattr(args, "add_to", None):
+        return ChosenPdfSource(args.paths, dated=not args.undated)
+    return ManualPdfSource(args.folder)
 
 
 def _masker():
@@ -255,11 +282,54 @@ def run_extract(args: argparse.Namespace) -> int:
 def run_snapshot(args: argparse.Namespace) -> int:
     store = _store()
     previous = load_snapshot(store, args.previous) if args.previous else None
-    result = build_snapshot(_source(args), store=store, masker=_masker(), previous=previous, progress=_progress)
+    base = load_snapshot(store, args.add_to) if args.add_to else None
+    try:
+        result = build_snapshot(
+            _source(args),
+            store=store,
+            masker=_masker(),
+            previous=previous,
+            progress=_progress,
+            base=base,
+            leave_out=args.leave_out or (),
+        )
+    except ValueError as exc:  # a name to leave out that matches nothing: checked before anything is read
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     _register(result.stored)
     print_snapshot(result)
+    if result.added is not None:
+        print_added(result)
     print(f"\nsnapshot: {result.ref}")
     return 1 if result.snapshot.failures else 0
+
+
+def print_added(result: SnapshotResult) -> None:
+    added = result.added
+    print(
+        f"\nadded {len(added.added)} · new versions of {len(added.new_versions)} · "
+        f"already in {len(added.already_in)} · left out {len(added.left_out)}"
+    )
+    for label, names in (
+        ("new versions (the newer one is current; please check)", added.new_versions),
+        ("already in the snapshot (nothing changed)", added.already_in),
+        ("left out", added.left_out),
+        ("version decided by the file's date or a tie (please check)", added.dated_by_file),
+    ):
+        if names:
+            print(f"{label}:")
+            for name in names:
+                print(f"  {name}")
+
+
+def _delete_given(paths: list[Path]) -> None:
+    """The console's uploads: procedure content, kept nowhere but the snapshot's artifacts."""
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"warning: could not delete {path.name}: {type(exc).__name__}", file=sys.stderr)
+    print(f"deleted the {len(paths)} given PDF file(s)")
 
 
 def _store():
@@ -394,6 +464,235 @@ def run_lightrag_build(args: argparse.Namespace) -> int:
     return 1 if build.failed or build.processed < build.passages else 0
 
 
+IN_PLACE_WARNING = (
+    "This changes the store the current release uses. While it runs, and until a release pins the new "
+    "snapshot, routing can't search procedures. Stop the worker first: this refuses to start while case runs "
+    "are queued or running. Afterwards the store holds the new snapshot only: going back means rebuilding the "
+    "old one, unless --backup keeps a copy."
+)
+QUEUE_SQL = (
+    "SELECT count(*) FILTER (WHERE status = 'QUEUED'), count(*) FILTER (WHERE status = 'RUNNING') FROM workflow_job"
+)
+
+
+def queue_busy() -> str | None:
+    """Why routing may need the store now: runs queued or held by a worker. A queue that can't be
+    read counts as busy: this is the check that keeps a worker from failing runs at C04."""
+    try:
+        from cfr_v2.runtime import RuntimeSettings
+        from cfr_v2.state import Database
+
+        db = Database(RuntimeSettings.from_env().state_database_url, max_connections=1)
+        try:
+            with db.transaction() as tx:
+                queued, running = tx.one(QUEUE_SQL) or (0, 0)
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001 - the type only: a message can name the host
+        return f"the queue can't be checked ({type(exc).__name__})"
+    if running:
+        return f"{running} case run(s) are running: stop the worker first"
+    if queued:
+        return f"{queued} case run(s) are queued: a worker started now would fail them at routing. Cancel them or wait"
+    return None
+
+
+def _gb(size: int) -> str:
+    return f"{size / 1e9:.2f} GB"
+
+
+def _already_appended(target: Path, from_ref: str, to_ref: str) -> bool:
+    from .stores import COMPLETE, read_marker, state
+
+    marker = read_marker(target) or {}
+    last = (marker.get("lineage") or [{}])[-1]
+    return (
+        marker.get("procedures_ref") == to_ref
+        and state(marker) == COMPLETE
+        and last.get("made") == "append"
+        and last.get("from") == from_ref
+    )
+
+
+def run_lightrag_append(args: argparse.Namespace) -> int:
+    from cfr_v2.llm import model_loop
+
+    from .append import (
+        AppendRefused,
+        append_lightrag,
+        backup_store,
+        check_base,
+        finish,
+        free_space_needed,
+        mark_appending,
+        plan_append,
+        read_store,
+    )
+    from .lightrag_engine import SAVE_EVERY, SaveError
+    from .search import corpus_passages
+
+    save_every = args.save_every or SAVE_EVERY
+    if save_every < 1:
+        print("error: --save-every: at least 1", file=sys.stderr)
+        return 2
+    workdir = args.workdir or store_dir(args.from_ref)
+    target = store_dir(args.procedures)
+    rename = args.workdir is None and not os.environ.get(WORKDIR_ENV)
+    if rename and not workdir.exists() and _already_appended(target, args.from_ref, args.procedures):
+        print(f"already appended: {target} holds {args.procedures}")
+        return 0
+    embedder = _build_embedder()
+    try:
+        if not workdir.is_dir():
+            raise AppendRefused(f"no LightRAG store at {workdir}{'' if args.workdir else override_hint(args.from_ref)}")
+        contents = read_store(workdir)
+        marker, notes = check_base(workdir, args.from_ref, args.procedures, embedder, contents)
+        if rename and target.exists() and target.resolve() != workdir.resolve():
+            raise AppendRefused(f"{target} already exists: remove it, or append with --workdir")
+        passages = corpus_passages(_store(), args.procedures)
+        if not passages:
+            raise AppendRefused(f"{args.procedures} has no current procedures")
+    except AppendRefused as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    plan = plan_append(contents, passages)
+    need, free = free_space_needed(workdir, backup=args.backup), shutil.disk_usage(workdir).free
+    print(f"store: {workdir} (holds {args.from_ref}, {len(contents.processed):,} passages)")
+    print(f"to: {args.procedures}" + (f", renamed to {target.name} when done" if rename else ""))
+    counts = plan.counts()
+    deletes = len(plan.deletes(keep_gone=args.keep_gone))
+    print(
+        f"unchanged {counts['unchanged']:,} · new {counts['new']:,} · gone {counts['gone']:,} · "
+        f"changed {counts['changed']:,}" + (" (gone ones kept: --keep-gone)" if args.keep_gone else "")
+    )
+    if plan.duplicates:
+        print(f"{plan.duplicates} passages with identical text go in once")
+    inserting = counts["new"] + counts["changed"]
+    print(
+        f"estimate: about {3 * inserting:,} gpt-5 calls ({inserting:,} passages to insert, about 3 each) and {deletes:,} deletes"
+    )
+    print(f"disk: {_gb(need)} needed, {_gb(free)} free")
+    for note in notes:
+        print(f"note: {note}")
+    if args.count_only:
+        print(f"preview: {plan.line()}")
+        return 0
+    print(f"\nwarning: {IN_PLACE_WARNING}", file=sys.stderr)
+    if not args.in_place:
+        print("error: an append changes the store in place: give --in-place to go ahead", file=sys.stderr)
+        return 2
+    if free < need:
+        print(f"error: not enough disk: {_gb(need)} needed, {_gb(free)} free", file=sys.stderr)
+        return 2
+    if busy := queue_busy():
+        print(f"error: {busy}", file=sys.stderr)
+        return 2
+    if args.backup:
+        copy = workdir.with_name(f"{workdir.name}.before-{datetime.now(UTC):%Y%m%d-%H%M%S}")
+        try:
+            copied = backup_store(workdir, copy)
+        except (AppendRefused, OSError) as exc:
+            print(
+                f"error: the backup failed ({exc if isinstance(exc, AppendRefused) else type(exc).__name__}); "
+                "nothing was changed",
+                file=sys.stderr,
+            )
+            shutil.rmtree(copy, ignore_errors=True)
+            return 1
+        print(f"backup: {copy} ({_gb(copied)})")
+    mark_appending(workdir, marker, args.procedures, plan, args.keep_gone)
+    stop = threading.Event()
+
+    def ask_to_stop(signum: int, _frame: object) -> None:
+        if stop.is_set():
+            raise SystemExit(128 + signum)
+        stop.set()
+        print("stopping: what's in progress is saved first. Stop again to end now, losing it", flush=True)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, ask_to_stop)
+    try:
+        outcome = model_loop().run(
+            append_lightrag(
+                workdir,
+                plan,
+                embedder,
+                _chat_client(),
+                keep_gone=args.keep_gone,
+                concurrency=args.concurrency,
+                save_every=save_every,
+                stop=stop,
+            )
+        )
+    except SaveError as exc:
+        print(f"error: {exc}. Run this again to resume from the last save", file=sys.stderr)
+        return 1
+    print(f"deleted {outcome.deleted} of {deletes}; {len(outcome.delete_failed)} could not be")
+    build = outcome.build
+    if build is not None:
+        print(
+            f"model calls this run: {build.model_calls}; blocked by the gateway: "
+            f"{build.blocked_calls} model calls, {build.blocked_embeddings} embeddings"
+        )
+    if not outcome.complete:
+        if outcome.asked_to_stop:
+            print("stopped as asked, with what was in progress saved. Run this again to finish the append")
+            return 0
+        reason = (
+            "some passages could not be deleted"
+            if outcome.delete_failed
+            else "batches in a row added nothing: check the gateway"
+        )
+        print(f"the append isn't finished ({reason}); the store stays closed to search. Run this again to resume")
+        return 1
+    finish(workdir, marker, args.procedures, outcome, embedder)
+    if rename and workdir.resolve() != target.resolve():
+        workdir.rename(target)
+        print(f"renamed {workdir.name} to {target.name}")
+    print(f"{build.processed} of {build.passages} passages in the graph; {build.failed} failed")
+    if build.failed:
+        print(f"run lightrag-build {args.procedures} to retry the failed ones")
+    return 1 if build.failed else 0
+
+
+def run_stores(args: argparse.Namespace) -> int:
+    found = list_stores(Path(), os.environ)
+    if not found:
+        print("no LightRAG stores here")
+        return 0
+    print(f"{'store':<34}{'snapshot':<22}{'state':<11}{'passages':>10}{'size':>10}{'appends':>9}  pinned by")
+    for info in found:
+        snapshot = (info.snapshot or "-").removeprefix("sha256:")[:16]
+        state = info.state or "no marker"
+        passages = "-" if info.passages is None else f"{info.passages:,}"
+        print(
+            f"{info.folder.name[:33]:<34}{snapshot:<22}{state:<11}{passages:>10}{_gb(info.bytes):>10}"
+            f"{info.appends:>9}  {', '.join(info.pinned_by) or '-'}"
+        )
+    return 0
+
+
+def run_remove_store(args: argparse.Namespace) -> int:
+    folder = args.folder
+    info = next(
+        (i for i in list_stores(Path(), os.environ, extra=[folder]) if i.folder.resolve() == folder.resolve()), None
+    )
+    if info is None:
+        print(f"error: {folder} is not a LightRAG store: nothing deleted", file=sys.stderr)
+        return 2
+    if why := removable(info, os.environ, Path()):
+        print(f"error: {folder} can't be removed: {why}", file=sys.stderr)
+        return 2
+    holds = (info.snapshot or "no recorded snapshot").removeprefix("sha256:")[:16]
+    print(f"{folder} holds {holds} ({info.state or 'no marker'}), {_gb(info.bytes)}")
+    if not args.yes:
+        print("nothing deleted: give --yes to delete it for good")
+        return 0
+    shutil.rmtree(folder)
+    print(f"removed {folder.name}: {_gb(info.bytes)} freed")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.procedures", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -402,12 +701,26 @@ def main(argv: list[str] | None = None) -> int:
     cmd.add_argument("--out", type=Path, help="also write the report as JSON")
     for name, text in (("extract", "trial: store nothing"), ("snapshot", "store originals and redacted sections")):
         step = sub.add_parser(name, help=text)
-        step.add_argument("folder", type=Path, nargs="?")
+        if name == "extract":
+            step.add_argument("folder", type=Path, nargs="?")
+        else:
+            step.add_argument("paths", type=Path, nargs="*", help="a folder of PDFs; with --add-to, the PDFs to add")
         step.add_argument("--confluence", action="store_true", help="read from Confluence (not built yet)")
         if name == "extract":
             step.add_argument("--out", type=Path, help="write the redacted text here, for local reading")
         else:
             step.add_argument("--previous", help="snapshot ref: unchanged PDFs are not read again")
+            step.add_argument("--add-to", help="snapshot ref: a snapshot of its documents plus the PDFs given")
+            step.add_argument(
+                "--leave-out",
+                action="append",
+                metavar="KEY",
+                help="with --add-to: drop the previous document with this procedure key or file name (repeatable)",
+            )
+            step.add_argument(
+                "--undated", action="store_true", help="the files' own dates mean nothing (uploads): use their names"
+            )
+            step.add_argument("--delete-after", action="store_true", help="delete the PDFs given when done")
     step = sub.add_parser("lightrag-build", help="build the LightRAG graph and vectors from a snapshot's procedures")
     step.add_argument("procedures", help="snapshot ref (or a ref from the old index command)")
     step.add_argument("--workdir", type=Path, help="the LightRAG store (default: the snapshot's own folder)")
@@ -419,6 +732,20 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
         help="save the store every N passages, at the end of a batch (default 64); 1 saves after each one",
     )
+    step = sub.add_parser("lightrag-append", help="move a store in place to a later snapshot (LDR-0043)")
+    step.add_argument("procedures", help="the new snapshot ref")
+    step.add_argument("--from", dest="from_ref", required=True, help="the snapshot the store holds now")
+    step.add_argument("--workdir", type=Path, help="the store (default: the --from snapshot's own folder)")
+    step.add_argument("--count-only", action="store_true", help="preview: counts, cost and disk; changes nothing")
+    step.add_argument("--in-place", action="store_true", help="go ahead: the store changes in place")
+    step.add_argument("--keep-gone", action="store_true", help="keep passages the new snapshot doesn't hold")
+    step.add_argument("--backup", action="store_true", help="copy the store before changing it")
+    step.add_argument("--concurrency", type=int, default=16, help="passages processed at once (default 16)")
+    step.add_argument("--save-every", type=int, default=None, metavar="N", help="save every N deletes or passages")
+    sub.add_parser("stores", help="list the LightRAG stores here")
+    step = sub.add_parser("remove-store", help="delete a store no release pins")
+    step.add_argument("folder", type=Path)
+    step.add_argument("--yes", action="store_true", help="delete it; otherwise only say what would go")
     step = sub.add_parser("search", help="try a query against a LightRAG store")
     step.add_argument("procedures", help="the ref the store was built from: snapshot, or old index")
     step.add_argument("query")
@@ -426,7 +753,11 @@ def main(argv: list[str] | None = None) -> int:
     step.add_argument("--limit", type=int, default=8)
     step.add_argument("--text", action="store_true", help="print the passages too")
     args = parser.parse_args(argv)
-    runners = {"search": run_search, "lightrag-build": run_lightrag_build}
+    if args.command == "stores":
+        return run_stores(args)
+    if args.command == "remove-store":
+        return run_remove_store(args)
+    runners = {"search": run_search, "lightrag-build": run_lightrag_build, "lightrag-append": run_lightrag_append}
     if args.command in runners:
         from cfr_v2.llm import close_model_loop
         from cfr_v2.telemetry import init_telemetry, shutdown_telemetry
@@ -437,11 +768,30 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             close_model_loop()
             shutdown_telemetry()
-    if args.command != "inspect":
+    if args.command == "snapshot":
+        if args.add_to:
+            if not args.paths:
+                parser.error("--add-to: give the PDFs to add")
+        elif args.leave_out:
+            parser.error("--leave-out needs --add-to")
+        elif len(args.paths) > 1:
+            parser.error("give one folder of PDFs (or --add-to and the PDFs to add)")
+        elif not args.paths and not args.confluence:
+            parser.error("give a folder of PDFs, or --confluence")
+        args.folder = args.paths[0] if args.paths and not args.add_to else None
+        try:
+            return run_snapshot(args)
+        except ProcedureSourceError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            if args.delete_after and args.paths:
+                _delete_given([p for p in args.paths if p.is_file()])
+    if args.command == "extract":
         if not args.folder and not args.confluence:
             parser.error("give a folder of PDFs, or --confluence")
         try:
-            return run_extract(args) if args.command == "extract" else run_snapshot(args)
+            return run_extract(args)
         except ProcedureSourceError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

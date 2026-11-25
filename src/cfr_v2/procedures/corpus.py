@@ -93,9 +93,7 @@ def same_name_different_files(documents: Iterable[ProcedureDocument]) -> list[li
     for document in documents:
         groups[procedure_key(document.name)].append(document)
     return [
-        sorted(d.file_name for d in group)
-        for group in groups.values()
-        if len({d.procedure_key for d in group}) > 1
+        sorted(d.file_name for d in group) for group in groups.values() if len({d.procedure_key for d in group}) > 1
     ]
 
 
@@ -124,12 +122,24 @@ def choose_current(versions: Sequence[ProcedureDocument]) -> tuple[ProcedureDocu
 
 
 @dataclass
+class Added:
+    """What adding to an earlier snapshot did (LDR-0043). File names and keys only."""
+
+    added: list[str] = field(default_factory=list)  # chosen files new to the snapshot
+    new_versions: list[str] = field(default_factory=list)  # of those, ones for a procedure already in it
+    already_in: list[str] = field(default_factory=list)  # chosen files the snapshot already had
+    left_out: list[str] = field(default_factory=list)  # earlier documents dropped, by file name
+    dated_by_file: list[str] = field(default_factory=list)  # added and current, version decided by file date
+
+
+@dataclass
 class SnapshotResult:
     ref: str
     snapshot: ProcedureSnapshot
     documents: dict[str, ProcedureDocument]  # by source_sha256
     stored: list[StoredArtifact] = field(default_factory=list)  # to register
     reused: int = 0  # documents taken from the previous snapshot unchanged
+    added: Added | None = None  # when built by adding to a base snapshot
 
 
 def _earlier(store, previous: ProcedureSnapshot | None, masker: Masker) -> dict[str, tuple[str, ProcedureDocument]]:
@@ -148,6 +158,16 @@ def load_snapshot(store, ref: str) -> ProcedureSnapshot:
     return ProcedureSnapshot.model_validate_json(raw)
 
 
+def _matches(entry: ProcedureSnapshotEntry, wanted: str) -> bool:
+    folded = wanted.strip().casefold()
+    return folded == entry.procedure_key.casefold() or folded in {n.casefold() for n in entry.file_names}
+
+
+def leave_out_unmatched(base: ProcedureSnapshot, leave_out: Sequence[str]) -> list[str]:
+    """The names to leave out that match no document of ``base``: checked before anything is read."""
+    return [w for w in leave_out if w.strip() and not any(_matches(e, w) for e in base.entries)]
+
+
 def build_snapshot(
     source: ProcedureSource,
     *,
@@ -155,14 +175,36 @@ def build_snapshot(
     masker: Masker,
     previous: ProcedureSnapshot | None = None,
     progress: Callable[[int, int, SourceDocument], None] | None = None,
+    base: ProcedureSnapshot | None = None,
+    leave_out: Sequence[str] = (),
 ) -> SnapshotResult:
-    reusable = _earlier(store, previous, masker)
+    """With ``base``, the snapshot is ``base``'s documents (none read again; ``leave_out`` drops
+    some, by procedure key or file name) plus the source's, and each procedure's current version is
+    chosen again: a source document for a procedure ``base`` has becomes its newer version, or not,
+    by its dates (LDR-0043). Without it, the snapshot is what the source lists."""
+    reusable = _earlier(store, previous, masker)  # with a base, its documents are taken whole below
     documents: dict[str, ProcedureDocument] = {}
     refs: dict[str, tuple[str, str]] = {}  # hash -> (original, document)
     names: dict[str, list[str]] = defaultdict(list)
     failures: list[ProcedureFailure] = []
     stored: list[StoredArtifact] = []
     reused = 0
+    added = Added() if base is not None else None
+    if base is not None:
+        unmatched = leave_out_unmatched(base, leave_out)
+        if unmatched:
+            raise ValueError(f"nothing in the previous snapshot to leave out as: {', '.join(unmatched)}")
+        for entry in base.entries:
+            if any(_matches(entry, w) for w in leave_out if w.strip()):
+                added.left_out.append(entry.file_names[0])
+                continue
+            raw = store.get(entry.document_ref, classification=Classification.INTERNAL, authorization=_READER)
+            documents[entry.source_sha256] = ProcedureDocument.model_validate_json(raw)
+            refs[entry.source_sha256] = (entry.source_ref, entry.document_ref)
+            names[entry.source_sha256] = list(entry.file_names)
+            reused += 1
+    in_base = set(documents)
+    keys_before = {d.procedure_key for d in documents.values()}
     listed = source.list_documents()
     for number, item in enumerate(listed, start=1):
         if progress:
@@ -170,6 +212,9 @@ def build_snapshot(
         try:
             data = source.fetch(item)
             sha256 = hashlib.sha256(data).hexdigest()
+            if sha256 in in_base:
+                added.already_in.append(item.name)
+                continue
             names[sha256].append(item.name)
             if sha256 in documents:
                 continue
@@ -191,6 +236,13 @@ def build_snapshot(
         stored += [original, prepared]
         refs[sha256] = (original.metadata.ref, prepared.metadata.ref)
         documents[sha256] = document
+    if added is not None:
+        for sha256 in documents.keys() - in_base:
+            added.added.append(documents[sha256].file_name)
+            if documents[sha256].procedure_key in keys_before:
+                added.new_versions.append(documents[sha256].file_name)
+        added.added.sort()
+        added.new_versions.sort()
 
     groups: dict[str, list[ProcedureDocument]] = defaultdict(list)
     for document in documents.values():
@@ -211,6 +263,14 @@ def build_snapshot(
                 flags=flags if current else (),
             )
         )
-    snapshot = ProcedureSnapshot(source=source.name, entries=tuple(entries), failures=tuple(failures))
+    if added is not None:
+        fresh = documents.keys() - in_base
+        added.dated_by_file = sorted(
+            e.file_names[0]
+            for e in entries
+            if e.source_sha256 in fresh and e.status == ProcedureStatus.CURRENT and e.flags
+        )
+    name = source.name if base is None else base.source.removesuffix("+added") + "+added"
+    snapshot = ProcedureSnapshot(source=name, entries=tuple(entries), failures=tuple(failures))
     saved = store.put(canonical_json(snapshot), media_type="application/json", classification=Classification.INTERNAL)
-    return SnapshotResult(saved.metadata.ref, snapshot, documents, [*stored, saved], reused)
+    return SnapshotResult(saved.metadata.ref, snapshot, documents, [*stored, saved], reused, added)

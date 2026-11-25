@@ -26,6 +26,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from cfr_v2.procedures import stores
 from cfr_v2.telemetry import get_logger
 
 from . import cases, commands, evaluation_view, facts, formats, optimize_view, release_files
@@ -61,8 +62,8 @@ AREAS = (
 LEDES = {  # one line under an area's title: what it's for
     "/intake": "Admit a date window, a spreadsheet of case numbers, or synthetic cases; show the query.",
     "/routing": "Publish the vertical definitions, and backfill routing for runs that finished before it.",
-    "/procedures": "Inspect, extract and snapshot procedure PDFs; build and search the LightRAG store; edit the "
-    "evidence-source workbook.",
+    "/procedures": "Inspect, extract and snapshot procedure PDFs; add documents to a snapshot; build, append to, "
+    "search and remove LightRAG stores; edit the evidence-source workbook.",
     "/evaluation": "Review each stage's results: export them to a workbook, review it, upload it, and get the "
     "stage's metrics.",
     "/optimize": "Improve a prompt's instructions with DSPy against a gold set: write the template, check the "
@@ -204,7 +205,31 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             :JOB_CHOICES
         ],
         outputs=lambda job_id: runner.folder(job_id) / "outputs",
+        running=lambda: [j for j in runner.list() if j.status is JobStatus.RUNNING],
     )
+
+    def store_rows() -> list[dict[str, Any]]:
+        """The Stores table on Procedures (LDR-0043): read from the markers, so it costs nothing."""
+        rows = []
+        for info in stores.list_stores(settings.repo_root, settings.env):
+            lineage = info.marker.get("lineage") or []
+            last = lineage[-1] if lineage else {}
+            made = {"build": "Built", "append": "Appended"}.get(last.get("made"), "")
+            when = last.get("at")
+            rows.append(
+                {
+                    "folder": info.folder.name,
+                    "snapshot": f"{info.snapshot.removeprefix('sha256:')[:12]}…" if info.snapshot else "—",
+                    "state": info.state,
+                    "passages": info.passages,
+                    "failed": info.failed,
+                    "size": formats.size(info.bytes),
+                    "pinned_by": ", ".join(info.pinned_by),
+                    "last": (f"{made} {formats.when(when)}" if made and when else made) or "—",
+                    "rebuild": info.appends >= 5,
+                }
+            )
+        return rows
 
     def console_worker(jobs: list[Job]) -> Job | None:
         return next((j for j in jobs if j.command == "system.worker" and j.status is JobStatus.RUNNING), None)
@@ -623,6 +648,8 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             )
         found = commands.for_area(area)
         extra = optimize_page(request) if area == "optimize" else {}
+        if area == "procedures":
+            extra = {"store_rows": store_rows()}
         response = page(
             request,
             "area.html",

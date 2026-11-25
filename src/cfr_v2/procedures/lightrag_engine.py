@@ -12,7 +12,6 @@ rebuild is the only update, and a generation artifact comes later.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -20,6 +19,7 @@ from collections import Counter
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,8 @@ from cfr_v2.llm.embeddings import EmbeddingSettings, embed_allowing_blocks
 from cfr_v2.telemetry import get_logger, record_passages, record_stage, set_attributes, span
 
 from .search import Passage
-from .stores import STORE_MARKER
+from .stores import APPENDING, COMPLETE, STORE_MARKER, read_marker, write_marker
+from .stores import state as store_state
 
 logger = get_logger(__name__)
 
@@ -81,35 +82,60 @@ class StoreMismatchError(RuntimeError):
 
 
 def read_store_marker(workdir: Path) -> dict[str, Any] | None:
-    path = workdir / STORE_MARKER
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    return read_marker(workdir)
 
 
 def check_store(workdir: Path, procedures_ref: str) -> dict[str, Any]:
-    """The store's marker, if it was built from ``procedures_ref``; otherwise ``StoreMismatchError``.
+    """The store's marker, if it holds ``procedures_ref`` whole; otherwise ``StoreMismatchError``.
     A store without a marker predates it: rebuild it from the snapshot (passages already in the
-    graph are skipped), which writes one."""
+    graph are skipped), which writes one. A store part-way through an append (LDR-0043) holds
+    neither snapshot whole, so nothing searches it until the append finishes."""
     if not workdir.is_dir():
         raise StoreMismatchError(f"no LightRAG store at {workdir}: run lightrag-build {procedures_ref} to build it")
-    marker = read_store_marker(workdir)
+    marker = read_marker(workdir)
     if marker is None:
         raise StoreMismatchError(
             f"{workdir} has no {STORE_MARKER}: run lightrag-build {procedures_ref} on it to record its snapshot"
+        )
+    if store_state(marker) == APPENDING:
+        raise StoreMismatchError(
+            f"{workdir} is part-way through an append from {marker.get('procedures_ref')} to "
+            f"{marker.get('appending_to')}: run lightrag-append again to finish it"
         )
     if marker.get("procedures_ref") != procedures_ref:
         raise StoreMismatchError(f"{workdir} was built from {marker.get('procedures_ref')}, not {procedures_ref}")
     return marker
 
 
-def _write_store_marker(workdir: Path, procedures_ref: str, build: LightRagBuild) -> None:
-    marker = {
-        "procedures_ref": procedures_ref,
-        "program_version": PROGRAM_VERSION,
-        "passages": build.passages,
-        "processed": build.processed,
-        "failed": build.failed,
-    }
-    (workdir / STORE_MARKER).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+def embedding_of(embedder: EmbeddingClient) -> dict[str, Any]:
+    return {"model": getattr(embedder, "model_id", None), "dimensions": embedder.dimensions}
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _write_store_marker(workdir: Path, procedures_ref: str, build: LightRagBuild, embedder: EmbeddingClient) -> None:
+    """After a build: the snapshot, the counts, the embedding model, and a lineage entry (one per
+    snapshot built: a build resumed again only updates its own)."""
+    previous = read_marker(workdir) or {}
+    lineage = [dict(step) for step in previous.get("lineage") or ()]
+    if not (lineage and lineage[-1].get("made") == "build" and lineage[-1].get("procedures_ref") == procedures_ref):
+        lineage.append({"made": "build", "procedures_ref": procedures_ref, "at": _now()})
+    lineage[-1].update(passages=build.passages, processed=build.processed, failed=build.failed)
+    write_marker(
+        workdir,
+        {
+            "procedures_ref": procedures_ref,
+            "program_version": PROGRAM_VERSION,
+            "state": COMPLETE,
+            "embedding": embedding_of(embedder),
+            "passages": build.passages,
+            "processed": build.processed,
+            "failed": build.failed,
+            "lineage": lineage,
+        },
+    )
 
 
 class NoTextInLightRagLogs(logging.Filter):
@@ -683,11 +709,16 @@ async def build_lightrag(
     """
     if procedures_ref is not None:
         marker = read_store_marker(workdir)
+        if marker is not None and store_state(marker) == APPENDING:
+            raise StoreMismatchError(
+                f"{workdir} is part-way through an append to {marker.get('appending_to')}: "
+                "run lightrag-append again to finish it"
+            )
         if marker is not None and marker.get("procedures_ref") != procedures_ref:
             raise StoreMismatchError(
                 f"{workdir} was built from {marker.get('procedures_ref')}: build {procedures_ref} in a new directory"
             )
-    distinct = list({p.text: p for p in reversed(passages)}.values())[::-1]
+    distinct = distinct_passages(passages)
     ids = {passage_id(p) for p in distinct}
     skipped = {passage_id(p) for p in passages} - ids
     if skipped:
@@ -702,17 +733,40 @@ async def build_lightrag(
     )
     started = time.monotonic()
     llm = GatewayLlm(client)
-    ended: str | None = None
     async with open_rag(workdir, embedder, llm, concurrency=concurrency) as rag:
         saves = BatchedSaves(rag, save_every)
         try:
-            for number in range(1, BUILD_PASSES + 1):
-                ended = await _insert_pass(rag, distinct, llm, number, saves, stop)
-                state = await _progress(rag, ids)
-                if ended or state.processed == len(distinct):
-                    break
+            ended, state = await _insert_passes(rag, distinct, llm, saves, stop)
         finally:
             await saves.close()
+    build = _built(distinct, len(passages), state, llm, ended, started)
+    if procedures_ref is not None:
+        _write_store_marker(workdir, procedures_ref, build, embedder)
+    return build
+
+
+def distinct_passages(passages: Sequence[Passage]) -> list[Passage]:
+    """One passage per text, the first of each: LightRAG fails a second copy as a duplicate."""
+    return list({p.text: p for p in reversed(passages)}.values())[::-1]
+
+
+async def _insert_passes(
+    rag: Any, distinct: Sequence[Passage], llm: GatewayLlm, saves: BatchedSaves, stop: threading.Event | None
+) -> tuple[str | None, _Progress]:
+    """Up to ``BUILD_PASSES`` passes, until every passage is in or a pass stops early."""
+    ids = {passage_id(p) for p in distinct}
+    ended: str | None = None
+    for number in range(1, BUILD_PASSES + 1):
+        ended = await _insert_pass(rag, distinct, llm, number, saves, stop)
+        state = await _progress(rag, ids)
+        if ended or state.processed == len(distinct):
+            break
+    return ended, state
+
+
+def _built(
+    distinct: Sequence[Passage], given: int, state: _Progress, llm: GatewayLlm, ended: str | None, started: float
+) -> LightRagBuild:
     missing = len(distinct) - state.processed
     logger.log(
         logging.WARNING if missing else logging.INFO,
@@ -729,20 +783,17 @@ async def build_lightrag(
     )
     if state.failed:
         logger.warning("lightrag: still failing (%s): %s", _reasons(state.failed), _sample(state.failed))
-    build = LightRagBuild(
+    return LightRagBuild(
         len(distinct),
         state.processed,
         len(state.failed),
         llm.calls,
         llm.blocked,
         llm.blocked_embeddings,
-        len(passages) - len(distinct),
+        given - len(distinct),
         ended == "stuck",
         ended == "asked",
     )
-    if procedures_ref is not None:
-        _write_store_marker(workdir, procedures_ref, build)
-    return build
 
 
 class LightRagProcedureSearch:

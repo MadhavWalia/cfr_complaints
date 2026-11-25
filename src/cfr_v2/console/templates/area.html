@@ -10,6 +10,35 @@
 </section>
 {% endif %}
 {% if prompt_rows is defined %}{% include "_optimize.html" %}{% endif %}
+{% if store_rows is defined %}
+<section class="section" aria-labelledby="stores-h">
+  <h2 id="stores-h">Stores</h2>
+  {% if store_rows %}
+  <p class="muted lede-sm">The LightRAG stores on this machine. The worker searches the one named after the snapshot its release pins.</p>
+  <div class="table-wrap">
+    <table class="compact stack stores">
+      <caption class="visually-hidden">LightRAG stores on this machine</caption>
+      <thead><tr><th scope="col">Store</th><th scope="col">Snapshot</th><th scope="col">State</th><th scope="col" class="num">Passages</th><th scope="col" class="num">Size</th><th scope="col">Pinned By</th><th scope="col">Last Change</th></tr></thead>
+      <tbody>
+      {% for s in store_rows %}
+      <tr>
+        <td data-label="Store"><span class="mono">{{ s.folder }}</span></td>
+        <td data-label="Snapshot"><span class="mono">{{ s.snapshot }}</span></td>
+        <td data-label="State"><span>{% if s.state == "appending" %}<span class="badge caution">Appending</span>{% elif s.state == "complete" %}Complete{% else %}<span class="muted">No marker</span>{% endif %}{% if s.failed %} <span class="muted">{{ "{:,}".format(s.failed) }} failed</span>{% endif %}</span></td>
+        <td data-label="Passages" class="num"><span>{{ "{:,}".format(s.passages) if s.passages is not none else "—" }}</span></td>
+        <td data-label="Size" class="num"><span>{{ s.size }}</span></td>
+        <td data-label="Pinned by"><span>{{ s.pinned_by or "—" }}</span></td>
+        <td data-label="Last change"><span>{{ s.last }}{% if s.rebuild %} <span class="muted">· consider building it again</span>{% endif %}</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No LightRAG stores here yet: Build the LightRAG store makes one.</p>
+  {% endif %}
+</section>
+{% endif %}
 <div class="commands">
 {% for command in commands %}
 {% with open = commands | length == 1 %}{% include "_command.html" %}{% endwith %}
