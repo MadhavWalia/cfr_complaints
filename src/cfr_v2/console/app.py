@@ -402,12 +402,54 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         return type(exc).__name__
 
     @app.get("/cases", response_class=HTMLResponse)
-    def case_list(request: Request, release: str | None = None, offset: int = 0):
-        filters = cases.CaseFilters.parse(request.query_params)  # a multi-select repeats its name
+    def case_list(request: Request):
+        return cases_page(request, request.query_params)
+
+    def rerun_source(params: Any) -> Job | None:
+        """The re-run job whose runs a form acts on again: Run Again (``again``) or a next step
+        (``fill`` with ``from``), or a form sent back (``from_job``)."""
+        job_id = params.get("from_job") or params.get("again")
+        if job_id is None and params.get("fill") == "cases.rerun":
+            job_id = params.get("from")
+        if not job_id:
+            return None
+        try:
+            job = runner.get(job_id)
+            runner.file(job.id, "inputs", commands.RUNS_FILE)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="That job's runs can't be read.") from None
+        if job.command != "cases.rerun":
+            raise HTTPException(status_code=404, detail="That job didn't re-run cases.")
+        return job
+
+    def _runs_in(job: Job) -> list[str]:
+        text = runner.file(job.id, "inputs", commands.RUNS_FILE).read_text(encoding="utf-8")
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    def cases_page(
+        request: Request, params: Any, *, error_text: str | None = None, status_code: int = 200
+    ) -> HTMLResponse:
+        """The Cases list (``params`` as from the query string) and its selection: rows, every run
+        the filters match (``select=all``), or the runs of an earlier re-run job (LDR-0045)."""
+        filters = cases.CaseFilters.parse(params)  # a multi-select repeats its name
+        try:
+            offset = max(0, int(params.get("offset") or 0))
+        except ValueError:
+            offset = 0
+        release = params.get("release")
         listed, error, progress, verticals = cases.CasePage([], False), None, None, []
         current = release is None  # no release asked for: the current one (LDR-0029); "" is every release
         if current:
             release = settings.release_id or ""
+        rerun = commands.BY_ID["cases.rerun"]
+        source = rerun_source(params)
+        selection: dict[str, Any] = {"mode": "rows"}
+        values = {f.name: v for f in rerun.fields if (v := f.initial(form_context)) is not None}
+        if source is not None:  # its form as sent (an unticked box isn't), then the next step's changes
+            selection = {"mode": "job", "job": source, "count": len(_runs_in(source))}
+            sent = source.form or {}
+            values = {f.name: sent[f.name] for f in rerun.fields if f.name in sent}
+            values |= {f.name: params[f.name] for f in rerun.fields if f.name in params}
         try:
             db = database()
             index = indexer()
@@ -417,6 +459,9 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
                 logger.warning("console: case facts unavailable: %s", type(exc).__name__)
             listed = cases.list_cases(db, release=release, filters=filters, offset=offset, facts=index.index)
             verticals = index.index.verticals()
+            if source is None and params.get("select") == "all":
+                found = cases.matching_runs(db, release=release, filters=filters, facts=index.index)
+                selection = {"mode": "all", "count": len(found.ids), "unindexed": found.unindexed}
         except Exception as exc:  # noqa: BLE001 - the page says the database is down
             error = _unavailable(exc)
         only_current = current and bool(release) and not (filters.active or offset)
@@ -425,7 +470,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             (label, "/cases?" + urlencode({k: v for k, v in chosen.items() if k not in keys}))
             for label, keys in filters.chips()
         ]
-        return page(
+        response = page(
             request,
             "cases.html",
             title="Cases",
@@ -433,7 +478,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             more=listed.more,
             unindexed=listed.unindexed,
             progress=progress,
-            offset=max(0, offset),
+            offset=offset,
             page_rows=cases.PAGE_ROWS,
             filters=filters,
             release_filter=release or None,
@@ -455,7 +500,52 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             + list(cases.ROUTING_OUTCOMES),
             only_current=only_current,
             error=error,
+            rerun=rerun,
+            rerun_values=values,
+            selection=selection,
+            selection_error=error_text,
+            ctx=form_context,
+            current_release=settings.release_id,
+            open_rerun=error_text is not None or source is not None or selection["mode"] == "all",
         )
+        response.status_code = status_code
+        return response
+
+    @app.post("/cases/rerun", dependencies=[Depends(require_csrf)])
+    async def cases_rerun(request: Request):
+        """Start a re-run job for the runs selected on Cases (LDR-0045). The ids are resolved now, and
+        written to the job's inputs: a preview and the re-run it leads to act on the same runs."""
+        form = await request.form()
+        command = commands.BY_ID["cases.rerun"]
+        try:
+            values = command.parse(form, form_context)
+            source = rerun_source(form)
+            if source is not None:
+                ids = _runs_in(source)
+            elif form.get("all") == "1":
+                filters = cases.CaseFilters.parse(form)
+                found = cases.matching_runs(
+                    database(), release=form.get("release") or "", filters=filters, facts=indexer().index
+                )
+                ids = list(found.ids)
+            else:
+                ids = list(dict.fromkeys(v for v in form.getlist("run") if isinstance(v, str)))
+            ids = [i for i in ids if i.replace("-", "").isalnum() and len(i) <= 64]
+            if not ids:
+                raise commands.FormError("Select at least one case run, or choose Select all.")
+        except commands.FormError as exc:
+            return cases_page(request, form, error_text=str(exc), status_code=422)
+        values["runs"] = len(ids)
+        sent = {k: v for k, v in form.multi_items() if isinstance(v, str) and k not in ("csrf", "run", "from_job")}
+        sent["runs"] = str(len(ids))
+
+        def argv(folder: Path) -> list[str]:
+            (folder / "inputs").mkdir(parents=True, exist_ok=True)
+            (folder / "inputs" / commands.RUNS_FILE).write_text("\n".join(ids) + "\n", encoding="utf-8")
+            return command.argv(values, folder)
+
+        job = runner.start(command.id, command.describe(values), argv, summarize=command.summarize, form=sent)
+        return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 
     @app.get("/partials/case-facts", response_class=HTMLResponse)
     def case_facts_progress(request: Request):
@@ -808,7 +898,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     @app.post("/commands/{command_id}", dependencies=[Depends(require_csrf)])
     async def run_command(request: Request, command_id: str):
         command = commands.BY_ID.get(command_id)
-        if command is None:
+        if command is None or command.posts_to:  # started from its own page (posts_to), not here
             raise HTTPException(status_code=404, detail="No such command.")
         form = await request.form()
         label = dict(AREAS)["/" + command.area]

@@ -9,6 +9,7 @@
     <li><a href="#add-documents">Add procedure documents to the store</a></li>
     <li><a href="#run-cases">Run a few cases through the pipeline</a></li>
     <li><a href="#review">Review a stage and get its metrics</a></li>
+    <li><a href="#rerun">Re-run cases from a stage</a></li>
     <li><a href="#fresh">Start over on new cases, leaving earlier runs behind</a></li>
     <li><a href="#failed">Find out why something failed</a></li>
     <li><a href="#stages">The stages</a> · <a href="#words">Words</a></li>
@@ -58,6 +59,17 @@
     <li><strong>Upload and score</strong> the workbook. The metrics show on the tab, and every stage's latest on the Overview.</li>
     <li>Workbooks hold case text: keep them on this machine, and delete the jobs once scored.</li>
   </ol>
+</section>
+
+<section class="section howto" id="rerun" aria-labelledby="rerun-h">
+  <h2 id="rerun-h">Re-run cases from a stage</h2>
+  <ol>
+    <li>Make the release you want the new runs under current, on <a href="/releases">Releases</a>. Re-runs always go under the current release.</li>
+    <li>On <a href="/cases">Cases</a>, filter to the runs to start from: their release, Plan ready, and anything else. Tick runs, tick the header box for the page, or choose <strong>Select all runs matching these filters</strong>.</li>
+    <li>Open <strong>Re-run from…</strong>, choose the stage that changed, and start with <em>Preview only</em> ticked: the job says how many runs qualify, and why the rest don't (still running, not Plan ready, already re-run, or an earlier stage from an older version: re-run those from Pass 1).</li>
+    <li>From the preview's job page, <strong>Re-run them</strong>: the same runs, queued. Then <a href="/system#system.worker">start a worker</a>.</li>
+  </ol>
+  <p class="muted">Each run gets a new run under the current release that reuses the stages before the one chosen. The runs it started from stay as they are, so both can be exported and compared on Evaluation.</p>
 </section>
 
 <section class="section howto" id="fresh" aria-labelledby="fresh-h">

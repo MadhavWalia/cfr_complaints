@@ -883,3 +883,17 @@ th[aria-sort="ascending"] button[data-sort] .icon { rotate: 180deg; }
   td.num, th.num { text-align: left; }
   td.num > span { justify-content: flex-start; }
 }
+
+/* Cases: selecting runs and acting on them (LDR-0045). The bar stays in view above the table once
+   something is selected; "Select all matching" shows once the whole page is. */
+.selection-bar { display: none; position: sticky; top: 0; z-index: 5; gap: var(--s3); padding: var(--s3) var(--s4); margin-bottom: var(--s3); border: 1px solid var(--border-brand); border-radius: var(--radius); background: var(--surface-foreground); }
+.runs-form:has(input[name="run"]:checked) .selection-bar, .selection-bar.fixed { display: grid; }
+.runs-form:not(:has(th.pick input:checked)) .select-all { display: none; }
+.selection-bar .selected { margin: 0; }
+.rerun-panel > summary { list-style: none; width: max-content; cursor: pointer; }
+.rerun-panel > summary::-webkit-details-marker { display: none; }
+.rerun-panel > .form { margin-top: var(--s4); }
+.rerun-panel .effect { margin: 0; max-width: var(--measure); }
+th.pick, td.pick { width: 2.75rem; }
+th.pick input, td.pick input { width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--primary-bg); vertical-align: middle; }
+.selection-bar:has(.rerun-panel[open]) { position: static; }  /* open, it's a form: stays in place */

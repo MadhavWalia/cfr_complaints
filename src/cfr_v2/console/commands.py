@@ -236,6 +236,8 @@ class Command:
     group: str | None = None  # a tab within the area: the evaluation stage (LDR-0042)
     # A DLS Notification above the form, for what must be read before starting: (tone, title, text)
     warning: tuple[str, str, str] | None = None
+    # Started from its own page (a selection on Cases, say), which posts here: not /commands/<id>
+    posts_to: str | None = None
 
     @property
     def page(self) -> str:
@@ -422,6 +424,16 @@ def _removable_stores(ctx: Context) -> list[tuple[str, str]]:
                 )
             )
     return found
+
+
+RERUN_STAGES = (  # the stages a run can be re-run from, in order (LDR-0045): intake isn't one
+    ("c02.pass1", "Pass 1"),
+    ("c02.pass2", "Pass 2"),
+    ("c03.primary_selection", "Selection"),
+    ("c04.routing", "Routing"),
+    ("c05.planning", "Planning"),
+)
+RUNS_FILE = "runs.txt"  # the selected runs' ids, in a re-run job's inputs/
 
 
 STORE_JOBS = (
@@ -1387,6 +1399,57 @@ CATALOGUE: tuple[Command, ...] = (
     ),
     # --- Evaluation: per stage, export for review, then score the review (LDR-0042) -------------
     *(command for stage in REVIEWED for command in _review_commands(*stage)),
+    # --- Cases: act on selected runs (LDR-0045) ----------------------------------------------------
+    Command(
+        id="cases.rerun",
+        area="cases",
+        title="Re-run from a stage",
+        effect="Each selected run gets a new run under the current release: the stages before the one chosen "
+        "are reused, that stage and every one after it run again. The runs it starts from stay as they are. "
+        "Preview first: it counts what would be re-run, and why the rest wouldn't.",
+        module="cfr_v2.runtime.rerun",
+        fields=(
+            Field("stage", "Re-run from", "mode", required=True, default="c04.routing", choices=tuple(RERUN_STAGES)),
+            Field(
+                "include_failed",
+                "Include failed runs",
+                "check",
+                help="When the stages before the one chosen succeeded. Otherwise only Plan-ready runs.",
+            ),
+            Field("count_only", "Preview only", "check", default=True, help="Counts; queues nothing."),
+        ),
+        args=lambda v, folder: [
+            "--stage",
+            v["stage"],
+            "--runs-file",
+            str(folder / "inputs" / RUNS_FILE),
+            *_flag(v["include_failed"], "--include-failed"),
+            *_flag(v["count_only"], "--count-only"),
+            "--out",
+            _out(folder, "rerun.jsonl"),
+        ],
+        job_title=lambda v: (
+            f"Re-run from {dict(RERUN_STAGES)[v['stage']]} · {v.get('runs', 0):,} runs"
+            + (" · preview" if v["count_only"] else "")
+        ),
+        summarize=_printed(r"^(?:preview: )?([\d,]+ runs (?:to re-run|queued to re-run) from .+)$"),
+        action="Start",
+        next=(
+            Next(
+                "Re-run them",
+                "cases.rerun",
+                lambda job: {"count_only": ""},
+                when=lambda job: job.status.value == "done" and "--count-only" in job.argv,
+            ),
+            Next(
+                "Start a worker",
+                page=lambda job: "/system#system.worker",
+                when=lambda job: job.status.value == "done" and "--count-only" not in job.argv,
+            ),
+        ),
+        tags=("writes the database",),
+        posts_to="/cases/rerun",
+    ),
     # --- System ---------------------------------------------------------------------------------
     Command(
         id="system.worker",

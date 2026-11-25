@@ -466,6 +466,47 @@ def list_cases(
     return CasePage(rows[:PAGE_ROWS], len(rows) > PAGE_ROWS, unindexed)
 
 
+@dataclass(frozen=True)
+class Matching:
+    """Every run a filter matches, across all pages (the Cases page's "Select all", LDR-0045)."""
+
+    ids: tuple[str, ...]
+    unindexed: int  # runs whose results the fact index doesn't hold yet: result filters may miss them
+
+
+def matching_runs(db, *, release: str | None, filters: CaseFilters, facts=None) -> Matching:
+    """The runs ``list_cases`` would list on every page, newest first, read again now."""
+    params = {
+        "state": list(filters.state) or None,
+        "release": release or None,
+        "q": filters.q or None,
+        "like": f"%{filters.q}%" if filters.q else None,
+        "admitted_from": filters.admitted_from,
+        "admitted_to": filters.admitted_to,
+        "transcript": filters.transcript,
+        "baseline": filters.baseline,
+        "failed_at": filters.failed_at,
+        "limit": None,
+        "offset": 0,
+    }
+    with db.transaction() as tx:
+        found = tx.all(CASES_SQL, params)
+    if not (filters.on_results and facts is not None):
+        return Matching(tuple(r[0] for r in found), 0)
+    known = facts.get(ref for r in found for ref in r[8:11])
+    unindexed = sum(1 for r in found for ref in r[8:11] if ref and ref not in known)
+    ids = []
+    for r in found:
+        by_task = {
+            task: known[ref]
+            for task, ref in zip(("c02.pass2", "c03.primary_selection", "c04.routing"), r[8:11], strict=True)
+            if ref in known
+        }
+        if filters.matches(by_task):
+            ids.append(r[0])
+    return Matching(tuple(ids), unindexed)
+
+
 def trace_id(traceparent: str | None) -> str | None:
     """The trace id from a W3C traceparent, ``00-<32 hex>-<16 hex>-<flags>``."""
     parts = (traceparent or "").split("-")

@@ -316,3 +316,26 @@
     body.append(...rows);
   });
 })();
+
+/* Cases: selecting runs (LDR-0045). The header box selects or clears the page; the bar says how
+   many are selected (CSS shows it once one is, and offers "Select all" once the page is). */
+(() => {
+  const form = document.getElementById("runs");
+  if (!form) return;
+  const boxes = () => [...form.querySelectorAll('input[name="run"]:not(:disabled)')];
+  const all = form.querySelector("[data-pick-all]");
+  const count = form.querySelector("[data-selected-count]");
+  const update = () => {
+    const picked = boxes().filter((b) => b.checked).length;
+    if (count) count.textContent = `${picked.toLocaleString("en")} run${picked === 1 ? "" : "s"}`;
+    if (all) {
+      all.checked = picked > 0 && picked === boxes().length;
+      all.indeterminate = picked > 0 && picked < boxes().length;
+    }
+  };
+  form.addEventListener("change", (event) => {
+    if (event.target === all) boxes().forEach((b) => { b.checked = all.checked; });
+    if (event.target === all || event.target.name === "run") update();
+  });
+  update();
+})();
