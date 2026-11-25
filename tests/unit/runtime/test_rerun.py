@@ -159,3 +159,9 @@ def test_a_release_that_does_not_match_the_code_is_refused(monkeypatch, capsys):
     with pytest.raises(SystemExit) as exit_:
         rerun.main(["--stage", "routing", "--from-release", "cfr-v2-phase-e"])
     assert exit_.value.code == 2 and "c04.routing: code runs route-2" in capsys.readouterr().err
+
+
+def test_a_retired_run_is_not_re_run():
+    retired = Source("old", "GC-1", "case-1", 0, "batch", REQUEST, "cfr-v2-phase-d", "PLAN_READY", "SUCCEEDED", True)
+    [p] = plan([retired], [("old", r) for r in _results()], set(), start=3, manifest_ref=MANIFEST, include_failed=True)
+    assert (p.status, p.reason) == ("skipped", "retired")

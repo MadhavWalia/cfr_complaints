@@ -405,11 +405,13 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
     def case_list(request: Request):
         return cases_page(request, request.query_params)
 
-    def rerun_source(params: Any) -> Job | None:
-        """The re-run job whose runs a form acts on again: Run Again (``again``) or a next step
-        (``fill`` with ``from``), or a form sent back (``from_job``)."""
+    case_actions = dict(commands.CASE_ACTIONS)
+
+    def action_source(params: Any) -> Job | None:
+        """The earlier Cases action job whose runs a form acts on again (LDR-0045): Run Again
+        (``again``), a next step (``fill`` with ``from``), or a form sent back (``from_job``)."""
         job_id = params.get("from_job") or params.get("again")
-        if job_id is None and params.get("fill") == "cases.rerun":
+        if job_id is None and params.get("fill") in case_actions:
             job_id = params.get("from")
         if not job_id:
             return None
@@ -418,8 +420,8 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             runner.file(job.id, "inputs", commands.RUNS_FILE)
         except KeyError:
             raise HTTPException(status_code=404, detail="That job's runs can't be read.") from None
-        if job.command != "cases.rerun":
-            raise HTTPException(status_code=404, detail="That job didn't re-run cases.")
+        if job.command not in case_actions:
+            raise HTTPException(status_code=404, detail="That job didn't act on selected runs.")
         return job
 
     def _runs_in(job: Job) -> list[str]:
@@ -427,10 +429,16 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         return [line.strip() for line in text.splitlines() if line.strip()]
 
     def cases_page(
-        request: Request, params: Any, *, error_text: str | None = None, status_code: int = 200
+        request: Request,
+        params: Any,
+        *,
+        error_text: str | None = None,
+        failed: str | None = None,
+        status_code: int = 200,
     ) -> HTMLResponse:
         """The Cases list (``params`` as from the query string) and its selection: rows, every run
-        the filters match (``select=all``), or the runs of an earlier re-run job (LDR-0045)."""
+        the filters match (``select=all``), or the runs of an earlier action job (LDR-0045). The
+        selection bar offers each Cases action; ``failed`` is the one whose form came back."""
         filters = cases.CaseFilters.parse(params)  # a multi-select repeats its name
         try:
             offset = max(0, int(params.get("offset") or 0))
@@ -441,15 +449,26 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         current = release is None  # no release asked for: the current one (LDR-0029); "" is every release
         if current:
             release = settings.release_id or ""
-        rerun = commands.BY_ID["cases.rerun"]
-        source = rerun_source(params)
+        source = action_source(params)
         selection: dict[str, Any] = {"mode": "rows"}
-        values = {f.name: v for f in rerun.fields if (v := f.initial(form_context)) is not None}
-        if source is not None:  # its form as sent (an unticked box isn't), then the next step's changes
+        if source is not None:
             selection = {"mode": "job", "job": source, "count": len(_runs_in(source))}
-            sent = source.form or {}
-            values = {f.name: sent[f.name] for f in rerun.fields if f.name in sent}
-            values |= {f.name: params[f.name] for f in rerun.fields if f.name in params}
+        opened = failed or (source.command if source is not None else None)
+        actions = []
+        for command_id, label in commands.CASE_ACTIONS:
+            if (command_id == "cases.restore" and not filters.retired) or (
+                command_id == "cases.retire" and filters.retired == "only"
+            ):
+                continue  # Restore with retired runs in view; Retire with others in view
+            command = commands.BY_ID[command_id]
+            values = {f.name: v for f in command.fields if (v := f.initial(form_context)) is not None}
+            if source is not None and source.command == command_id:  # its form as sent, then the next step's
+                sent = source.form or {}
+                values = {f.name: sent[f.name] for f in command.fields if f.name in sent}
+                values |= {f.name: params[f.name] for f in command.fields if f.name in params}
+            elif failed == command_id:
+                values = {f.name: params[f.name] for f in command.fields if f.name in params}
+            actions.append({"command": command, "label": label, "values": values, "open": opened == command_id})
         try:
             db = database()
             index = indexer()
@@ -495,31 +514,33 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
                 "primary": cases.PRIMARY,
                 "grounding": cases.GROUNDING,
                 "account": cases.ACCOUNTS,
+                "retired": cases.RETIRED,
             },
             verticals=sorted((set(verticals) | set(filters.vertical)) - set(cases.ROUTING_OUTCOMES))
             + list(cases.ROUTING_OUTCOMES),
             only_current=only_current,
             error=error,
-            rerun=rerun,
-            rerun_values=values,
+            actions=actions,
             selection=selection,
             selection_error=error_text,
             ctx=form_context,
             current_release=settings.release_id,
-            open_rerun=error_text is not None or source is not None or selection["mode"] == "all",
         )
         response.status_code = status_code
         return response
 
-    @app.post("/cases/rerun", dependencies=[Depends(require_csrf)])
-    async def cases_rerun(request: Request):
-        """Start a re-run job for the runs selected on Cases (LDR-0045). The ids are resolved now, and
-        written to the job's inputs: a preview and the re-run it leads to act on the same runs."""
+    @app.post("/cases/{action}", dependencies=[Depends(require_csrf)])
+    async def case_action(request: Request, action: str):
+        """Start a Cases action job (re-run, retire, restore) on the runs selected (LDR-0045). The ids
+        are resolved now and written to the job's inputs: a preview and the action it leads to, or a
+        Run Again, act on the same runs."""
+        command = commands.BY_ID.get(f"cases.{action}")
+        if command is None or command.id not in case_actions:
+            raise HTTPException(status_code=404, detail="No such action.")
         form = await request.form()
-        command = commands.BY_ID["cases.rerun"]
         try:
             values = command.parse(form, form_context)
-            source = rerun_source(form)
+            source = action_source(form)
             if source is not None:
                 ids = _runs_in(source)
             elif form.get("all") == "1":
@@ -534,7 +555,7 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             if not ids:
                 raise commands.FormError("Select at least one case run, or choose Select all.")
         except commands.FormError as exc:
-            return cases_page(request, form, error_text=str(exc), status_code=422)
+            return cases_page(request, form, error_text=str(exc), failed=command.id, status_code=422)
         values["runs"] = len(ids)
         sent = {k: v for k, v in form.multi_items() if isinstance(v, str) and k not in ("csrf", "run", "from_job")}
         sent["runs"] = str(len(ids))

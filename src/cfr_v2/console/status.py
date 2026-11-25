@@ -29,7 +29,8 @@ STAGE_SQL = (
     "SELECT state, count(*) FROM ("
     " SELECT DISTINCT ON (e.case_run_id) e.case_run_id, e.state FROM case_run_event e"
     " JOIN case_run r USING (case_run_id)"
-    " WHERE %(release)s::text IS NULL OR split_part(r.release_manifest_ref, '@', 1) = %(release)s"
+    " WHERE (%(release)s::text IS NULL OR split_part(r.release_manifest_ref, '@', 1) = %(release)s)"
+    " AND NOT EXISTS (SELECT 1 FROM case_run_retired x WHERE x.case_run_id = e.case_run_id)"  # LDR-0045
     " ORDER BY e.case_run_id, e.event_id DESC) latest GROUP BY state"
 )
 WORKERS_SQL = (

@@ -155,3 +155,81 @@ def test_after_a_preview_the_re_run_acts_on_the_same_runs(console, monkeypatch):
     assert Path(started["argv"][started["argv"].index("--runs-file") + 1]).read_text() == "run-7\nrun-9\n"
     assert client.get(f"/cases?again={preview.id}").status_code == 200  # Run Again reuses them too
     assert client.get("/cases?again=20991231-000000-zzzz").status_code == 404
+
+
+# --- retire and restore (LDR-0045 step 3) -----------------------------------------------------
+
+
+def test_retire_is_offered_and_restore_only_with_retired_runs_in_view(console):
+    _, client, _, _ = console
+    page = client.get("/cases?release=").text
+    assert 'name="case_action" value="cases.retire"' in page and "Retire…" in page
+    assert 'id="cases.restore"' not in page  # retired runs are hidden, so nothing to restore
+    assert 'name="retired"' in page and "Retired runs" in page  # the filter, under More filters
+    shown = client.get("/cases?release=&retired=show").text
+    assert 'id="cases.restore"' in shown and 'id="cases.retire"' in shown
+    assert "<span>Retired runs shown</span>" in shown
+    only = client.get("/cases?release=&retired=only").text
+    assert 'id="cases.restore"' in only and 'id="cases.retire"' not in only
+
+
+def test_retiring_the_ticked_runs_starts_a_job_with_the_reason(console, monkeypatch):
+    app, client, started, start = console
+    monkeypatch.setattr(app.state.runner, "start", start)
+    sent = client.post(
+        "/cases/retire",
+        data={"csrf": _csrf(app), "release": "", "run": ["run-1", "run-2"], "reason": "phase-d runs"},
+        follow_redirects=False,
+    )
+    assert sent.status_code == 303 and started["command"] == "cases.retire"
+    argv = started["argv"]
+    assert argv[argv.index("-m") + 1 : argv.index("-m") + 3] == ["cfr_v2.runtime.retire", "retire"]
+    assert argv[argv.index("--reason") + 1] == "phase-d runs" and started["title"] == "Retire · 2 runs"
+    assert Path(argv[argv.index("--runs-file") + 1]).read_text() == "run-1\nrun-2\n"
+
+
+def test_restoring_from_the_case_page_starts_a_job_for_that_run(console, monkeypatch):
+    app, client, started, start = console
+    monkeypatch.setattr(app.state.runner, "start", start)
+    sent = client.post("/cases/restore", data={"csrf": _csrf(app), "run": "run-9"}, follow_redirects=False)
+    assert sent.status_code == 303 and started["argv"][-3:] == ["restore", "--runs-file", started["argv"][-1]]
+    assert Path(started["argv"][-1]).read_text() == "run-9\n"
+    assert client.post("/cases/purge", data={"csrf": _csrf(app), "run": "run-9"}).status_code == 404  # not yet
+
+
+def test_a_retired_row_has_a_badge_and_the_filter_reaches_the_query(console, monkeypatch):
+    _, client, _, _ = console
+    asked = []
+    row = cases.CaseRow("run-3", "GC3", "cfr-v2-phase-d", "x", "batch", "PLAN_READY", AT, AT, retired=True)
+
+    def listed(db, **kw):
+        asked.append(kw["filters"].retired)
+        return cases.CasePage([row], False)
+
+    monkeypatch.setattr(cases, "list_cases", listed)
+    page = client.get("/cases?release=&retired=show").text
+    assert asked[-1] == "show" and '<span class="badge">Retired</span>' in page
+    client.get("/cases?release=&retired=everything")
+    assert asked[-1] is None  # not an option: hidden, the default
+
+
+def test_the_retired_filter_is_in_the_sql_with_hidden_as_the_default():
+    sql = cases.CASES_SQL
+    assert "LEFT JOIN case_run_retired x" in sql and "(%(retired)s::text = 'only')" in sql
+    assert cases.CaseFilters.parse({}).retired is None
+    assert cases.CaseFilters.parse({"retired": "only"}).query() == {"retired": "only"}
+
+
+def test_the_case_page_says_a_run_is_retired_or_a_re_run_and_offers_restore(console, monkeypatch):
+    from cfr_v2.artifacts import InMemoryArtifactStore
+
+    app, client, _, _ = console
+    app.state.store = InMemoryArtifactStore()
+    row = cases.CaseRow("run-5", "GC5", "cfr-v2-phase-f", "x", "batch", "PLAN_READY", AT, AT)
+    admitted = cases.Event("ADMITTED", AT, {"rerun_of": "run-0000-source", "from": "c04.routing"})
+    run = cases.CaseRun(row, (admitted,), (), None, (AT, "phase-d runs"))
+    monkeypatch.setattr(cases, "read_case", lambda db, case_run_id: run if case_run_id == "run-5" else None)
+    page = client.get("/cases/run-5").text
+    assert 'A re-run of <a class="mono" href="/cases/run-0000-source">' in page and "c04.routing" in page
+    assert "Retired <time" in page and ": phase-d runs</strong>" in page
+    assert 'action="/cases/restore"' in page and 'name="run" value="run-5"' in page

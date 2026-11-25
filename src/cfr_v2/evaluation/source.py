@@ -34,6 +34,7 @@ LATEST_RUNS_SQL = (
     " AND (%(start)s::timestamptz IS NULL OR r.created_at >= %(start)s)"
     " AND (%(end)s::timestamptz IS NULL OR r.created_at < %(end)s)"
     " AND (%(cases)s::text[] IS NULL OR c.source_case_id = ANY(%(cases)s))"
+    " AND NOT EXISTS (SELECT 1 FROM case_run_retired x WHERE x.case_run_id = r.case_run_id)"  # LDR-0045
     " ORDER BY c.source_case_id, r.created_at DESC, r.case_run_id"
     ") latest"
     " ORDER BY CASE WHEN %(seed)s::text IS NULL THEN NULL ELSE md5(case_run_id || %(seed)s::text) END,"

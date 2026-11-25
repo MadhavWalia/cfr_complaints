@@ -29,6 +29,7 @@ EXPECTED_TABLES = {
     "release_manifest",
     "workflow_job",
     "step_checkpoint",
+    "case_run_retirement",
     "schema_migration",
 }
 MUTABLE = {"workflow_job", "schema_migration"}  # scheduling and bookkeeping only (LDR-0011)
@@ -38,7 +39,7 @@ def test_all_migrations_applied(db):
     assert (
         applied_versions(db)
         == [m.version for m in available_migrations()]
-        == ["0001", "0002", "0003", "0004", "0005", "0006"]
+        == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
     )
 
 
@@ -66,7 +67,7 @@ def test_fresh_database_on_each_driver(admin_available, driver):
     admin_execute(f'CREATE DATABASE "{name}"')
     database = Database(_url_for(name), driver=load_driver(driver))
     try:
-        assert run_migrations(database) == ["0001", "0002", "0003", "0004", "0005"]
+        assert run_migrations(database) == [m.version for m in available_migrations()]
     finally:
         database.close()
         admin_execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')

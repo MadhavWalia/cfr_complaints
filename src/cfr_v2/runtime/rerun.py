@@ -13,8 +13,8 @@ left as it is.
 A stage is re-run by not copying it, so a change the stage's inputs don't show (a new procedure
 snapshot in the release, say) still takes effect.
 
-A source run qualifies when it is Plan ready (or Failed, with ``--include-failed``), isn't queued or
-running, and each stage before ``--stage`` succeeded at the version this code runs: a result made by
+A source run qualifies when it is Plan ready (or Failed, with ``--include-failed``), isn't queued,
+running or retired, and each stage before ``--stage`` succeeded at the version this code runs: a result made by
 an older version isn't reused under a release that pins a newer one. Re-running from Pass 1 reuses
 nothing, so any finished run qualifies. A re-run is unique per source, release and stage: asking
 twice queues it once.
@@ -74,7 +74,8 @@ SOURCES_SQL = (
     " latest AS (SELECT DISTINCT ON (case_run_id) case_run_id, state FROM case_run_event"
     " WHERE case_run_id IN (SELECT case_run_id FROM picked) ORDER BY case_run_id, event_id DESC)"
     " SELECT r.case_run_id, c.source_case_id, r.case_id, r.ingestion_revision, r.lane, r.request_ref,"
-    " rm.release_id, l.state, j.status"
+    " rm.release_id, l.state, j.status,"
+    " EXISTS (SELECT 1 FROM case_run_retired x WHERE x.case_run_id = r.case_run_id)"
     ' FROM picked p JOIN case_run r USING (case_run_id) JOIN "case" c ON c.case_id = r.case_id'
     " LEFT JOIN release_manifest rm ON rm.manifest_ref = r.release_manifest_ref"
     " LEFT JOIN latest l ON l.case_run_id = r.case_run_id"
@@ -128,6 +129,7 @@ class Source:
     release_id: str | None
     state: str | None
     job_status: str | None
+    retired: bool = False
 
     def row(self) -> dict[str, Any]:
         return {
@@ -188,6 +190,9 @@ def plan(
     allowed = {FINAL_STATE, "FAILED"} if include_failed else {FINAL_STATE}
     planned = []
     for s in sources:
+        if s.retired:
+            planned.append(Planned(s, "skipped", "retired"))
+            continue
         if s.job_status in ("QUEUED", "RUNNING"):
             planned.append(Planned(s, "skipped", "queued or running"))
             continue
@@ -269,7 +274,7 @@ def read(
     }
     with db.transaction() as tx:
         rows = tx.all(SOURCES_SQL, params)
-        sources = [Source(r[0], r[1], r[2], int(r[3]), r[4], r[5], r[6], r[7], r[8]) for r in rows]
+        sources = [Source(r[0], r[1], r[2], int(r[3]), r[4], r[5], r[6], r[7], r[8], bool(r[9])) for r in rows]
         runs = [s.case_run_id for s in sources]
         results = [
             (r[0], Result(r[1], r[2], r[3], r[4], tuple(r[5] or ()))) for r in tx.all(RESULTS_SQL, {"runs": runs})

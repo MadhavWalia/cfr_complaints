@@ -61,11 +61,14 @@ CASES_SQL = (
     " SELECT r.case_run_id, c.source_case_id, rm.release_id, r.release_manifest_ref, r.lane, l.state,"
     " r.created_at, l.created_at, "
     + ", ".join(_LAST_OK.format(task=task) for task in ("c02.pass2", "c03.primary_selection", "c04.routing"))
-    + ' FROM case_run r JOIN "case" c ON c.case_id = r.case_id'
+    + ", x.case_run_id IS NOT NULL"  # retired (LDR-0045)
+    ' FROM case_run r JOIN "case" c ON c.case_id = r.case_id'
     " LEFT JOIN latest l ON l.case_run_id = r.case_run_id"
     " LEFT JOIN release_manifest rm ON rm.manifest_ref = r.release_manifest_ref"
     " LEFT JOIN case_run_event a ON a.case_run_id = r.case_run_id AND a.state = 'ADMITTED'"
+    " LEFT JOIN case_run_retired x ON x.case_run_id = r.case_run_id"
     " WHERE (%(state)s::text[] IS NULL OR l.state = ANY(%(state)s))"
+    " AND (%(retired)s::text = 'show' OR (x.case_run_id IS NOT NULL) = (%(retired)s::text = 'only'))"
     " AND (%(release)s::text IS NULL OR rm.release_id = %(release)s)"
     " AND (%(q)s::text IS NULL OR c.source_case_id ILIKE %(like)s OR r.case_run_id = %(q)s)"
     " AND (%(admitted_from)s::date IS NULL OR r.created_at >= %(admitted_from)s::date)"
@@ -90,10 +93,12 @@ JOB_SQL = (
 )
 CLASSIFICATIONS_SQL = "SELECT DISTINCT classification FROM artifact WHERE sha256 = %(sha)s"
 RELEASES_SQL = (
-    "SELECT rm.release_id, rm.manifest_ref, rm.created_at, count(r.case_run_id)"
+    "SELECT rm.release_id, rm.manifest_ref, rm.created_at, count(r.case_run_id), count(x.case_run_id)"
     " FROM release_manifest rm LEFT JOIN case_run r ON r.release_manifest_ref = rm.manifest_ref"
+    " LEFT JOIN case_run_retired x ON x.case_run_id = r.case_run_id"
     " GROUP BY 1, 2, 3 ORDER BY rm.created_at DESC"
 )
+RETIRED_SQL = "SELECT retired_at, reason FROM case_run_retired WHERE case_run_id = %(run)s"
 
 
 @dataclass(frozen=True)
@@ -107,6 +112,7 @@ class CaseRow:
     admitted_at: datetime
     updated_at: datetime | None
     claims: int | None = None  # from the fact index, on the list only; None: no Pass 2 result indexed
+    retired: bool = False  # hidden unless the Retired filter asks (LDR-0045)
 
     @property
     def state_label(self) -> str:
@@ -177,6 +183,7 @@ class CaseRun:
     events: tuple[Event, ...]
     stages: tuple[StageResult, ...]
     job: WorkflowJob | None
+    retired: tuple[datetime, str | None] | None = None  # when and why, if retired (LDR-0045)
 
     @property
     def refs(self) -> set[str]:
@@ -252,6 +259,7 @@ ACCOUNTS = {
     "NONE": "No account named",
     "NOT_APPLICABLE": "Not about an account",
 }
+RETIRED = {"show": "Shown with the rest", "only": "Only retired runs"}  # unset: hidden (LDR-0045)
 ROUTING_OUTCOMES = ("UNMAPPED", "NO_ELIGIBLE_VERTICAL")
 MAX_CLAIMS = 99
 
@@ -303,9 +311,10 @@ class CaseFilters:
     vertical: tuple[str, ...] = ()  # a claim routed to any of these (a multi-select)
     grounding: str | None = None
     account: str | None = None
+    retired: str | None = None  # "show" or "only"; unset: retired runs are hidden
 
     RESULT_FIELDS = ("claims_min", "claims_max", "primary", "vertical", "grounding", "account")
-    MORE_FIELDS = ("admitted_from", "admitted_to", "transcript", "baseline", "failed_at", *RESULT_FIELDS)
+    MORE_FIELDS = ("admitted_from", "admitted_to", "transcript", "baseline", "failed_at", "retired", *RESULT_FIELDS)
 
     @classmethod
     def parse(cls, params: Mapping[str, Any]) -> CaseFilters:
@@ -330,6 +339,7 @@ class CaseFilters:
             vertical=verticals,
             grounding=_one_of(params.get("grounding"), GROUNDING),
             account=_one_of(params.get("account"), ACCOUNTS),
+            retired=_one_of(params.get("retired"), RETIRED),
         )
 
     @property
@@ -372,6 +382,8 @@ class CaseFilters:
                 found.append((labels[value], (name,)))
         if self.failed_at:
             found.append((f"Failed at {FAILED_AT[self.failed_at]}", ("failed_at",)))
+        if self.retired:
+            found.append(("Retired runs shown" if self.retired == "show" else "Only retired runs", ("retired",)))
         lo, hi = self.claims_min, self.claims_max
         if lo is not None or hi is not None:
             if lo == hi:
@@ -442,6 +454,7 @@ def list_cases(
         "transcript": filters.transcript,
         "baseline": filters.baseline,
         "failed_at": filters.failed_at,
+        "retired": filters.retired or "hide",
         "limit": None if on_results else PAGE_ROWS + 1,  # one more: is there a next page
         "offset": 0 if on_results else offset,
     }
@@ -459,7 +472,7 @@ def list_cases(
         if on_results and not filters.matches(by_task):
             continue
         claims = by_task.get("c02.pass2", {}).get("claims")
-        rows.append(CaseRow(*r[:8], claims=claims))
+        rows.append(CaseRow(*r[:8], claims=claims, retired=bool(r[11]) if len(r) > 11 else False))
     if on_results:
         page = rows[offset : offset + PAGE_ROWS + 1]
         return CasePage(page[:PAGE_ROWS], len(page) > PAGE_ROWS, unindexed)
@@ -486,6 +499,7 @@ def matching_runs(db, *, release: str | None, filters: CaseFilters, facts=None) 
         "transcript": filters.transcript,
         "baseline": filters.baseline,
         "failed_at": filters.failed_at,
+        "retired": filters.retired or "hide",
         "limit": None,
         "offset": 0,
     }
@@ -526,11 +540,12 @@ def read_case(db, case_run_id: str) -> CaseRun | None:
             for task, version, status, error, refs, at in tx.all(TASKS_SQL, {"run": case_run_id})
         )
         job = tx.one(JOB_SQL, {"run": case_run_id})
+        retired = tx.one(RETIRED_SQL, {"run": case_run_id})
     workflow = None
     if job is not None:
         status, attempts, max_attempts, last_error, owner, context, updated = job
         workflow = WorkflowJob(status, attempts, max_attempts, last_error, owner, trace_id(context), updated)
-    return CaseRun(_row(found), events, stages, workflow)
+    return CaseRun(_row(found), events, stages, workflow, (retired[0], retired[1]) if retired else None)
 
 
 @dataclass(frozen=True)
@@ -674,6 +689,7 @@ class Pinned:
     manifest_ref: str
     pinned_at: datetime
     runs: int
+    retired: int = 0  # of its runs (LDR-0045)
 
 
 @dataclass
@@ -730,8 +746,9 @@ def read_releases(registry: Path, db_rows: Callable[[], list[tuple]] | None) -> 
     error = None
     if db_rows is not None:
         try:
-            for release_id, ref, at, runs in db_rows():
-                found.setdefault(release_id, Release(release_id)).pinned.append(Pinned(ref, at, int(runs)))
+            for release_id, ref, at, runs, *retired in db_rows():
+                pinned = Pinned(ref, at, int(runs), int(retired[0]) if retired else 0)
+                found.setdefault(release_id, Release(release_id)).pinned.append(pinned)
         except Exception as exc:  # noqa: BLE001 - the page shows the type; the message can name hosts
             error = type(exc).__name__
     return sorted(found.values(), key=lambda r: r.release_id, reverse=True), error

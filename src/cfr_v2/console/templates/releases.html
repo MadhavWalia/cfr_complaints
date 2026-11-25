@@ -67,7 +67,7 @@
     <tr>
       <td data-label="Ref"><span class="mono ref">{{ p.manifest_ref }}</span>{% if p.manifest_ref == r.current_ref %} <span class="muted">the file as it is now</span>{% elif r.manifest %} <span class="muted">an earlier version of the file</span>{% endif %}</td>
       <td data-label="Pinned"><span>{{ p.pinned_at.isoformat() | stamp }}</span></td>
-      <td data-label="Case runs" class="num"><span>{% if p.runs %}<a href="/cases?release={{ r.release_id }}">{{ "{:,}".format(p.runs) }}</a>{% else %}0{% endif %}</span></td>
+      <td data-label="Case runs" class="num"><span>{% if p.runs %}<a href="/cases?release={{ r.release_id }}">{{ "{:,}".format(p.runs) }}</a>{% else %}0{% endif %}{% if p.retired %} <span class="muted">({{ "{:,}".format(p.retired) }} retired)</span>{% endif %}</span></td>
     </tr>
     {% endfor %}
     </tbody>

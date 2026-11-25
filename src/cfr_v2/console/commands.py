@@ -433,7 +433,12 @@ RERUN_STAGES = (  # the stages a run can be re-run from, in order (LDR-0045): in
     ("c04.routing", "Routing"),
     ("c05.planning", "Planning"),
 )
-RUNS_FILE = "runs.txt"  # the selected runs' ids, in a re-run job's inputs/
+RUNS_FILE = "runs.txt"  # the selected runs' ids, in a Cases action job's inputs/
+CASE_ACTIONS = (  # what the Cases page's selection bar offers, in order: (command, its button)
+    ("cases.rerun", "Re-run from…"),
+    ("cases.retire", "Retire…"),
+    ("cases.restore", "Restore…"),
+)
 
 
 STORE_JOBS = (
@@ -1449,6 +1454,47 @@ CATALOGUE: tuple[Command, ...] = (
         ),
         tags=("writes the database",),
         posts_to="/cases/rerun",
+    ),
+    Command(
+        id="cases.retire",
+        area="cases",
+        title="Retire",
+        effect="Hides the selected runs from this list (unless Retired runs asks for them), the evaluation "
+        "exports, the pipeline counts and re-runs. Nothing is deleted: Restore brings them back. Runs queued or "
+        "running are skipped: cancel them first.",
+        module="cfr_v2.runtime.retire",
+        fields=(
+            Field(
+                "reason",
+                "Reason",
+                help="A few words for the record, such as “phase-d runs”. At most 200 characters; never case details.",
+            ),
+        ),
+        args=lambda v, folder: [
+            "retire",
+            "--runs-file",
+            str(folder / "inputs" / RUNS_FILE),
+            *_opt("--reason", v["reason"]),
+        ],
+        job_title=lambda v: f"Retire · {v.get('runs', 0):,} runs",
+        summarize=_printed(r"^([\d,]+ runs retired)$"),
+        action="Retire",
+        tags=("writes the database",),
+        posts_to="/cases/retire",
+    ),
+    Command(
+        id="cases.restore",
+        area="cases",
+        title="Restore",
+        effect="Brings the selected retired runs back into the list, the exports, the counts and re-runs. "
+        "Runs that aren't retired are skipped.",
+        module="cfr_v2.runtime.retire",
+        args=lambda v, folder: ["restore", "--runs-file", str(folder / "inputs" / RUNS_FILE)],
+        job_title=lambda v: f"Restore · {v.get('runs', 0):,} runs",
+        summarize=_printed(r"^([\d,]+ runs restored)$"),
+        action="Restore",
+        tags=("writes the database",),
+        posts_to="/cases/restore",
     ),
     # --- System ---------------------------------------------------------------------------------
     Command(

@@ -10,6 +10,7 @@
     <li><a href="#run-cases">Run a few cases through the pipeline</a></li>
     <li><a href="#review">Review a stage and get its metrics</a></li>
     <li><a href="#rerun">Re-run cases from a stage</a></li>
+    <li><a href="#retire">Retire old runs</a></li>
     <li><a href="#fresh">Start over on new cases, leaving earlier runs behind</a></li>
     <li><a href="#failed">Find out why something failed</a></li>
     <li><a href="#stages">The stages</a> · <a href="#words">Words</a></li>
@@ -70,6 +71,16 @@
     <li>From the preview's job page, <strong>Re-run them</strong>: the same runs, queued. Then <a href="/system#system.worker">start a worker</a>.</li>
   </ol>
   <p class="muted">Each run gets a new run under the current release that reuses the stages before the one chosen. The runs it started from stay as they are, so both can be exported and compared on Evaluation.</p>
+</section>
+
+<section class="section howto" id="retire" aria-labelledby="retire-h">
+  <h2 id="retire-h">Retire old runs</h2>
+  <ol>
+    <li>On <a href="/cases">Cases</a>, filter to the runs you're done with, an early release's say, and select them (rows, the page, or all matching).</li>
+    <li>Choose <strong>Retire…</strong>, give a few words of reason for the record, and start it. Runs queued or running are skipped: cancel them first.</li>
+    <li>Retired runs leave the list, the evaluation exports, the pipeline counts and re-runs. Nothing is deleted.</li>
+    <li>To bring runs back, set <em>Retired runs</em> (under more filters) to show them, select them, and choose <strong>Restore…</strong>; or use Restore on a retired run's own page.</li>
+  </ol>
 </section>
 
 <section class="section howto" id="fresh" aria-labelledby="fresh-h">

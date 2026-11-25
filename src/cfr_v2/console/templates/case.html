@@ -42,6 +42,21 @@
   </div>
   {% endif %}
 </div>
+{% set admitted = run.events | selectattr("state", "equalto", "ADMITTED") | first %}
+{% if admitted and admitted.detail.rerun_of %}
+<p class="notice slim" role="note">A re-run of <a class="mono" href="/cases/{{ admitted.detail.rerun_of }}">{{ admitted.detail.rerun_of[:8] }}…</a> from <span class="mono">{{ admitted.detail["from"] }}</span>: the stages before it are that run's results.</p>
+{% endif %}
+{% if run.retired %}
+<div class="notice caution" role="status">
+  <strong>Retired {{ run.retired[0].isoformat() | stamp }}{% if run.retired[1] %}: {{ run.retired[1] }}{% endif %}</strong>
+  <p>It's hidden from Cases, the exports, the counts and re-runs. Restoring brings it back.</p>
+  <form method="post" action="/cases/restore" class="actions">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="run" value="{{ run.row.case_run_id }}">
+    <button class="btn secondary sm" type="submit">Restore</button>
+  </form>
+</div>
+{% endif %}
 
 <section class="panel" aria-label="Case run">
   <div class="job-facts">
