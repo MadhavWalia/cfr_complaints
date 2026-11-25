@@ -36,7 +36,9 @@ MUTABLE = {"workflow_job", "schema_migration"}  # scheduling and bookkeeping onl
 
 def test_all_migrations_applied(db):
     assert (
-        applied_versions(db) == [m.version for m in available_migrations()] == ["0001", "0002", "0003", "0004", "0005"]
+        applied_versions(db)
+        == [m.version for m in available_migrations()]
+        == ["0001", "0002", "0003", "0004", "0005", "0006"]
     )
 
 

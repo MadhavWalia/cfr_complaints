@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from cfr_v2.contracts import (
     AdmissionKey,
@@ -112,7 +114,8 @@ class CaseStateRepository:
         created = self.tx.scalar(
             "INSERT INTO case_run (case_run_id, case_id, ingestion_revision, release_manifest_ref, lane, request_ref)"
             " VALUES (%(run)s, %(case)s, %(rev)s, %(manifest)s, %(lane)s, %(request)s)"
-            " ON CONFLICT (case_id, ingestion_revision) DO NOTHING RETURNING case_run_id",
+            # the admitted-run index: re-runs (LDR-0045) share the key, and aren't duplicates
+            " ON CONFLICT (case_id, ingestion_revision) WHERE rerun_of IS NULL DO NOTHING RETURNING case_run_id",
             {
                 "run": run_id,
                 "case": case_id,
@@ -202,11 +205,37 @@ class CaseStateRepository:
 
     def case_run(self, case_run_id: str) -> dict | None:
         rows = self.tx.rows(
-            "SELECT case_run_id, case_id, ingestion_revision, release_manifest_ref, lane, request_ref"
-            " FROM case_run WHERE case_run_id = %(run)s",
+            "SELECT case_run_id, case_id, ingestion_revision, release_manifest_ref, lane, request_ref,"
+            " rerun_of, rerun_from FROM case_run WHERE case_run_id = %(run)s",
             {"run": case_run_id},
         )
         return rows[0] if rows else None
+
+    def create_rerun(
+        self, source: Mapping[str, Any], *, case_run_id: str, release_manifest_ref: str, rerun_from: str
+    ) -> bool:
+        """A re-run of ``source`` (a ``case_run`` row) under ``release_manifest_ref`` (LDR-0045): the
+        same case, request and lane. False when it already exists."""
+        return (
+            self.tx.scalar(
+                "INSERT INTO case_run (case_run_id, case_id, ingestion_revision, release_manifest_ref, lane,"
+                " request_ref, rerun_of, rerun_from)"
+                " VALUES (%(run)s, %(case)s, %(rev)s, %(manifest)s, %(lane)s, %(request)s, %(source)s, %(stage)s)"
+                " ON CONFLICT (rerun_of, release_manifest_ref, rerun_from) WHERE rerun_of IS NOT NULL DO NOTHING"
+                " RETURNING case_run_id",
+                {
+                    "run": case_run_id,
+                    "case": source["case_id"],
+                    "rev": source["ingestion_revision"],
+                    "manifest": release_manifest_ref,
+                    "lane": source["lane"],
+                    "request": source["request_ref"],
+                    "source": source["case_run_id"],
+                    "stage": rerun_from,
+                },
+            )
+            is not None
+        )
 
     # -- case run state (HD-04) ------------------------------------------------------
 
