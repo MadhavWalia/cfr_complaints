@@ -393,7 +393,7 @@ def run_search(args: argparse.Namespace) -> int:
 
     async def search():
         llm = GatewayLlm(_chat_client())
-        async with open_rag(workdir, _embedder(), llm) as rag:
+        async with open_rag(workdir, _embedder(), llm, query_only=True) as rag:
             return await LightRagProcedureSearch(rag, args.procedures, passages, llm).search(request)
 
     print_hits(model_loop().run(search()), show_text=args.text)

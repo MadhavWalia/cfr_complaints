@@ -232,7 +232,7 @@ def lightrag_opener(store: ArtifactStore, workdir: Path | None, embedder: Any, c
             raise RoutingSetupError(f"{exc}{hint}") from exc
         passages = corpus_passages(store, procedures_ref)
         llm = GatewayLlm(client)
-        rag = await stack.enter_async_context(open_rag(folder, embedder, llm))
+        rag = await stack.enter_async_context(open_rag(folder, embedder, llm, query_only=True))
         return LightRagProcedureSearch(rag, procedures_ref, passages, llm)
 
     return open_search

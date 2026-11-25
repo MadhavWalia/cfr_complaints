@@ -707,3 +707,63 @@ def test_saving_after_each_passage_leaves_lightrag_alone():
     assert not saves.batched and not saves.holding and rag._insert_done is insert_done
     asyncio.run(rag._insert_done())
     assert len(log) == 5
+
+
+def test_a_block_marks_only_its_own_search_among_searches_at_once(tmp_path):
+    pytest.importorskip("lightrag")
+    from cfr_v2.procedures.lightrag_engine import LightRagProcedureSearch, build_lightrag, open_rag
+
+    passages, embedder = _passages(), FakeEmbeddingClient()
+    blocked_query = "the card was declined at the till although the account was open"
+
+    def blocks_one_claims_keywords(request):
+        prompt = request.instructions + request.messages[-1].content
+        if "high_level_keywords" in prompt and blocked_query in prompt:
+            raise ModelBlockedError("blocked")
+        return _extraction(request)
+
+    async def run():
+        client = FakeModelClient(responder=blocks_one_claims_keywords)
+        await build_lightrag(tmp_path, passages, embedder, client, concurrency=2)
+        llm = GatewayLlm(client)
+        async with open_rag(tmp_path, embedder, llm, query_only=True) as rag:
+            search = LightRagProcedureSearch(rag, REF, passages, llm)
+            queries = [
+                "late fees were charged after the customer had already agreed a plan",
+                blocked_query,
+                "a hardship payment plan was refused without a reason being given",
+            ]
+            return await asyncio.gather(
+                *(search.search(ProcedureSearchRequest(query=q, redacted=True)) for q in queries)
+            ), llm.blocked
+
+    found, blocked_calls = asyncio.run(run())
+    assert [f.blocked for f in found] == [False, True, False]
+    assert blocked_calls == 1  # the process's count still sees it
+
+
+@pytest.mark.parametrize("query_only", [True, False])
+def test_searching_leaves_the_llm_cache_file_alone_only_when_opened_for_queries(tmp_path, query_only):
+    pytest.importorskip("lightrag")
+    from cfr_v2.procedures.lightrag_engine import LightRagProcedureSearch, build_lightrag, open_rag
+
+    passages, embedder = _passages(), FakeEmbeddingClient()
+    client = FakeModelClient(responder=_extraction)
+    cache = tmp_path / "kv_store_llm_response_cache.json"
+
+    async def build():
+        await build_lightrag(tmp_path, passages, embedder, client, concurrency=2)
+
+    async def search():
+        llm = GatewayLlm(client)
+        async with open_rag(tmp_path, embedder, llm, query_only=query_only) as rag:
+            search = LightRagProcedureSearch(rag, REF, passages, llm)
+            for query in ("late fees waived after a plan was agreed", "why was the card declined at the till"):
+                await search.search(ProcedureSearchRequest(query=query, redacted=True))
+            return llm.calls
+
+    asyncio.run(build())
+    before = cache.read_bytes()
+    calls = asyncio.run(search())
+    assert calls == 2  # a keyword call per search either way: nothing is read from the cache
+    assert (cache.read_bytes() == before) is query_only  # opened for queries: never rewritten

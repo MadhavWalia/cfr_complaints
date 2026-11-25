@@ -296,7 +296,8 @@ def run(args: argparse.Namespace) -> int:
     router = Router(catalog)
 
     async def go() -> list[Routed]:
-        async with open_rag(args.workdir or store_dir(args.procedures), GatewayEmbeddingClient(), llm) as rag:
+        workdir = args.workdir or store_dir(args.procedures)
+        async with open_rag(workdir, GatewayEmbeddingClient(), llm, query_only=True) as rag:
             search = LightRagProcedureSearch(rag, args.procedures, passages, llm)
             return await route_all(cases, search, router, lm, args.concurrency)
 

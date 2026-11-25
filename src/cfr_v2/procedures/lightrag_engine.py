@@ -18,6 +18,7 @@ import time
 from collections import Counter
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -159,6 +160,17 @@ def passage_id(passage: Passage) -> str:
     return f"p-{passage.document.source_sha256[:16]}-{passage.section.index:04d}"
 
 
+# One search's own count of gateway blocks (a one-item list, so the calls LightRAG runs in copies of
+# the search's context add to it). The counters on ``GatewayLlm`` are the whole process's: searches
+# run at once, so a change in them can't say whose call was blocked.
+_SEARCH_BLOCKS: ContextVar[list[int] | None] = ContextVar("lightrag_search_blocks", default=None)
+
+
+def _count_search_block() -> None:
+    if (blocks := _SEARCH_BLOCKS.get()) is not None:
+        blocks[0] += 1
+
+
 class GatewayLlm:
     """LightRAG's model function over our client. A blocked call gives an empty answer, so one
     firewall block costs that chunk's graph entries, not the build."""
@@ -200,6 +212,7 @@ class GatewayLlm:
         except ModelBlockedError:
             outcome = "blocked"
             self.blocked += 1
+            _count_search_block()
             logger.warning(
                 "lightrag: the gateway blocked a model call (%d so far); it gives an empty answer", self.blocked
             )
@@ -430,8 +443,12 @@ def _import_lightrag() -> Any:
 
 @asynccontextmanager
 async def open_rag(
-    workdir: Path, embedder: EmbeddingClient, llm: GatewayLlm, *, concurrency: int = 16
+    workdir: Path, embedder: EmbeddingClient, llm: GatewayLlm, *, concurrency: int = 16, query_only: bool = False
 ) -> AsyncIterator[Any]:
+    """``query_only``: for searching. LightRAG's query cache is then off: it would cache each query's
+    keywords and, after every query, save the whole LLM cache file, which holds every extraction
+    answer of the build, for queries that almost never repeat. The extraction cache, which builds,
+    appends and deletes use, has its own switch and stays on."""
     LightRAG = _import_lightrag()
 
     # A plain function on purpose: LightRAG deep-copies its configuration on every extraction, which
@@ -451,6 +468,7 @@ async def open_rag(
         max_parallel_insert=concurrency,  # a passage is one chunk, so this is what limits extraction
         default_llm_timeout=LLM_TIMEOUT_SEC,
         default_embedding_timeout=EMBEDDING_TIMEOUT_SEC,
+        enable_llm_cache=not query_only,
     )
     for name in ("lightrag", "nano-vectordb"):  # at INFO they print entity names and queries
         logging.getLogger(name).setLevel(logging.ERROR)
@@ -809,12 +827,15 @@ class LightRagProcedureSearch:
         if not request.redacted:
             raise UnredactedPayloadError(f"{PROGRAM_ID}: payload not marked redacted")
         param = QueryParam(mode="mix", chunk_top_k=CHUNKS, enable_rerank=False)
-        blocked = self.llm.blocked
+        blocks = [0]  # this search's own: others run at the same time on the same GatewayLlm
+        token = _SEARCH_BLOCKS.set(blocks)
         try:
             data = (await self.rag.aquery_data(request.query, param)).get("data") or {}
         except ModelBlockedError:  # one blocked claim isn't a failed run; anything else is raised
             logger.warning("lightrag: the gateway blocked a search, so it found nothing")
             return ProcedureSearchResult(procedures_ref=self.procedures_ref, blocked=True, hits=())
+        finally:
+            _SEARCH_BLOCKS.reset(token)
         seen: set[str] = set()
         per_document: Counter[str] = Counter()
         hits: list[ProcedureHit] = []
@@ -849,6 +870,6 @@ class LightRagProcedureSearch:
         return ProcedureSearchResult(
             # A blocked keyword call raises nothing: LightRAG just finds less, or nothing
             procedures_ref=self.procedures_ref,
-            blocked=self.llm.blocked != blocked,
+            blocked=blocks[0] > 0,
             hits=tuple(hits),
         )
