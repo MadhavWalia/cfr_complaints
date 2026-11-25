@@ -52,3 +52,36 @@ def test_the_cli_refuses_before_touching_anything(tmp_path, capsys, extra, messa
     with pytest.raises(SystemExit):
         retire.main(["retire", "--runs-file", str(runs)])
     assert "no case run ids" in capsys.readouterr().err
+
+
+def test_purge_takes_only_retired_runs_not_queued_with_no_re_runs_left_behind():
+    found = [
+        Found("done", "SUCCEEDED", True),
+        Found("live", "SUCCEEDED", False),
+        Found("busy", "RUNNING", True),
+        Found("source", "SUCCEEDED", True, has_reruns=True),
+    ]
+    decided = decide("purge", ["done", "live", "busy", "source"], found)
+    assert decided["changed"] == ["done"]
+    assert decided["not retired: retire it first"] == ["live"] and decided["queued or running"] == ["busy"]
+    assert decided["has re-runs that aren't selected: purge them together"] == ["source"]
+    assert summary("purge", decided)[-1] == "1 runs purged"
+
+
+def test_purging_needs_the_number_of_runs_confirmed(tmp_path, capsys):
+    runs = tmp_path / "runs.txt"
+    runs.write_text("a\nb\nc\n")
+    for confirm in ([], ["--confirm", "2"]):
+        with pytest.raises(SystemExit) as exit_:
+            retire.main(["purge", "--runs-file", str(runs), *confirm])
+        assert exit_.value.code == 2 and "give --confirm 3" in capsys.readouterr().err
+
+
+def test_the_purge_function_is_the_only_delete_and_its_migration_says_so():
+    from cfr_v2.state.migrate import available_migrations
+
+    sql = {m.version: m.sql for m in available_migrations()}["0008"]
+    assert "current_setting('cfr.purging', true) = 'on'" in sql and "TG_OP = 'DELETE'" in sql
+    assert sql.count("set_config('cfr.purging', 'on', true)") == 1  # set in one place, the purge function
+    assert "only retired runs can be purged" in sql and "re-runs not purged with them" in sql
+    assert retire.PURGE_SQL == "SELECT cfr_purge_case_runs(%(runs)s::text[], %(reason)s)"

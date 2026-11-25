@@ -899,7 +899,8 @@ th[aria-sort="ascending"] button[data-sort] .icon { rotate: 180deg; }
 .action-panel .effect { margin: 0; max-width: var(--measure); }
 .runs-form:has(input[name="case_action"][value="cases.rerun"]:checked) .action-panel[data-for="cases.rerun"],
 .runs-form:has(input[name="case_action"][value="cases.retire"]:checked) .action-panel[data-for="cases.retire"],
-.runs-form:has(input[name="case_action"][value="cases.restore"]:checked) .action-panel[data-for="cases.restore"] { display: grid; }
+.runs-form:has(input[name="case_action"][value="cases.restore"]:checked) .action-panel[data-for="cases.restore"],
+.runs-form:has(input[name="case_action"][value="cases.purge"]:checked) .action-panel[data-for="cases.purge"] { display: grid; }
 th.pick, td.pick { width: 2.75rem; }
 th.pick input, td.pick input { width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--primary-bg); vertical-align: middle; }
 .selection-bar:has(input[name="case_action"]:checked) { position: static; }  /* a form open: it stays in place */

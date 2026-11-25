@@ -150,14 +150,7 @@ def test_routing_commands(ctx, tmp_path):
     assert _args("routing.publish", {}, ctx, tmp_path) == [
         "publish-verticals", str(tmp_path / commands.VERTICALS_DOCUMENT),
     ]  # fmt: skip
-    (tmp_path / "outputs").mkdir()
-    backfill = _args("routing.backfill", {"from_release": "cfr-v2-phase-d", "count_only": "on"}, ctx, tmp_path)
-    assert backfill == [
-        "backfill", "--from-release", "cfr-v2-phase-d",
-        "--concurrency", "4", "--count-only", "--out", str(tmp_path / "outputs" / "backfill.jsonl"),
-    ]  # fmt: skip
-    with pytest.raises(FormError, match="Failed under: choose one of the options"):
-        BY_ID["routing.backfill"].parse({"from_release": "cfr-v2-phase-z"}, ctx)
+    assert "routing.backfill" not in BY_ID  # retired: re-run from Routing on Cases instead (LDR-0045)
 
 
 def test_evaluation_review_and_system_commands(ctx, tmp_path):
@@ -320,11 +313,11 @@ def test_a_finished_job_links_to_what_usually_follows(ctx):
     links = dict(BY_ID["procedures.build"].next_links(build))
     assert links["Make a release with this snapshot"] == f"/releases?snapshot=sha256%3A{'b' * 64}#new-release"
     assert BY_ID["procedures.build"].next_links(replace(build, status=JobStatus.FAILED)) == []  # only when done
-    count = Job("20261112-140000-cccc", "routing.backfill", "Backfill · count", ("--count-only",), JobStatus.DONE,
-                "2026-11-12T14:00:00+00:00", form={"from_release": "cfr-v2-phase-d", "count_only": "on"})  # fmt: skip
-    [(label, href)] = BY_ID["routing.backfill"].next_links(count)
-    assert label == "Route them" and "from_release=cfr-v2-phase-d" in href and "count_only=#" in href  # unticked
-    assert BY_ID["routing.backfill"].next_links(replace(count, argv=("backfill",))) == []  # a real run: done
+    preview = Job("20261112-140000-cccc", "cases.rerun", "Re-run · preview", ("--count-only",), JobStatus.DONE,
+                  "2026-11-12T14:00:00+00:00", form={"stage": "c04.routing", "count_only": "on"})  # fmt: skip
+    [(label, href)] = BY_ID["cases.rerun"].next_links(preview)
+    assert label == "Re-run them" and href.startswith("/cases?fill=cases.rerun") and "count_only=#" in href
+    assert [l for l, _ in BY_ID["cases.rerun"].next_links(replace(preview, argv=("--stage",)))] == ["Start a worker"]
 
 
 def test_every_command_says_what_it_does_and_counts_calls_where_it_can(ctx, tmp_path):
@@ -339,7 +332,6 @@ def test_every_command_says_what_it_does_and_counts_calls_where_it_can(ctx, tmp_
     log.write_text("35 distinct files\ncurrent: 2,016 pages; 1,844 sections; 3,508,141 characters\n")
     build = BY_ID["procedures.build"].estimate(ctx)
     assert build.calls == 5532 and build.render().startswith("About 5,532 gpt-5 calls for the newest snapshot: 1,844")
-    assert BY_ID["routing.backfill"].estimate(ctx) is None  # no count yet
 
 
 def test_number_fields_are_steppers_and_uploads_are_split_buttons(console):

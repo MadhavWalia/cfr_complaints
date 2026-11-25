@@ -116,6 +116,7 @@
     </div>
     {% for a in actions %}
     <div class="form action-panel" id="{{ a.command.id }}" data-for="{{ a.command.id }}">
+      {% if a.command.warning %}<div class="notice {{ a.command.warning[0] }}" role="note"><strong>{{ a.command.warning[1] }}</strong><p>{{ a.command.warning[2] }}</p></div>{% endif %}
       <p class="effect muted">{{ a.command.effect }}{% if a.command.id == "cases.rerun" %} New runs go under <span class="mono">{{ current_release or "the current release" }}</span>, the current release.{% endif %}</p>
       {% for f in a.command.fields %}{{ fields.field(f, a["values"].get(f.name), ctx, a.command.id ~ "-" ~ f.name) }}{% endfor %}
       <button class="btn primary" type="submit" formaction="{{ a.command.posts_to }}">{{ a.command.action }}</button>

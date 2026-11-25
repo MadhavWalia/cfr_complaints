@@ -176,6 +176,7 @@ TAGS = {
     "long-running": "Runs for hours, or until stopped",
     "keep output local": "Its files hold case or procedure text: keep them on this machine",
     "deletes files": "Deletes files on this machine for good",
+    "deletes data": "Deletes rows from the state database for good",
 }
 
 
@@ -438,6 +439,7 @@ CASE_ACTIONS = (  # what the Cases page's selection bar offers, in order: (comma
     ("cases.rerun", "Re-run from…"),
     ("cases.retire", "Retire…"),
     ("cases.restore", "Restore…"),
+    ("cases.purge", "Purge…"),
 )
 
 
@@ -446,7 +448,6 @@ STORE_JOBS = (
     "procedures.append",
     "procedures.search",
     "procedures.remove_store",
-    "routing.backfill",
 )
 
 
@@ -558,19 +559,6 @@ def _build_estimate(ctx: Context) -> Estimate | None:
             sections = int(match.group(1).replace(",", ""))
             return Estimate(
                 "About {calls} gpt-5 calls for the newest snapshot: {n} sections, about 3 each.", sections, 3
-            )
-    return None
-
-
-def _backfill_estimate(ctx: Context) -> Estimate | None:
-    """From the newest count: one search and one router call per claim."""
-    for job in ctx.done_jobs("routing.backfill"):
-        if job.summary and (match := re.match(r"([\d,]+) runs, ([\d,]+) claims", job.summary)):
-            claims = int(match.group(2).replace(",", ""))
-            return Estimate(
-                "About {calls} gpt-5 calls for the last count's {n} claims (a search and a router call each).",
-                claims,
-                2,
             )
     return None
 
@@ -736,13 +724,6 @@ def _releases(ctx: Context) -> list[tuple[str, str]]:
 
 def _opt(name: str, value: Any) -> list[str]:
     return [] if value in (None, "", ()) else [name, str(value)]
-
-
-def _resume_backfill(v: Values, folder: Path) -> list[str]:
-    out = folder / "outputs" / "backfill.jsonl"
-    if v["resume"] is not None and (v["resume"] / "backfill.jsonl").is_file():
-        shutil.copyfile(v["resume"] / "backfill.jsonl", out)  # runs already done there are skipped
-    return ["--out", str(out)]
 
 
 # --- evaluation by stage (LDR-0042) ----------------------------------------------------------------
@@ -1022,46 +1003,6 @@ CATALOGUE: tuple[Command, ...] = (
         summarize=_printed(r"stored as (\S+)"),
         action="Publish",
         tags=("writes the database",),
-    ),
-    Command(
-        id="routing.backfill",
-        area="routing",
-        title="Backfill",
-        effect="Routes the stored claim sets of runs that failed under an older release, with the routing pins "
-        "of the current one: one search and one router call per claim. Count first: it makes no model calls.",
-        module="cfr_v2.routing",
-        fields=(
-            Field("from_release", "Failed under", "choice", required=True, choices=_registry("releases")),
-            Field("count_only", "Count only", "check", default=True, help="Runs and claims; no model calls."),
-            Field("limit", "Runs", "int", minimum=1, help="Only the first N still to do; otherwise all."),
-            Field("concurrency", "Runs at once", "int", required=True, default=4, minimum=1, maximum=32),
-            _store_field("Empty: the store of the snapshot the current release pins, as the worker uses."),
-            Field("resume", "Continue from", "job", source="routing.backfill", help="Skips the runs it routed."),
-        ),
-        args=lambda v, folder: [
-            "backfill",
-            "--from-release",
-            v["from_release"],
-            *_store_args(v),
-            *_opt("--limit", v["limit"]),
-            "--concurrency",
-            str(v["concurrency"]),
-            *_flag(v["count_only"], "--count-only"),
-            *_resume_backfill(v, folder),
-        ],
-        job_title=lambda v: f"Backfill · {v['from_release']}" + (" · count" if v["count_only"] else ""),
-        summarize=_printed(r"^(\d+ runs, \d+ claims)"),
-        action="Start",
-        next=(
-            Next(
-                "Route them",
-                "routing.backfill",
-                lambda job: {**(job.form or {}), "count_only": ""},  # the same runs, routed this time
-                when=lambda job: job.status.value == "done" and "--count-only" in job.argv,
-            ),
-        ),
-        tags=("calls gpt-5", "writes the database"),
-        estimate=_backfill_estimate,
     ),
     # --- Procedures -----------------------------------------------------------------------------
     Command(
@@ -1495,6 +1436,41 @@ CATALOGUE: tuple[Command, ...] = (
         action="Restore",
         tags=("writes the database",),
         posts_to="/cases/restore",
+    ),
+    Command(
+        id="cases.purge",
+        area="cases",
+        title="Purge",
+        effect="Deletes the selected retired runs and every row of theirs: results, history, the job, the "
+        "admission. A log keeps what was purged and when. Stored artifacts stay. Runs not retired, and runs "
+        "whose re-runs aren't selected too, are skipped. Once a case's admitted run is purged, intake can admit "
+        "it again.",
+        module="cfr_v2.runtime.retire",
+        fields=(
+            Field("confirm", "Type the number of runs selected", required=True, help="As the bar above shows it."),
+            Field("reason", "Reason", help="A few words for the log. At most 200 characters; never case details."),
+        ),
+        args=lambda v, folder: [
+            "purge",
+            "--runs-file",
+            str(folder / "inputs" / RUNS_FILE),
+            "--confirm",
+            str(v["runs"]),
+            *_opt("--reason", v["reason"]),
+        ],
+        job_title=lambda v: f"Purge · {v.get('runs', 0):,} runs",
+        summarize=_printed(r"^([\d,]+ runs purged)$"),
+        action="Purge for good",
+        tags=("deletes data",),
+        warning=(
+            "critical",
+            "Purging can't be undone.",
+            (
+                "The runs and their results are deleted from the state database. Only the purge log says they "
+                "existed. Retiring hides runs and can be undone: purge only runs you're sure of."
+            ),
+        ),
+        posts_to="/cases/purge",
     ),
     # --- System ---------------------------------------------------------------------------------
     Command(

@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "workflow_job",
     "step_checkpoint",
     "case_run_retirement",
+    "case_run_purge",
     "schema_migration",
 }
 MUTABLE = {"workflow_job", "schema_migration"}  # scheduling and bookkeeping only (LDR-0011)
@@ -39,7 +40,7 @@ def test_all_migrations_applied(db):
     assert (
         applied_versions(db)
         == [m.version for m in available_migrations()]
-        == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+        == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
     )
 
 

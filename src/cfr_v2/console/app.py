@@ -11,6 +11,7 @@ import asyncio
 import codecs
 import hashlib
 import logging
+import re
 import secrets
 from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager
@@ -61,7 +62,7 @@ AREAS = (
 )
 LEDES = {  # one line under an area's title: what it's for
     "/intake": "Admit a date window, a spreadsheet of case numbers, or synthetic cases; show the query.",
-    "/routing": "Publish the vertical definitions, and backfill routing for runs that finished before it.",
+    "/routing": "Publish the vertical definitions. To route runs again, re-run them from Routing on Cases.",
     "/procedures": "Inspect, extract and snapshot procedure PDFs; add documents to a snapshot; build, append to, "
     "search and remove LightRAG stores; edit the evidence-source workbook.",
     "/evaluation": "Review each stage's results: export them to a workbook, review it, upload it, and get the "
@@ -456,10 +457,10 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         opened = failed or (source.command if source is not None else None)
         actions = []
         for command_id, label in commands.CASE_ACTIONS:
-            if (command_id == "cases.restore" and not filters.retired) or (
+            if (command_id in ("cases.restore", "cases.purge") and not filters.retired) or (
                 command_id == "cases.retire" and filters.retired == "only"
             ):
-                continue  # Restore with retired runs in view; Retire with others in view
+                continue  # Restore and Purge with retired runs in view; Retire with others in view
             command = commands.BY_ID[command_id]
             values = {f.name: v for f in command.fields if (v := f.initial(form_context)) is not None}
             if source is not None and source.command == command_id:  # its form as sent, then the next step's
@@ -554,6 +555,10 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             ids = [i for i in ids if i.replace("-", "").isalnum() and len(i) <= 64]
             if not ids:
                 raise commands.FormError("Select at least one case run, or choose Select all.")
+            if command.id == "cases.purge" and re.sub(r"[\s,]", "", values["confirm"] or "") != str(len(ids)):
+                raise commands.FormError(
+                    f"Purge: type {len(ids):,}, the number of runs selected, to confirm. Nothing was deleted."
+                )
         except commands.FormError as exc:
             return cases_page(request, form, error_text=str(exc), failed=command.id, status_code=422)
         values["runs"] = len(ids)

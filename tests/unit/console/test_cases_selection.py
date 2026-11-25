@@ -194,7 +194,7 @@ def test_restoring_from_the_case_page_starts_a_job_for_that_run(console, monkeyp
     sent = client.post("/cases/restore", data={"csrf": _csrf(app), "run": "run-9"}, follow_redirects=False)
     assert sent.status_code == 303 and started["argv"][-3:] == ["restore", "--runs-file", started["argv"][-1]]
     assert Path(started["argv"][-1]).read_text() == "run-9\n"
-    assert client.post("/cases/purge", data={"csrf": _csrf(app), "run": "run-9"}).status_code == 404  # not yet
+    assert client.post("/cases/nothing", data={"csrf": _csrf(app), "run": "run-9"}).status_code == 404
 
 
 def test_a_retired_row_has_a_badge_and_the_filter_reaches_the_query(console, monkeypatch):
@@ -233,3 +233,29 @@ def test_the_case_page_says_a_run_is_retired_or_a_re_run_and_offers_restore(cons
     assert 'A re-run of <a class="mono" href="/cases/run-0000-source">' in page and "c04.routing" in page
     assert "Retired <time" in page and ": phase-d runs</strong>" in page
     assert 'action="/cases/restore"' in page and 'name="run" value="run-5"' in page
+
+
+# --- purge (LDR-0045 step 4) ----------------------------------------------------------------------
+
+
+def test_purge_is_offered_only_with_retired_runs_in_view_and_warns_first(console):
+    _, client, _, _ = console
+    assert 'value="cases.purge"' not in client.get("/cases?release=").text
+    page = client.get("/cases?release=&retired=only").text
+    assert 'name="case_action" value="cases.purge"' in page and "Purge…" in page
+    assert '<div class="notice critical" role="note"><strong>Purging can&#39;t be undone.</strong>' in page
+    assert "Purge for good" in page and 'name="confirm"' in page
+
+
+def test_purging_needs_the_count_typed_and_then_starts_the_job(console, monkeypatch):
+    app, client, started, start = console
+    monkeypatch.setattr(app.state.runner, "start", start)
+    data = {"csrf": _csrf(app), "release": "", "retired": "only", "run": ["run-1", "run-2"], "reason": "phase-d"}
+    wrong = client.post("/cases/purge", data={**data, "confirm": "3"})
+    assert wrong.status_code == 422 and "Purge: type 2, the number of runs selected, to confirm." in wrong.text
+    assert "Nothing was deleted." in wrong.text and not started
+    sent = client.post("/cases/purge", data={**data, "confirm": " 2 "}, follow_redirects=False)
+    assert sent.status_code == 303 and started["command"] == "cases.purge"
+    argv = started["argv"]
+    assert argv[argv.index("-m") + 2] == "purge" and argv[argv.index("--confirm") + 1] == "2"
+    assert argv[argv.index("--reason") + 1] == "phase-d" and started["title"] == "Purge · 2 runs"

@@ -1,14 +1,23 @@
-"""Retire case runs, or restore them (LDR-0045).
+"""Retire case runs, restore them, or purge retired ones (LDR-0045).
 
     python -m cfr_v2.runtime.retire retire  --runs-file runs.txt [--reason "phase-d runs"]
     python -m cfr_v2.runtime.retire restore --runs-file runs.txt
+    python -m cfr_v2.runtime.retire purge   --runs-file runs.txt --confirm 412 [--reason "..."]
 
 A retired run is hidden: from the Cases list (unless asked for), the evaluation exports, the
 pipeline counts and re-run selection. Nothing is deleted. Retiring adds a row to
 ``case_run_retirement``, and restoring adds another, so both are on record with when and why.
 
-A run a worker holds or will take (queued or running) can't be retired: cancel it first. Output is
-counts and ids, never case text.
+A run a worker holds or will take (queued or running) can't be retired: cancel it first.
+
+**Purging deletes a retired run and every row of it, for good**, through the database's
+``cfr_purge_case_runs`` (migration 0008), and logs it in ``case_run_purge``. Only retired runs, never
+queued or running ones, and never a run whose re-runs stay behind (a re-run points at its source):
+those are skipped and named. ``--confirm`` must be the number of runs given, so the count shown
+before is the count meant. Stored artifacts stay. Once a case's admitted run is purged, intake can
+admit the case again.
+
+Output is counts and ids, never case text.
 """
 
 from __future__ import annotations
@@ -23,7 +32,8 @@ from typing import Any
 REASON_MAX = 200  # the table's own limit
 
 STATES_SQL = (
-    "SELECT r.case_run_id, j.status, x.case_run_id IS NOT NULL"
+    "SELECT r.case_run_id, j.status, x.case_run_id IS NOT NULL,"
+    " EXISTS (SELECT 1 FROM case_run k WHERE k.rerun_of = r.case_run_id AND NOT (k.case_run_id = ANY(%(runs)s)))"
     " FROM case_run r LEFT JOIN workflow_job j USING (case_run_id)"
     " LEFT JOIN case_run_retired x ON x.case_run_id = r.case_run_id"
     " WHERE r.case_run_id = ANY(%(runs)s)"
@@ -32,6 +42,7 @@ INSERT_SQL = (
     "INSERT INTO case_run_retirement (case_run_id, retired, reason)"
     " SELECT run, %(retired)s, %(reason)s FROM unnest(%(runs)s::text[]) AS run"
 )
+PURGE_SQL = "SELECT cfr_purge_case_runs(%(runs)s::text[], %(reason)s)"
 
 
 @dataclass(frozen=True)
@@ -39,6 +50,7 @@ class Found:
     case_run_id: str
     job_status: str | None
     retired: bool
+    has_reruns: bool = False  # re-runs of it that aren't among the runs given
 
 
 def decide(action: str, given: Sequence[str], found: Sequence[Found]) -> dict[str, list[str]]:
@@ -55,6 +67,12 @@ def decide(action: str, given: Sequence[str], found: Sequence[Found]) -> dict[st
             reason = "queued or running: cancel it first"
         elif action == "restore" and not f.retired:
             reason = "not retired"
+        elif action == "purge" and not f.retired:
+            reason = "not retired: retire it first"
+        elif action == "purge" and f.job_status in ("QUEUED", "RUNNING"):
+            reason = "queued or running"
+        elif action == "purge" and f.has_reruns:
+            reason = "has re-runs that aren't selected: purge them together"
         else:
             out["changed"].append(run)
             continue
@@ -66,8 +84,12 @@ def apply(tx: Any, action: str, runs: Sequence[str], reason: str | None, *, writ
     """Retire or restore ``runs`` in the caller's transaction, as ``decide`` decides. The runs are
     locked first, so two jobs on the same runs record each change once. ``write=False``: decide only."""
     rows = tx.all(STATES_SQL + (" FOR UPDATE OF r" if write else ""), {"runs": list(runs)})
-    decided = decide(action, runs, [Found(r[0], r[1], bool(r[2])) for r in rows])
-    if write and decided["changed"]:
+    decided = decide(action, runs, [Found(r[0], r[1], bool(r[2]), bool(r[3])) for r in rows])
+    if write and decided["changed"] and action == "purge":
+        purged = tx.scalar(PURGE_SQL, {"runs": decided["changed"], "reason": reason})
+        if purged != len(decided["changed"]):  # the function checks again under its own lock: it never should
+            raise RuntimeError(f"purged {purged} runs, expected {len(decided['changed'])}: rolled back")
+    elif write and decided["changed"]:
         tx.execute(
             INSERT_SQL,
             {
@@ -80,7 +102,7 @@ def apply(tx: Any, action: str, runs: Sequence[str], reason: str | None, *, writ
 
 
 def summary(action: str, decided: dict[str, list[str]]) -> list[str]:
-    done = "retired" if action == "retire" else "restored"
+    done = {"retire": "retired", "restore": "restored", "purge": "purged"}[action]
     lines = [f"{len(v):,} skipped: {k}" for k, v in decided.items() if k != "changed" and v]
     return [*lines, f"{len(decided['changed']):,} runs {done}"]
 
@@ -92,9 +114,10 @@ def _runs(path: Path) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m cfr_v2.runtime.retire", description=__doc__.splitlines()[0])
-    parser.add_argument("action", choices=("retire", "restore"))
+    parser.add_argument("action", choices=("retire", "restore", "purge"))
     parser.add_argument("--runs-file", type=Path, required=True, help="case run ids, one per line")
-    parser.add_argument("--reason", help=f"why (retire only): a few words, at most {REASON_MAX} characters")
+    parser.add_argument("--reason", help=f"why (retire, purge): a few words, at most {REASON_MAX} characters")
+    parser.add_argument("--confirm", type=int, help="purge: the number of runs given, to confirm")
     parser.add_argument("--count-only", action="store_true", help="say what would change; change nothing")
     args = parser.parse_args(argv)
     runs = _runs(args.runs_file)
@@ -102,7 +125,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.exit(2, f"error: no case run ids in {args.runs_file}\n")
     reason = " ".join((args.reason or "").split()) or None
     if reason and args.action == "restore":
-        parser.exit(2, "error: --reason goes with retire\n")
+        parser.exit(2, "error: --reason goes with retire or purge\n")
+    if args.action == "purge" and not args.count_only and args.confirm != len(runs):
+        parser.exit(2, f"error: purging deletes runs for good: give --confirm {len(runs)}, the number of runs given\n")
     if reason and len(reason) > REASON_MAX:
         parser.exit(2, f"error: --reason: at most {REASON_MAX} characters\n")
 
