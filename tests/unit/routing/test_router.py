@@ -173,7 +173,17 @@ class Search:
         return ProcedureSearchResult(procedures_ref=SNAPSHOT, hits=tuple(self.hits))
 
 
+def _keywords_reply(request):
+    """c04.keywords: for every claim id it was sent, the words the fake graph's entities hold (as
+    LightRAG's own keyword reply in these tests: ``tests.unit.procedures.test_lightrag._extraction``)."""
+    sent = "".join(t.content for t in request.messages)
+    ids = re.findall(r'"id": "([^"]+)"', sent)
+    return {"keywords": [{"claim_id": i, "low_level": ["late fees"], "high_level": ["fees"]} for i in ids]}
+
+
 def _router_reply(request):
+    if request.program_id == "c04.keywords":
+        return _keywords_reply(request)
     return {
         "routing": {
             "outcome": "ROUTED",

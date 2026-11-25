@@ -123,12 +123,26 @@ def test_phase_d_release_adds_the_c03_selector():
 
 
 def test_phase_e_release_routes_with_a_pinned_document_and_snapshot():
+    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-e")
+    versions = {p.program_id: p.version for p in manifest.programs}
+    assert versions["c04.routing"] == "route-1"
+    assert manifest.routing_verticals and manifest.procedure_snapshot
+
+
+def test_phase_f_release_differs_from_phase_e_only_in_the_routing_version():
     from cfr_v2.intake.settings import IntakeSettings
     from cfr_v2.runtime.stages import STAGES
 
-    manifest = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR).load("cfr-v2-phase-e")
-    versions = {p.program_id: p.version for p in manifest.programs}
+    registry = ReleaseRegistry(REPO_ROOT / DEFAULT_REGISTRY_DIR)
+    e, f = registry.load("cfr-v2-phase-e"), registry.load("cfr-v2-phase-f")
     routing = next(s for s in STAGES if s.logical_task_id == "c04.routing")
-    assert versions["c04.routing"] == routing.program_version == "route-1"
-    assert manifest.routing_verticals and manifest.procedure_snapshot
-    assert IntakeSettings().release_id == "cfr-v2-phase-e"
+    assert {p.program_id: p.version for p in f.programs}["c04.routing"] == routing.program_version == "route-2"
+    before, after = ({p.program_id: p for p in m.programs} for m in (e, f))
+    assert before.keys() == after.keys()
+    assert {k for k in after if after[k] != before[k]} == {"c04.routing"}
+    assert (f.routing_verticals, f.procedure_snapshot, f.evidence_sources) == (
+        e.routing_verticals,
+        e.procedure_snapshot,
+        e.evidence_sources,
+    )
+    assert IntakeSettings().release_id == "cfr-v2-phase-f"

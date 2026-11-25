@@ -48,7 +48,7 @@ class FakeDb:
 
 
 def _run(*refs: str, traceparent: str | None = None) -> cases.CaseRun:
-    row = cases.CaseRow("run-1", "SYN11", "cfr-v2-phase-e", "cfr-v2-phase-e@abc", "batch", "PLAN_READY", AT, AT)
+    row = cases.CaseRow("run-1", "SYN11", "cfr-v2-phase-f", "cfr-v2-phase-f@abc", "batch", "PLAN_READY", AT, AT)
     stage = cases.StageResult("c02.pass2", "pass2-1", "SUCCEEDED", None, refs, AT)
     job = cases.WorkflowJob("SUCCEEDED", 1, 3, None, None, cases.trace_id(traceparent), AT)
     return cases.CaseRun(row, (cases.Event("ADMITTED", AT, {}),), (stage,), job)
@@ -92,7 +92,7 @@ def test_grafana_links_open_the_runs_trace_and_logs():
 def test_releases_come_from_the_registry_and_the_database(tmp_path):
     releases, error = cases.read_releases(REPO / "registry", None)
     assert error is None
-    phase_e = next(r for r in releases if r.release_id == "cfr-v2-phase-e")
+    phase_e = next(r for r in releases if r.release_id == "cfr-v2-phase-f")
     assert phase_e.manifest is not None and phase_e.mismatches == []  # it matches this code
     phase_b = next(r for r in releases if r.release_id == "cfr-v2-phase-b")
     assert phase_b.mismatches  # older stage versions
@@ -115,7 +115,7 @@ def test_releases_come_from_the_registry_and_the_database(tmp_path):
 @pytest.fixture
 def client(tmp_path):
     env = dict(os.environ) | {
-        "CFR_RELEASE_ID": "cfr-v2-phase-e",
+        "CFR_RELEASE_ID": "cfr-v2-phase-f",
         "CFR_STATE_DATABASE_URL": "postgresql://x@127.0.0.1:1/x",
     }
     app = create_app(ConsoleSettings(repo_root=REPO, workspace=tmp_path, env=env))
@@ -128,7 +128,7 @@ def test_the_pages_say_when_the_database_is_down(client):
     assert 'value="SYN"' in page.text and 'name="state" value="ROUTING" checked' in page.text
     releases = client.get("/releases")
     assert releases.status_code == 200 and "Can't read the state database" in releases.text
-    assert 'id="cfr-v2-phase-e"' in releases.text and "New cases use it" in releases.text
+    assert 'id="cfr-v2-phase-f"' in releases.text and "New cases use it" in releases.text
     assert "Matches this code" in releases.text and "this code runs pass1-2" in releases.text  # an older release
     assert client.get("/cases/run-1").status_code == 503
 
@@ -197,7 +197,7 @@ RESULTS = {
 
 
 def fake_case(traceparent: str | None = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01") -> cases.CaseRun:
-    row = cases.CaseRow("run-1", "SYN11", "cfr-v2-phase-e", "cfr-v2-phase-e@abc", "batch", "PLAN_READY", AT, AT)
+    row = cases.CaseRow("run-1", "SYN11", "cfr-v2-phase-f", "cfr-v2-phase-f@abc", "batch", "PLAN_READY", AT, AT)
     stages = tuple(
         cases.StageResult(task, "v1", "SUCCEEDED", None, (f"sha256:{n:064x}",), AT) for n, task in enumerate(RESULTS)
     )
@@ -302,11 +302,11 @@ def test_stage_statuses_use_the_one_vocabulary():
 
 @pytest.fixture
 def repo(tmp_path):
-    """A copy of the registry, with a .env and the phase-e snapshot's store, so .env can be written."""
+    """A copy of the registry, with a .env and the phase-f snapshot's store, so .env can be written."""
     root = tmp_path / "repo"
     shutil.copytree(REPO / "registry", root / "registry")
     (root / ".env").write_text("# settings\nexport CFR_RELEASE_ID=cfr-v2-phase-b  # old\nCFR_OTHER=1\n")
-    snapshot = ReleaseRegistry(root / "registry").load("cfr-v2-phase-e").procedure_snapshot
+    snapshot = ReleaseRegistry(root / "registry").load("cfr-v2-phase-f").procedure_snapshot
     store = root / stores.store_name(snapshot)
     store.mkdir()
     (store / stores.STORE_MARKER).write_text(json.dumps({"procedures_ref": snapshot}))
@@ -319,27 +319,27 @@ def test_a_ready_release_can_be_made_current(repo, monkeypatch):
     app = create_app(settings)
     client = TestClient(app, base_url="http://127.0.0.1:8765")
     page = client.get("/releases").text
-    assert '<form method="post" action="/releases/cfr-v2-phase-e/current"' in page
+    assert '<form method="post" action="/releases/cfr-v2-phase-f/current"' in page
     assert "Can't be made current: its stage versions don&#39;t match this code" in page  # phase-b
     assert 'action="/releases/cfr-v2-phase-b/current"' not in page
 
-    assert client.post("/releases/cfr-v2-phase-e/current").status_code == 403  # no CSRF token
-    sent = client.post("/releases/cfr-v2-phase-e/current", data={"csrf": app.state.csrf}, follow_redirects=False)
-    assert sent.status_code == 303 and sent.headers["location"] == "/releases#cfr-v2-phase-e"
-    assert (repo / ".env").read_text() == "# settings\nexport CFR_RELEASE_ID=cfr-v2-phase-e\nCFR_OTHER=1\n"
-    assert settings.release_id == "cfr-v2-phase-e" and app.state.runner.env["CFR_RELEASE_ID"] == "cfr-v2-phase-e"
+    assert client.post("/releases/cfr-v2-phase-f/current").status_code == 403  # no CSRF token
+    sent = client.post("/releases/cfr-v2-phase-f/current", data={"csrf": app.state.csrf}, follow_redirects=False)
+    assert sent.status_code == 303 and sent.headers["location"] == "/releases#cfr-v2-phase-f"
+    assert (repo / ".env").read_text() == "# settings\nexport CFR_RELEASE_ID=cfr-v2-phase-f\nCFR_OTHER=1\n"
+    assert settings.release_id == "cfr-v2-phase-f" and app.state.runner.env["CFR_RELEASE_ID"] == "cfr-v2-phase-f"
     assert "New cases use it" in client.get("/releases").text
 
     refused = client.post("/releases/cfr-v2-phase-b/current", data={"csrf": app.state.csrf})
     assert refused.status_code == 409 and "don't match this code" in refused.json()["detail"]
     assert client.post("/releases/nope/current", data={"csrf": app.state.csrf}).status_code == 404
-    assert "CFR_RELEASE_ID=cfr-v2-phase-e" in (repo / ".env").read_text()  # unchanged by the refusals
+    assert "CFR_RELEASE_ID=cfr-v2-phase-f" in (repo / ".env").read_text()  # unchanged by the refusals
 
 
 def test_a_release_whose_snapshot_has_no_store_is_not_made_current(repo, monkeypatch):
     monkeypatch.delenv("CFR_LIGHTRAG_WORKDIR", raising=False)
     releases, _ = cases.read_releases(repo / "registry", None)
-    phase_e = next(r for r in releases if r.release_id == "cfr-v2-phase-e")
+    phase_e = next(r for r in releases if r.release_id == "cfr-v2-phase-f")
     assert cases.blockers(phase_e, repo, {}) == []
     assert cases.blockers(phase_e, repo, {"CFR_LIGHTRAG_WORKDIR": "elsewhere"}) == [
         "its procedure snapshot has no LightRAG store here: build it under Procedures"
@@ -366,26 +366,26 @@ def test_a_new_release_is_written_from_the_releases_page(repo, monkeypatch):
     snapshot = "sha256:" + "b" * 64
     page = client.get(f"/releases?snapshot={snapshot}").text
     assert 'id="new-release"' in page and f'value="{snapshot}"' in page  # from a finished build's next step
-    verticals = ReleaseRegistry(repo / "registry").load("cfr-v2-phase-e").routing_verticals
+    verticals = ReleaseRegistry(repo / "registry").load("cfr-v2-phase-f").routing_verticals
     form = {
         "csrf": app.state.csrf,
-        "base": "cfr-v2-phase-e",
-        "release_id": "cfr-v2-phase-f",
+        "base": "cfr-v2-phase-f",
+        "release_id": "cfr-v2-phase-g",
         "procedure_snapshot": "__other__",
         "procedure_snapshot_other": snapshot,
         "routing_verticals": verticals,
     }
     sent = client.post("/releases/new", data=form, follow_redirects=False)
-    assert sent.status_code == 303 and sent.headers["location"].startswith("/releases?written=cfr-v2-phase-f&base=")
-    assert ReleaseRegistry(repo / "registry").load("cfr-v2-phase-f").procedure_snapshot == snapshot
+    assert sent.status_code == 303 and sent.headers["location"].startswith("/releases?written=cfr-v2-phase-g&base=")
+    assert ReleaseRegistry(repo / "registry").load("cfr-v2-phase-g").procedure_snapshot == snapshot
     shown = client.get(sent.headers["location"]).text
-    assert 'Wrote <span class="mono">registry/releases/cfr-v2-phase-f.yaml</span>' in shown
-    assert "procedure_snapshot" in shown and "git add registry/releases/cfr-v2-phase-f.yaml" in shown
+    assert 'Wrote <span class="mono">registry/releases/cfr-v2-phase-g.yaml</span>' in shown
+    assert "procedure_snapshot" in shown and "git add registry/releases/cfr-v2-phase-g.yaml" in shown
     # its snapshot has no store here, so it can't be made current yet
     assert "Can&#39;t be made current" in shown or "Can't be made current" in shown
 
     again = client.post("/releases/new", data=form)
-    assert again.status_code == 422 and "cfr-v2-phase-f already exists" in again.text
+    assert again.status_code == 422 and "cfr-v2-phase-g already exists" in again.text
     assert f'value="{snapshot}"' in again.text  # the typed ref is kept
     assert client.post("/releases/new", data={k: v for k, v in form.items() if k != "csrf"}).status_code == 403
 
@@ -522,7 +522,7 @@ class ListDb:
 
 def _listed(n: int, claims: int) -> tuple:
     refs = (f"sha256:{n:064x}", None, None)
-    return (f"run-{n}", f"SYN{n}", "cfr-v2-phase-e", "cfr-v2-phase-e@abc", "batch", "PLAN_READY", AT, AT, *refs)
+    return (f"run-{n}", f"SYN{n}", "cfr-v2-phase-f", "cfr-v2-phase-f@abc", "batch", "PLAN_READY", AT, AT, *refs)
 
 
 def test_the_list_pages_in_sql_until_a_result_filter_is_on(tmp_path):
@@ -535,12 +535,12 @@ def test_the_list_pages_in_sql_until_a_result_filter_is_on(tmp_path):
     )  # 20 not read yet
     db = ListDb(rows)
 
-    page = cases.list_cases(db, release="cfr-v2-phase-e", filters=cases.CaseFilters(), facts=index)
+    page = cases.list_cases(db, release="cfr-v2-phase-f", filters=cases.CaseFilters(), facts=index)
     assert db.params["limit"] == cases.PAGE_ROWS + 1 and len(page.rows) == cases.PAGE_ROWS and page.more
     assert page.rows[0].claims == 1  # the column, from the index
 
     two = cases.CaseFilters.parse({"claims_min": "2", "claims_max": "2"})
-    page = cases.list_cases(db, release="cfr-v2-phase-e", filters=two, facts=index)
+    page = cases.list_cases(db, release="cfr-v2-phase-f", filters=two, facts=index)
     assert db.params["limit"] is None and db.params["offset"] == 0  # every run, filtered and paged here
     assert [r.claims for r in page.rows] == [2] * 25 and not page.more
     assert page.unindexed == 20
@@ -571,7 +571,7 @@ def test_the_pager_keeps_both_chevrons_and_disables_the_one_at_an_end(client, mo
     from datetime import UTC, datetime
 
     at = datetime(2026, 11, 20, 9, 0, tzinfo=UTC)
-    row = cases.CaseRow("run-1", "SYN1", "cfr-v2-phase-e", "x", "batch", "PLAN_READY", at, at, claims=2)
+    row = cases.CaseRow("run-1", "SYN1", "cfr-v2-phase-f", "x", "batch", "PLAN_READY", at, at, claims=2)
     monkeypatch.setattr(cases, "list_cases", lambda db, **kw: cases.CasePage([row], True))
     first = client.get("/cases?release=").text
     assert "Case runs 1–1" in first

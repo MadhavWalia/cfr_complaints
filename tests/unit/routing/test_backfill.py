@@ -45,7 +45,7 @@ def test_runs_are_routed_stored_and_written_without_claim_text(tmp_path):
     assert by_run["run-1"]["claims"] == 2 and by_run["run-1"]["decisions"] == {"HOLD": 2}
     assert by_run["run-2"]["claims"] == 0 and by_run["run-2"]["routing_ref"]  # nothing to route, still stored
     assert by_run["run-3"]["error"] and by_run["run-3"]["routing_ref"] is None
-    assert len(client.requests) == 2 and len(registered) == 2
+    assert len(client.requests) == 3 and len(registered) == 2  # run-1: one keyword call, two router calls
     result = RoutingResult.model_validate_json(
         store.get(by_run["run-1"]["routing_ref"], classification=Classification.INTERNAL, authorization=READER)
     )

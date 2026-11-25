@@ -21,13 +21,13 @@ def registry(tmp_path):
 
 
 def test_a_new_release_copies_another_and_changes_only_its_routing_pins(registry):
-    base = ReleaseRegistry(registry).load("cfr-v2-phase-e")
-    path = write_release(registry, "cfr-v2-phase-e", "cfr-v2-phase-f", {"procedure_snapshot": SNAPSHOT})
-    new = ReleaseRegistry(registry).load("cfr-v2-phase-f")
-    assert path == registry / "releases" / "cfr-v2-phase-f.yaml"
-    assert new.release_id == "cfr-v2-phase-f" and new.procedure_snapshot == SNAPSHOT
+    base = ReleaseRegistry(registry).load("cfr-v2-phase-f")
+    path = write_release(registry, "cfr-v2-phase-f", "cfr-v2-phase-g", {"procedure_snapshot": SNAPSHOT})
+    new = ReleaseRegistry(registry).load("cfr-v2-phase-g")
+    assert path == registry / "releases" / "cfr-v2-phase-g.yaml"
+    assert new.release_id == "cfr-v2-phase-g" and new.procedure_snapshot == SNAPSHOT
     assert new.programs == base.programs and new.routing_verticals == base.routing_verticals
-    source = (registry / "releases" / "cfr-v2-phase-e.yaml").read_text()
+    source = (registry / "releases" / "cfr-v2-phase-f.yaml").read_text()
     comments = [line for line in source.splitlines() if line.startswith("#")]
     assert comments and all(line in path.read_text() for line in comments)  # comments kept
 
@@ -35,11 +35,11 @@ def test_a_new_release_copies_another_and_changes_only_its_routing_pins(registry
 @pytest.mark.parametrize(
     ("base", "new", "pins", "message"),
     [
-        ("cfr-v2-phase-e", "cfr-v2-phase-d", {}, "already exists"),
-        ("cfr-v2-phase-e", "Phase F", {}, "lower-case letters"),
-        ("cfr-v2-phase-e", "../x", {}, "lower-case letters"),
-        ("nope", "cfr-v2-phase-f", {}, "no release nope"),
-        ("cfr-v2-phase-e", "cfr-v2-phase-f", {"procedure_snapshot": "sha256:abc"}, "a full ref"),
+        ("cfr-v2-phase-f", "cfr-v2-phase-d", {}, "already exists"),
+        ("cfr-v2-phase-f", "Phase F", {}, "lower-case letters"),
+        ("cfr-v2-phase-f", "../x", {}, "lower-case letters"),
+        ("nope", "cfr-v2-phase-g", {}, "no release nope"),
+        ("cfr-v2-phase-f", "cfr-v2-phase-g", {"procedure_snapshot": "sha256:abc"}, "a full ref"),
     ],
 )
 def test_a_new_release_is_refused_rather_than_written_wrong(registry, base, new, pins, message):

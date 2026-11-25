@@ -93,6 +93,10 @@ class ProcedureSearchRequest(Contract):
     limit: int = Field(default=8, ge=1, le=50)
     max_per_document: int = Field(default=3, ge=1)  # so the largest documents can't fill the results
     redacted: bool
+    # Keywords for LightRAG's graph search, written beforehand (C04's ``c04.keywords``, LDR-0044):
+    # given, LightRAG makes no keyword call of its own. Empty: the engine finds its own.
+    high_level_keywords: tuple[str, ...] = ()
+    low_level_keywords: tuple[str, ...] = ()
 
 
 class ProcedureHit(Contract):

@@ -78,7 +78,8 @@ def test_the_stage_routes_every_claim_from_the_claim_set_only(loop):
         ("c2", ClaimRoutingOutcome.ROUTED, "HOLD"),
     ]
     assert sorted(r.query for r in search.requests) == sorted(c.statement for c in claim_set.claims)
-    assert len(client.requests) == 2 and {r.trace_id for r in client.requests} == {"t4"}
+    assert [r.program_id for r in client.requests].count("c04.route") == 2  # and one c04.keywords call
+    assert len(client.requests) == 3 and {r.trace_id for r in client.requests} == {"t4"}
     sent = "".join(t.content for r in client.requests for t in r.messages)
     assert "Customer says the hotel charged twice" in sent  # c1's CLAIM allegation
     for secret in ("IMPACT-SECRET", "EVIDENCE-SECRET", "STATEMENT-SECRET", "CHECK-SECRET"):
@@ -222,7 +223,7 @@ def test_publish_verticals_refuses_a_document_without_verticals(tmp_path, monkey
 
 
 def _responder(request):
-    if request.program_id == "c04.route":
+    if request.program_id in ("c04.route", "c04.keywords"):
         return _router_reply(request)
     from tests.unit.procedures.test_lightrag import _extraction
 
@@ -248,6 +249,7 @@ def test_two_cases_routed_over_one_lightrag_store_then_closed(tmp_path, loop):
     manifest = _manifest(store, routing_verticals=_verticals(store), procedure_snapshot=snapshot)
     pinned = PinnedRouting(store, lambda _: manifest, lightrag_opener(store, workdir, embedder, client), loop=loop)
     ref = _put(store, _claim_set().model_dump_json().encode())
+    built, embedded = len(client.requests), len(embedder.calls)
     try:
         results = [_handle(store, ref, client, pinned, loop) for _ in range(2)]
     finally:
@@ -255,6 +257,11 @@ def test_two_cases_routed_over_one_lightrag_store_then_closed(tmp_path, loop):
     for result in results:
         assert result.procedures_ref == snapshot and len(result.claims) == 2
         assert all(c.sections_seen for c in result.claims)  # LightRAG found sections for each claim
+    # Per case (LDR-0044): one keyword call, two router calls, no keyword call of LightRAG's own,
+    # and one embedding call for both claims' query texts
+    programs = [r.program_id for r in client.requests[built:]]
+    assert programs.count("c04.keywords") == 2 and programs.count("c04.route") == 4 and len(programs) == 6
+    assert len(embedder.calls) - embedded == 2
 
 
 def test_a_claim_set_without_claims_needs_no_pins_or_store(loop):

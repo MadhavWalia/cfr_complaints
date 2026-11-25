@@ -56,7 +56,7 @@ def test_a_case_is_routed_with_its_pinned_document_and_snapshot(running, store):
     result = RoutingResult.model_validate_json(
         store.get(done.output_artifact_refs[0], classification=Classification.INTERNAL, authorization=READER)
     )
-    assert done.program_version == "route-1"
+    assert done.program_version == "route-2"
     assert (result.claim_set_hash, result.procedures_ref, result.verticals_sha256) == (
         _claim_set().claim_set_hash,
         SNAPSHOT,

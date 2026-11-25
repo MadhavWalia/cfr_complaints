@@ -171,6 +171,11 @@ def _count_search_block() -> None:
         blocks[0] += 1
 
 
+# A case's query vectors, embedded together before its searches (``search_many``, LDR-0044): the
+# query embedding function looks each text up here first. Per call, so cases never share vectors.
+_QUERY_VECTORS: ContextVar[dict[str, np.ndarray] | None] = ContextVar("lightrag_query_vectors", default=None)
+
+
 class GatewayLlm:
     """LightRAG's model function over our client. A blocked call gives an empty answer, so one
     firewall block costs that chunk's graph entries, not the build."""
@@ -180,6 +185,8 @@ class GatewayLlm:
         self.calls = 0
         self.blocked = 0
         self.blocked_embeddings = 0
+        self.query_embedding_calls = 0  # gateway calls for query vectors
+        self.query_vector_misses = 0  # query texts a case's lookup didn't hold: should stay 0
         self.reset_timings()
 
     def reset_timings(self) -> None:
@@ -236,7 +243,17 @@ def _embedding_func(embedder: EmbeddingClient, llm: GatewayLlm):
 
     async def embed(texts: list[str], context: str | None = None, **_: Any) -> np.ndarray:
         if context == "query":
-            return np.asarray(await embedder.embed(texts, purpose=QUERY_PURPOSE, redacted=True), dtype=np.float32)
+            known = _QUERY_VECTORS.get()
+            if known is None:
+                llm.query_embedding_calls += 1
+                return np.asarray(await embedder.embed(texts, purpose=QUERY_PURPOSE, redacted=True), dtype=np.float32)
+            missing = list(dict.fromkeys(t for t in texts if t not in known))
+            if missing:  # costs a call, never a wrong vector
+                llm.query_vector_misses += len(missing)
+                llm.query_embedding_calls += 1
+                fresh = await embedder.embed(missing, purpose=QUERY_PURPOSE, redacted=True)
+                known = {**known, **{t: np.asarray(v, dtype=np.float32) for t, v in zip(missing, fresh, strict=True)}}
+            return np.stack([known[t] for t in texts])
         started = time.monotonic()
         found = await embed_allowing_blocks(embedder, texts, purpose=BUILD_PURPOSE, redacted=True)
         took = time.monotonic() - started
@@ -814,6 +831,14 @@ def _built(
     )
 
 
+def query_texts(request: ProcedureSearchRequest) -> list[str]:
+    """What LightRAG embeds for a ``mix`` query with its keywords given: the query, then each list
+    joined as it joins them (``", "``, ``kg_query``). A difference costs a call, not a result."""
+    texts = [request.query]
+    texts += [", ".join(k) for k in (request.low_level_keywords, request.high_level_keywords) if k]
+    return texts
+
+
 class LightRagProcedureSearch:
     def __init__(self, rag: Any, procedures_ref: str, passages: Sequence[Passage], llm: GatewayLlm) -> None:
         self.rag = rag
@@ -826,7 +851,13 @@ class LightRagProcedureSearch:
 
         if not request.redacted:
             raise UnredactedPayloadError(f"{PROGRAM_ID}: payload not marked redacted")
-        param = QueryParam(mode="mix", chunk_top_k=CHUNKS, enable_rerank=False)
+        param = QueryParam(
+            mode="mix",
+            chunk_top_k=CHUNKS,
+            enable_rerank=False,
+            hl_keywords=list(request.high_level_keywords),  # given: LightRAG writes none of its own
+            ll_keywords=list(request.low_level_keywords),
+        )
         blocks = [0]  # this search's own: others run at the same time on the same GatewayLlm
         token = _SEARCH_BLOCKS.set(blocks)
         try:
@@ -873,3 +904,24 @@ class LightRagProcedureSearch:
             blocked=blocks[0] > 0,
             hits=tuple(hits),
         )
+
+    async def search_many(self, requests: Sequence[ProcedureSearchRequest]) -> list[ProcedureSearchResult]:
+        """A case's searches together (LDR-0044): every query text embedded in one call, then the
+        searches at once, each looking its vectors up instead of calling. Give each request its
+        keywords, or LightRAG writes them with a call per search. Results are in request order.
+
+        A blocked embedding call leaves each search to embed for itself, as ``search`` does, so a
+        block lands on the searches it concerns."""
+        texts = list(dict.fromkeys(t for r in requests for t in query_texts(r)))
+        known: dict[str, np.ndarray] | None = None
+        if texts:
+            try:
+                vectors = await self.rag.embedding_func(texts, context="query")  # counted where it calls
+                known = {t: np.asarray(v, dtype=np.float32) for t, v in zip(texts, vectors, strict=True)}
+            except ModelBlockedError:
+                logger.warning("lightrag: the gateway blocked a case's query embeddings; each search embeds its own")
+        token = _QUERY_VECTORS.set(known)
+        try:
+            return list(await asyncio.gather(*(self.search(r) for r in requests)))
+        finally:
+            _QUERY_VECTORS.reset(token)

@@ -37,7 +37,8 @@ from cfr_v2.contracts import (
 from .verticals import VerticalCatalog
 
 ROUTE_PROGRAM_ID = "c04.route"
-ROUTE_VERSION = "route-1"  # bump on any change to the instructions, fields, section choice or program
+ROUTE_VERSION = "route-2"  # bump on any change to the instructions, fields, section choice or program
+# route-2: the search keywords come from c04.keywords (keywords-1), one call per case (LDR-0044)
 TOP_DOCUMENTS = 6
 SECTIONS_PER_DOCUMENT = 2
 SEARCH_LIMIT = 50  # enough hits for six documents to show up with two sections each

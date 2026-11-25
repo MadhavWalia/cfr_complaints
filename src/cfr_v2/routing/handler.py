@@ -39,7 +39,7 @@ from cfr_v2.llm import ModelLoop, model_loop
 from cfr_v2.runtime.stages import STAGES, StageHandler, StageInput, StageOutput
 from cfr_v2.telemetry import get_logger, record_route, set_attributes, span
 
-from .route import RoutedClaim, decision, route_claim
+from .route import RoutedClaim, decision, route_claim, search_claims
 from .router import ROUTE_PROGRAM_ID, ROUTE_VERSION, ClaimInput, Router
 from .verticals import VerticalCatalog
 
@@ -75,18 +75,22 @@ def load_claim_set(store: ArtifactStore, ref: str) -> ClaimSetRevision:
 async def route_set(
     claim_set: ClaimSetRevision, context: RoutingContext, lm: dspy.LM, *, trace_id: str | None = None
 ) -> list[RoutedClaim]:
-    """Every claim, a few at once. The first failure cancels the rest and is raised."""
+    """Every claim: the case's searches together (one keyword call, one embedding call; LDR-0044),
+    then the router a few claims at once. The first failure cancels the rest and is raised."""
     router = Router(context.catalog)
     gate = asyncio.Semaphore(ROUTE_CONCURRENCY)
-
-    async def one(claim: ClaimInput) -> RoutedClaim:
-        async with gate:
-            return await route_claim(claim_set.case_id, claim, context.search, router, lm, trace_id=trace_id)
-
     claims = ClaimInput.from_claim_set(claim_set)
+    found = await search_claims(claim_set.case_id, claims, context.search, lm, trace_id=trace_id) if claims else []
+
+    async def one(claim: ClaimInput, result) -> RoutedClaim:
+        async with gate:
+            return await route_claim(
+                claim_set.case_id, claim, context.search, router, lm, trace_id=trace_id, found=result
+            )
+
     try:
         async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(one(c)) for c in claims]
+            tasks = [group.create_task(one(c, f)) for c, f in zip(claims, found, strict=True)]
     except* Exception as failed:  # noqa: BLE001 - re-raised as is
         raise failed.exceptions[0] from None  # the runner classifies the error itself (a ModelError, say)
     return [t.result() for t in tasks]

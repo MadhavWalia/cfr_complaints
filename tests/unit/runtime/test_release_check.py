@@ -34,11 +34,13 @@ def test_an_older_release_names_what_differs():
     [mismatch] = stage_mismatches(manifest)
     assert (mismatch.stage, mismatch.code_version, mismatch.release_version) == (
         "c04.routing",
-        "route-1",
+        "route-2",
         "placeholder-0",
     )
-    with pytest.raises(IncompatibleReleaseError, match="c04.routing: code runs route-1, release pins placeholder-0"):
+    with pytest.raises(IncompatibleReleaseError, match="c04.routing: code runs route-2, release pins placeholder-0"):
         require_compatible(manifest)
+    [routing] = stage_mismatches(REGISTRY.load("cfr-v2-phase-e"))  # before c04.keywords (LDR-0044)
+    assert (routing.code_version, routing.release_version) == ("route-2", "route-1")
     missing = {m.stage: m.release_version for m in stage_mismatches(REGISTRY.load("cfr-v2-phase-b"))}
     assert missing["c02.pass1"] is None  # phase B named one c02.understanding program
 
@@ -51,13 +53,13 @@ def _resolve(ref):
 
 def test_a_worker_sees_the_queue_by_release_and_what_it_cannot_run():
     rows = [
-        ("cfr-v2-phase-e@1", "QUEUED", 3),
+        ("cfr-v2-phase-f@1", "QUEUED", 3),
         ("cfr-v2-phase-d@2", "QUEUED", 8000),
         ("cfr-v2-phase-d@2", "RUNNING", 17),
         ("spike@0", "QUEUED", 1),
     ]
     releases = {r.manifest_ref: r for r in assess_queue(rows, _resolve)}
-    assert releases["cfr-v2-phase-e@1"].compatible and releases["cfr-v2-phase-e@1"].queued == 3
+    assert releases["cfr-v2-phase-f@1"].compatible and releases["cfr-v2-phase-f@1"].queued == 3
     old = releases["cfr-v2-phase-d@2"]
     assert (old.queued, old.running, old.compatible) == (8000, 17, False)
     assert releases["spike@0"].unknown
@@ -69,7 +71,7 @@ def test_a_worker_sees_the_queue_by_release_and_what_it_cannot_run():
 
 def test_nothing_queued_or_only_current_work_is_fine_up_to_the_cap():
     assert queue_problems(assess_queue([], _resolve)) == []
-    current = assess_queue([("cfr-v2-phase-e@1", "QUEUED", 12)], _resolve)
+    current = assess_queue([("cfr-v2-phase-f@1", "QUEUED", 12)], _resolve)
     assert queue_problems(current) == [] and over_cap(current, None) is None
     assert over_cap(current, 12) is None
     assert over_cap(current, 10) == "12 jobs queued, more than --max-queued 10"
@@ -83,4 +85,4 @@ def test_intake_refuses_a_release_that_does_not_match_the_code(monkeypatch, caps
     with pytest.raises(SystemExit) as exc:
         intake.main(["--synthetic", "1"])
     assert exc.value.code == 2
-    assert "c04.routing: code runs route-1, release pins placeholder-0" in capsys.readouterr().err
+    assert "c04.routing: code runs route-2, release pins placeholder-0" in capsys.readouterr().err

@@ -111,12 +111,13 @@ def load_cases(folder: Path, limit: int | None = None) -> list[CaseClaims]:
     return cases
 
 
-async def route_claim(case_id: str, claim: ClaimInput, search, router: Router, lm) -> Routed:
-    """One claim, as the stage routes it; an error is recorded and the run goes on."""
+async def route_claim(case_id: str, claim: ClaimInput, search, router: Router, lm, found=None) -> Routed:
+    """One claim, as the stage routes it; an error is recorded and the run goes on. ``found``: its
+    search, done with the case's others (``route.search_claims``)."""
     routed = Routed(case_id, claim)
     started = time.monotonic()
     try:
-        done = await route.route_claim(case_id, claim, search, router, lm)
+        done = await route.route_claim(case_id, claim, search, router, lm, found=found)
         routed.sections, routed.routing = list(done.sections), done.routing
     except ModelError as exc:
         routed.error = type(exc).__name__
@@ -140,13 +141,24 @@ async def route_claim(case_id: str, claim: ClaimInput, search, router: Router, l
 
 
 async def route_all(cases: Sequence[CaseClaims], search, router: Router, lm, concurrency: int) -> list[Routed]:
+    """As the stage does: each case's searches together, then its claims. A failed search fails
+    the case's claims, recorded; the other cases go on."""
     gate = asyncio.Semaphore(concurrency)
 
-    async def one(case_id: str, claim: ClaimInput) -> Routed:
+    async def one(case_id: str, claim: ClaimInput, found) -> Routed:
         async with gate:
-            return await route_claim(case_id, claim, search, router, lm)
+            return await route_claim(case_id, claim, search, router, lm, found)
 
-    return list(await asyncio.gather(*(one(c.case_id, claim) for c in cases for claim in c.claims)))
+    async def case(c: CaseClaims) -> list[Routed]:
+        try:
+            async with gate:
+                found = await route.search_claims(c.case_id, c.claims, search, lm)
+        except ModelError as exc:
+            logger.warning("route: case %s: the search failed (%s)", c.case_id, type(exc).__name__)
+            return [Routed(c.case_id, claim, error=type(exc).__name__) for claim in c.claims]
+        return list(await asyncio.gather(*(one(c.case_id, claim, f) for claim, f in zip(c.claims, found, strict=True))))
+
+    return [r for routed in await asyncio.gather(*(case(c) for c in cases)) for r in routed]
 
 
 def _relied_on(routed: Routed) -> list[str]:

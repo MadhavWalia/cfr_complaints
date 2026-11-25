@@ -767,3 +767,37 @@ def test_searching_leaves_the_llm_cache_file_alone_only_when_opened_for_queries(
     calls = asyncio.run(search())
     assert calls == 2  # a keyword call per search either way: nothing is read from the cache
     assert (cache.read_bytes() == before) is query_only  # opened for queries: never rewritten
+
+
+def test_a_cases_searches_share_one_embedding_call_and_find_what_each_alone_finds(tmp_path):
+    pytest.importorskip("lightrag")
+    from cfr_v2.procedures.lightrag_engine import LightRagProcedureSearch, build_lightrag, open_rag
+
+    passages, embedder = _passages(), FakeEmbeddingClient()
+    client = FakeModelClient(responder=_extraction)
+    requests = [
+        ProcedureSearchRequest(
+            query="late fees were charged after a plan was agreed",
+            redacted=True,
+            low_level_keywords=("late fees", "payment plan"),
+            high_level_keywords=("fees",),
+        ),
+        ProcedureSearchRequest(
+            query="the card was declined at the till", redacted=True, low_level_keywords=("card declined",)
+        ),
+    ]
+
+    async def run():
+        await build_lightrag(tmp_path, passages, embedder, client, concurrency=2)
+        llm = GatewayLlm(client)
+        async with open_rag(tmp_path, embedder, llm, query_only=True) as rag:
+            search = LightRagProcedureSearch(rag, REF, passages, llm)
+            calls, embeds = llm.calls, len(embedder.calls)
+            together = await search.search_many(requests)
+            shared = (llm.calls - calls, len(embedder.calls) - embeds, llm.query_vector_misses)
+            alone = [await search.search(r) for r in requests]
+        return together, shared, alone
+
+    together, shared, alone = asyncio.run(run())
+    assert shared == (0, 1, 0)  # no keyword call of LightRAG's own; one embedding call; nothing missed
+    assert [r.hits for r in together] == [r.hits for r in alone] and together[0].hits
