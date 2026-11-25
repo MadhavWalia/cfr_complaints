@@ -3,7 +3,20 @@
     {% set hid = fid ~ "-help" %}
     {# Hint text: the field's own, else what a stepper's range or an upload's file types say. #}
     {% set help = f.help or (("Between " ~ "{:g}".format(f.minimum) ~ " and " ~ "{:g}".format(f.maximum) ~ ".") if f.stepper and f.minimum is not none and f.maximum is not none else ("Accepts " ~ f.accept.replace(",", ", ") ~ ".") if f.kind in ("file", "files") and f.accept else none) %}
-    <div class="field{% if f.kind == 'check' %} check{% endif %}">
+    {% set when = (' data-when="' ~ f.when | join(" ") ~ '"') | safe if f.when else "" %}
+    {% if f.kind == "mode" %}
+    {# DLS Segmented Control: 2-5 options, one selected, a check on it. Native radios: arrow keys
+       move between them, and the form works without JavaScript. Fields with ``when`` show for
+       their option only (console.css). #}
+    {% set chosen = value or f.initial(ctx) %}
+    <fieldset class="field mode"{{ when }}>
+      <legend class="label">{{ f.label }}</legend>
+      <div class="segmented">
+        {% for v, l in f.options(ctx) %}<label><input type="radio" name="{{ f.name }}" value="{{ v }}" data-mode{% if v == chosen %} checked{% endif %}><svg class="icon" aria-hidden="true"><use href="#i-tick"/></svg><span>{{ l }}</span></label>{% endfor %}
+      </div>
+    </fieldset>
+    {% else %}
+    <div class="field{% if f.kind == 'check' %} check{% endif %}"{{ when }}>
       {% if f.kind == "check" %}
       <input type="checkbox" id="{{ fid }}" name="{{ f.name }}"{% if value %} checked{% endif %}{% if help %} aria-describedby="{{ hid }}"{% endif %}>
       <label for="{{ fid }}">{{ f.label }}</label>
@@ -20,7 +33,7 @@
       {% if f.kind in ("choice", "job") %}
       {% if f.kind == "job" and not options %}
       {% set source = catalogue[f.source] %}
-      <p class="muted none">None yet: a finished <a href="/{{ source.area }}#{{ source.id }}">{{ source.title }}</a> job appears here.</p>
+      <p class="muted none">None yet: a finished <a href="{{ source.page }}#{{ source.id }}">{{ source.title }}</a> job appears here.</p>
       {% else %}
       {{ dropdown(f.name, fid, ([] if f.required else [("", "None")]) + options, value, hid if help else none) }}
       {% endif %}
@@ -49,7 +62,8 @@
         <p class="upload-names" data-upload-names aria-live="polite">{{ "No files chosen." if many else "No file chosen." }}</p>
       </div>
       {% elif f.kind == "lines" %}
-      <textarea id="{{ fid }}" name="{{ f.name }}" rows="4" spellcheck="false" class="mono"{% if help %} aria-describedby="{{ hid }}"{% endif %}>{{ value or "" }}</textarea>
+      <textarea id="{{ fid }}" name="{{ f.name }}" rows="{{ 3 if f.count else 4 }}" spellcheck="false" class="mono"{% if help %} aria-describedby="{{ hid }}"{% endif %}{% if f.count %} data-count="{{ f.count }}"{% endif %}>{{ value or "" }}</textarea>
+      {% if f.count %}<p class="count muted" aria-live="polite" data-count-for="{{ fid }}"></p>{% endif %}
       {% else %}
       {% if f.kind == "date" %}<div class="date-box">{% elif f.stepper %}<div class="stepper" data-stepper>{% endif %}
       <input id="{{ fid }}" name="{{ f.name }}"
@@ -67,6 +81,7 @@
       {% endif %}
       {% if help and f.kind == "check" %}<p class="help muted" id="{{ hid }}">{{ help }}</p>{% endif %}
     </div>
+    {% endif %}
 {% endmacro %}
 
 {# DLS Dropdown, single select: the Multi Select's field and panel, holding radios, so one value.

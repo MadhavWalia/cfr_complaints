@@ -14,7 +14,7 @@
 {% endmacro %}
 {% block main %}
 <div class="head"><h1>Cases</h1>
-  <div class="actions"><a class="btn secondary cta" href="/evaluation?fill=evaluation.routing_export{% if release_filter %}&amp;release={{ release_filter | urlencode }}{% endif %}#evaluation.routing_export">Export Routing Results</a></div>
+  <div class="actions"><a class="btn secondary cta" href="/evaluation/routing?fill=evaluation.routing_export{% if release_filter %}&amp;release={{ release_filter | urlencode }}{% endif %}#evaluation.routing_export">Export Routing Results</a></div>
 </div>
 <form class="find-form" method="get" action="/cases" role="search">
   <div class="find">

@@ -272,3 +272,47 @@
     if (box) sync(box);
   });
 })();
+
+/* A list typed into a text area (Chosen cases): how many, live, as the server will count them:
+   split on lines, commas, semicolons and spaces, repeats removed. */
+(() => {
+  const update = (area) => {
+    const out = document.querySelector(`[data-count-for="${area.id}"]`);
+    if (!out) return;
+    const items = area.value.split(/[\s,;]+/).filter(Boolean);
+    const unique = new Set(items).size;
+    const noun = area.dataset.count;
+    const repeats = items.length - unique;
+    out.textContent = unique === 0 ? "" : `${unique.toLocaleString("en")} ${noun}${unique === 1 ? "" : "s"}` +
+      (repeats ? ` (${repeats} repeat${repeats === 1 ? "" : "s"} removed)` : "");
+  };
+  document.querySelectorAll("textarea[data-count]").forEach(update);
+  document.addEventListener("input", (event) => { if (event.target.matches?.("textarea[data-count]")) update(event.target); });
+})();
+
+/* DLS Sortable data table: a header button sorts by its column, again to reverse; the order is
+   announced with aria-sort. Cells carry their value in data-value (a rate's value, a count). */
+(() => {
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("table[data-sortable] th button[data-sort]");
+    if (!button) return;
+    const th = button.closest("th");
+    const table = th.closest("table");
+    const index = Number(button.dataset.sort);
+    const descending = th.getAttribute("aria-sort") !== "descending";
+    table.querySelectorAll("th[aria-sort]").forEach((h) => h.removeAttribute("aria-sort"));
+    th.setAttribute("aria-sort", descending ? "descending" : "ascending");
+    const body = table.tBodies[0];
+    const key = (row) => {
+      const raw = row.cells[index]?.dataset.value ?? "";
+      const number = Number.parseFloat(raw);
+      return Number.isNaN(number) ? raw.toLowerCase() : number;
+    };
+    const rows = [...body.rows].sort((a, b) => {
+      const x = key(a), y = key(b);
+      const order = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y));
+      return descending ? -order : order;
+    });
+    body.append(...rows);
+  });
+})();

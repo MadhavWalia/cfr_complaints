@@ -28,7 +28,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from cfr_v2.telemetry import get_logger
 
-from . import cases, commands, facts, formats, optimize_view, release_files
+from . import cases, commands, evaluation_view, facts, formats, optimize_view, release_files
 from . import status as pipeline
 from .diagnosis import diagnose
 from .jobs import Job, JobRunner, JobStatus, read_progress
@@ -60,9 +60,11 @@ AREAS = (
 )
 LEDES = {  # one line under an area's title: what it's for
     "/intake": "Admit a date window, a spreadsheet of case numbers, or synthetic cases; show the query.",
-    "/routing": "The router trial and routing.xlsx, publishing the vertical definitions, and the backfill.",
-    "/procedures": "Inspect, extract and snapshot procedure PDFs; build and search the LightRAG store.",
-    "/evaluation": "The C02 and C03 trial, gold-set templates and scoring, and the evidence-source workbook.",
+    "/routing": "Publish the vertical definitions, and backfill routing for runs that finished before it.",
+    "/procedures": "Inspect, extract and snapshot procedure PDFs; build and search the LightRAG store; edit the "
+    "evidence-source workbook.",
+    "/evaluation": "Review each stage's results: export them to a workbook, review it, upload it, and get the "
+    "stage's metrics.",
     "/optimize": "Improve a prompt's instructions with DSPy against a gold set: write the template, check the "
     "filled workbooks, score the baseline, optimize, and review the patch.",
     "/system": "Start and stop the worker, check the gateway, run migrations and tests, and see the settings in use.",
@@ -604,9 +606,21 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         again: Job | None = None,
         source: Job | None = None,
         status_code: int = 200,
+        group: str | None = None,
     ):
         """An area's commands. ``filled`` names the command whose form shows ``values`` (a form sent
         back with ``error``, or an earlier job's form for "Run again", ``again``)."""
+        if area == "evaluation":
+            return evaluation_page(
+                request,
+                group,
+                error=error,
+                filled=filled,
+                values=values,
+                again=again,
+                source=source,
+                status_code=status_code,
+            )
         found = commands.for_area(area)
         extra = optimize_page(request) if area == "optimize" else {}
         response = page(
@@ -660,8 +674,35 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             "defaults": defaults,
         }
 
+    def form_state(request: Request, area: str, group: str | None, again: str | None, fill: str | None) -> dict:
+        """The form to show filled in: a next step's (``fill``, from the query) or an earlier job's
+        (``again``). Empty when neither; 404 when the command isn't on this page."""
+
+        def here(command: commands.Command | None) -> bool:
+            return command is not None and command.area == area and command.group == group
+
+        if fill is not None:
+            command = commands.BY_ID.get(fill)
+            if not here(command):
+                raise HTTPException(status_code=404, detail="No such command here.")
+            query = request.query_params
+            values = {f.name: str(v) for f in command.fields if (v := f.initial(form_context)) is not None}
+            values |= {f.name: query[f.name] for f in command.fields if f.name in query}
+            try:
+                source = runner.get(query.get("from", ""))
+            except KeyError:
+                source = None
+            return {"filled": fill, "values": values, "source": source}
+        if again is None:
+            return {}
+        job = _job(again)
+        command = commands.BY_ID.get(job.command)
+        if not here(command) or job.form is None:
+            raise HTTPException(status_code=404, detail="That job can't be run again from here.")
+        return {"filled": command.id, "values": job.form, "again": job}
+
     for path, label in AREAS[1:]:
-        if path in ("/jobs", "/cases", "/releases", "/help"):
+        if path in ("/jobs", "/cases", "/releases", "/help", "/evaluation"):
             continue
 
         def show(
@@ -671,27 +712,71 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
             area: str = path[1:],
             label: str = label,
         ):
-            if fill is not None:  # a next step: the command's form, filled in from the query
-                command = commands.BY_ID.get(fill)
-                if command is None or command.area != area:
-                    raise HTTPException(status_code=404, detail="No such command here.")
-                query = request.query_params
-                values = {f.name: str(v) for f in command.fields if (v := f.initial(form_context)) is not None}
-                values |= {f.name: query[f.name] for f in command.fields if f.name in query}
-                try:
-                    source = runner.get(query.get("from", ""))
-                except KeyError:
-                    source = None
-                return area_page(request, area, label, filled=fill, values=values, source=source)
-            if again is None:
-                return area_page(request, area, label)
-            job = _job(again)
-            command = commands.BY_ID.get(job.command)
-            if command is None or command.area != area or job.form is None:
-                raise HTTPException(status_code=404, detail="That job can't be run again from here.")
-            return area_page(request, area, label, filled=command.id, values=job.form, again=job)
+            return area_page(request, area, label, **form_state(request, area, None, again, fill))
 
         app.add_api_route(path, show, methods=["GET"], response_class=HTMLResponse, name=label.lower())
+
+    # --- Evaluation, by stage (LDR-0042) -----------------------------------------------------
+
+    def evaluation_page(
+        request: Request,
+        tab: str | None,
+        *,
+        error: str | None = None,
+        filled: str | None = None,
+        values: dict | None = None,
+        again: Job | None = None,
+        source: Job | None = None,
+        status_code: int = 200,
+    ):
+        """The Overview (``tab`` None) or one stage's tab: its export and score forms, its latest
+        metrics and its scores so far."""
+        context: dict[str, Any] = {
+            "title": "Evaluation",
+            "tabs": evaluation_view.STAGES,
+            "tab": tab,
+            "plan": LEDES["/evaluation"],
+        }
+        if tab is None:
+            context["overview"] = evaluation_view.overview(runner)
+        else:
+            stage = evaluation_view.BY_KEY.get(tab)
+            if stage is None:
+                raise HTTPException(status_code=404, detail="No such stage.")
+            found = evaluation_view.scores(runner, tab)
+            try:
+                number = max(1, int(request.query_params.get("page", "1")))
+            except ValueError:
+                number = 1
+            rows = evaluation_view.HISTORY_ROWS
+            context |= {
+                "stage": stage,
+                "commands": [c for c in commands.for_area("evaluation") if c.group == tab],
+                "latest": evaluation_view.latest(found),
+                "history": found[(number - 1) * rows : number * rows],
+                "page_no": number,
+                "pages": max(1, -(-len(found) // rows)),
+                "exports": evaluation_view.exports(runner, tab),
+                "error": error,
+                "filled": filled,
+                "values": values or {},
+                "again": again,
+                "source": source,
+                "ctx": form_context,
+            }
+        response = page(request, "evaluation.html", **context)
+        response.status_code = status_code
+        return response
+
+    @app.get("/evaluation", response_class=HTMLResponse, name="evaluation")
+    def evaluation(request: Request):
+        return evaluation_page(request, None)
+
+    @app.get("/evaluation/{tab}", response_class=HTMLResponse)
+    def evaluation_tab(request: Request, tab: str, again: str | None = None, fill: str | None = None):
+        if tab not in evaluation_view.BY_KEY:
+            raise HTTPException(status_code=404, detail="No such stage.")
+        return evaluation_page(request, tab, **form_state(request, "evaluation", tab, again, fill))
 
     @app.post("/commands/{command_id}", dependencies=[Depends(require_csrf)])
     async def run_command(request: Request, command_id: str):
@@ -705,7 +790,14 @@ def create_app(settings: ConsoleSettings) -> FastAPI:
         except commands.FormError as exc:
             raw = {k: v for k, v in form.multi_items() if isinstance(v, str) and k != "csrf"}
             return area_page(
-                request, command.area, label, error=str(exc), filled=command.id, values=raw, status_code=422
+                request,
+                command.area,
+                label,
+                error=str(exc),
+                filled=command.id,
+                values=raw,
+                status_code=422,
+                group=command.group,
             )
 
         def argv(folder: Path) -> list[str]:

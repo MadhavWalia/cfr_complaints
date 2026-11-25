@@ -562,6 +562,8 @@ tr.lit td:first-child > span::after, tr.lit td:first-child > time::after {
 .command > summary:focus-visible { outline-offset: -2px; }
 .effect { margin: var(--s1) 0 0; max-width: 62ch; color: var(--text-subtle); font-size: 0.875rem; }
 .command .form { padding: var(--s2) var(--s4) var(--s5); border-top: 1px solid var(--border-subtle); padding-top: var(--s4); }
+.command.bare > .about { padding: var(--s3) var(--s4); }
+.command.bare > .about .badges { margin-top: 0; }
 .none { margin: 0; font-size: 0.875rem; }
 
 /* ---- Jobs ------------------------------------------------------------------------------- */
@@ -818,3 +820,66 @@ tr.chosen td:first-child a { color: var(--text-brand-alt); }
 }
 .prompts td[data-label="Version"] .mono { white-space: nowrap; }
 .prompts .note { max-width: 60ch; }
+
+/* ---- Evaluation by stage (LDR-0042) ------------------------------------------------------ */
+
+/* DLS Segmented Control: 2-5 options in a container, one selected: Foreground, a check before
+   its label. Native radios, so arrow keys move the choice and it works without JavaScript. */
+.field.mode { border: 0; margin: 0; padding: 0; min-width: 0; max-width: none; }
+.field.mode legend { padding: 0; margin-bottom: var(--s2); }
+.segmented { justify-self: start; display: inline-flex; flex-wrap: nowrap; gap: var(--s1); overflow-x: auto; padding: var(--s1); max-width: 100%; background: var(--tabs-bg); border-radius: var(--radius); }
+.segmented label { position: relative; display: inline-flex; align-items: center; gap: var(--s2); min-height: 2.75rem; padding: 0 var(--s4); white-space: nowrap; flex: none; border-radius: var(--radius-element); color: var(--text-link); font-weight: 500; cursor: pointer; }
+.segmented input { position: absolute; opacity: 0; pointer-events: none; }
+.segmented .icon { display: none; width: 1.25rem; height: 1.25rem; stroke-width: 2; }
+.segmented label:hover { background: var(--tertiary-bg-hover); }
+.segmented label:active { background: var(--tertiary-bg-pressed); }
+.segmented label:has(:checked) { background: var(--surface-foreground); color: var(--text-emphasis); box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+.segmented label:has(:checked) .icon { display: block; color: var(--text-link); }
+.segmented label:has(:focus-visible) { outline: 2px solid var(--focus); outline-offset: 0; }
+/* Fields that belong to one mode show only while it is chosen. */
+.form [data-when] { display: none; }
+.form:has([data-mode][value="all"]:checked) [data-when~="all"],
+.form:has([data-mode][value="sample"]:checked) [data-when~="sample"],
+.form:has([data-mode][value="chosen"]:checked) [data-when~="chosen"] { display: grid; }
+.field .count { margin: 0; font-size: 0.875rem; }
+
+/* The three steps of a stage: numbered sections (not a tracker: they can be done in any order). */
+.steps-list { list-style: none; margin: var(--s5) 0 0; padding: 0; display: grid; gap: var(--s6); }
+.step-title { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s3); }
+.step-no { display: inline-grid; place-items: center; flex: none; width: 2rem; height: 2rem; border-radius: 50%; background: var(--primary-bg); color: var(--on-primary); font-size: 1rem; font-weight: 600; }
+.steps-list .commands { margin-top: 0; }
+.review-how { max-width: var(--measure); padding: var(--s4) var(--s5); background: var(--surface-foreground); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
+.review-how p { margin: 0 0 var(--s2); }
+.review-how ul { margin: 0 0 var(--s3); padding-left: var(--s5); display: grid; gap: var(--s1); }
+.review-how p:last-child { margin-bottom: 0; }
+.latest { margin: 0; }
+
+/* Rates: the value, its 95% range and its n, quieter in that order. */
+.range { color: var(--text-subtle); font-size: 0.875rem; white-space: nowrap; }
+.n { color: var(--text-subtle); font-size: 0.875rem; white-space: nowrap; }
+.badge.caution { color: var(--status-caution-text); background: var(--status-caution-subtle); border-color: var(--status-caution); }
+.score-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: var(--s3) var(--s5); margin: 0 0 var(--s5); }
+.score-facts div { display: grid; gap: 2px; }
+.score-facts dt { font-size: 0.875rem; color: var(--text-subtle); }
+.score-facts dd { margin: 0; font-weight: 500; color: var(--text-emphasis); overflow-wrap: anywhere; }
+.metric-table { margin-bottom: var(--s5); }
+.metric-table h3 { margin-bottom: var(--s2); }
+.metric-table .help { margin: var(--s2) 0 0; max-width: var(--measure); }
+table.compact-rows td { padding-top: var(--s2); padding-bottom: var(--s2); }
+td.num, th.num { text-align: right; }
+td.num > span { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: 0 var(--s2); }
+/* DLS Sortable data table: the header is a button; the arrow shows the order. */
+th button[data-sort] { display: inline-flex; align-items: center; gap: var(--s1); padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
+th button[data-sort] .icon { width: 1rem; height: 1rem; opacity: 0; transition: rotate 120ms ease-out; }
+th[aria-sort] button[data-sort] .icon { opacity: 1; color: var(--text-link); }
+th[aria-sort="ascending"] button[data-sort] .icon { rotate: 180deg; }
+@media (max-width: 567px) {
+  .segmented label { padding: 0 0.375rem; gap: var(--s1); }  /* three options fit at 320 px, unwrapped */
+  /* DLS Navigational Tabs, Compact: one row that scrolls sideways when it overflows. */
+  .filters.tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .filters.tabs a { flex: none; padding: 0 var(--s3); }
+}
+@media (max-width: 799px) {
+  td.num, th.num { text-align: left; }
+  td.num > span { justify-content: flex-start; }
+}

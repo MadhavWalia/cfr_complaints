@@ -34,7 +34,7 @@
   </div>
   {% endif %}
   {% if job.finished and command and job.form is not none %}
-  <p class="actions"><a class="btn secondary cta" href="/{{ command.area }}?again={{ job.id }}#{{ command.id }}">Run Again</a><span class="muted">Opens its form with the same values, to check before starting.</span></p>
+  <p class="actions"><a class="btn secondary cta" href="{{ command.page }}?again={{ job.id }}#{{ command.id }}">Run Again</a><span class="muted">Opens its form with the same values, to check before starting.</span></p>
   {% endif %}
   <details class="cmdline"><summary>Command</summary><p class="mono">{{ job.argv | shell }}</p></details>
   {% if job.status.value == "running" %}

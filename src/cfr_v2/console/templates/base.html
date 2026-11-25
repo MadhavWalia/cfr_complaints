@@ -53,7 +53,7 @@
       <nav id="rail-nav" aria-label="Areas">
         <ul>
           {% for path, label in areas %}
-          <li><a class="area" href="{{ path }}"{% if current == path %} aria-current="page"{% endif %}><svg class="icon" aria-hidden="true"><use href="#i-{{ 'pipeline' if path == '/' else path[1:] }}"/></svg><span>{{ label }}</span></a></li>
+          <li><a class="area" href="{{ path }}"{% if current == path or (path != "/" and current.startswith(path ~ "/")) %} aria-current="page"{% endif %}><svg class="icon" aria-hidden="true"><use href="#i-{{ 'pipeline' if path == '/' else path[1:] }}"/></svg><span>{{ label }}</span></a></li>
           {% endfor %}
         </ul>
       </nav>

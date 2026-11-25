@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{# Evaluation by stage (LDR-0042): DLS Navigational Tabs, one per stage, plus the Overview. A stage's
+   tab: 1 Export for review, 2 Review, 3 Upload and score, then its metrics and its scores so far. #}
+
+{% macro value(cell) -%}
+{%- if cell is mapping and "rate" in cell -%}
+  {%- if cell.rate is none %}<span class="muted">no rows</span>
+  {%- else %}<strong>{{ "%.1f" | format(cell.rate * 100) }}%</strong> <span class="range">{{ "%.1f" | format(cell.low * 100) }}–{{ "%.1f" | format(cell.high * 100) }}%</span> <span class="n">n = {{ "{:,g}".format(cell.n) }}</span>{% if cell.small %} <span class="badge caution">Small sample</span>{% endif %}{% endif %}
+{%- elif cell is none %}<span class="muted">—</span>
+{%- elif cell is number %}{{ "{:,}".format(cell) if cell is integer else "{:,.2f}".format(cell).rstrip("0").rstrip(".") }}
+{%- else %}{{ cell }}{% endif %}
+{%- endmacro %}
+
+{% macro sort_value(cell) -%}
+{{ cell.rate if cell is mapping and "rate" in cell and cell.rate is not none else cell if cell is number else "" }}
+{%- endmacro %}
+
+{% macro report_tables(report, key) %}
+{% for table in report.tables %}
+<div class="metric-table">
+  <h3 id="{{ key }}-t{{ loop.index }}">{{ table.title }}</h3>
+  <div class="table-wrap">
+    <table class="compact-rows stack"{% if table.sortable %} data-sortable{% endif %} aria-labelledby="{{ key }}-t{{ loop.index }}">
+      <thead><tr>{% for c in table.columns %}{% set numeric = loop.index > 1 %}<th scope="col"{% if numeric %} class="num"{% endif %}>{% if table.sortable %}<button type="button" data-sort="{{ loop.index0 }}">{{ c }}<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>{% else %}{{ c }}{% endif %}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for row in table.rows %}
+      <tr>{% for cell in row %}<td data-label="{{ table.columns[loop.index0] }}"{% if loop.index > 1 %} class="num"{% endif %} data-value="{{ sort_value(cell) if loop.index > 1 else cell }}"><span>{{ value(cell) }}</span></td>{% endfor %}</tr>
+      {% else %}
+      <tr><td colspan="{{ table.columns | length }}"><span class="muted">Nothing to count.</span></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if table.note %}<p class="help muted">{{ table.note }}</p>{% endif %}
+</div>
+{% endfor %}
+{% endmacro %}
+
+{% block main %}
+<div class="head"><h1>{{ title }}</h1></div>
+<p class="lede muted">{{ plan }}</p>
+<nav class="filters tabs" aria-label="Stages">
+  <a href="/evaluation"{% if tab is none %} aria-current="page"{% endif %}>Overview</a>
+  {% for s in tabs %}<a href="/evaluation/{{ s.key }}"{% if tab == s.key %} aria-current="page"{% endif %}>{{ s.tab }}</a>{% endfor %}
+</nav>
+
+{% if tab is none %}
+<section class="section" aria-labelledby="overview-h">
+  <h2 id="overview-h">Latest score of each stage</h2>
+  <div class="table-wrap">
+    <table class="stack">
+      <caption class="visually-hidden">Each stage's latest score</caption>
+      <thead><tr><th scope="col">Stage</th><th scope="col">Headline</th><th scope="col">Score</th><th scope="col">Release</th><th scope="col">Version</th><th scope="col">Scored</th></tr></thead>
+      <tbody>
+      {% for stage, score in overview %}
+      {% set h = score.headline if score else none %}
+      <tr>
+        <td data-label="Stage"><span><a href="/evaluation/{{ stage.key }}">{{ stage.title }}</a></span></td>
+        {% if not stage.built %}
+        <td data-label="Headline" colspan="5"><span class="muted">Not built yet: nothing to review.</span></td>
+        {% elif h %}
+        <td data-label="Headline"><span>{{ h.label }}</span></td>
+        <td data-label="Score"><span>{{ value(h) }}</span></td>
+        <td data-label="Release"><span class="mono">{{ score.report.about.release or "—" }}</span></td>
+        <td data-label="Version"><span class="mono">{{ score.report.about["program version"] or "—" }}</span></td>
+        <td data-label="Scored"><span><a href="/jobs/{{ score.job.id }}">{{ score.job.created_at | stamp }}</a></span></td>
+        {% else %}
+        <td data-label="Headline" colspan="5"><span class="muted">No score yet. <a href="/evaluation/{{ stage.key }}#evaluation.{{ stage.key }}_export">Export a review</a>.</span></td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="help muted">Each rate shows how many rows it counts (n) and its 95% range. A stage's own tab has its full metrics and every score so far.</p>
+</section>
+
+{% elif not stage.built %}
+<section class="section" aria-labelledby="stage-h">
+  <h2 id="stage-h">{{ stage.title }}</h2>
+  <div class="empty"><h3>Nothing to review yet</h3><p>{{ stage.does }}</p></div>
+</section>
+
+{% else %}
+<section class="section stage" aria-labelledby="stage-h">
+  <h2 id="stage-h">{{ stage.title }}</h2>
+  <p class="lede-sm muted">{{ stage.does }}</p>
+  {% if latest %}
+  {% set h = latest.headline %}
+  <p class="latest">Latest score: {{ h.label }} {{ value(h) }} <span class="muted">· {{ latest.report.about.release or "" }}{% if latest.report.about["program version"] %} · {{ latest.report.about["program version"] }}{% endif %} · <a href="/jobs/{{ latest.job.id }}">{{ latest.job.created_at | stamp }}</a></span></p>
+  {% endif %}
+
+  {% set export = commands | selectattr("id", "equalto", "evaluation." ~ stage.key ~ "_export") | first %}
+  {% set score = commands | selectattr("id", "equalto", "evaluation." ~ stage.key ~ "_score") | first %}
+  <ol class="steps-list">
+    <li>
+      <h3 class="step-title"><span class="step-no" aria-hidden="true">1</span>Export for review</h3>
+      <div class="commands">{% with command = export, bare = true %}{% include "_command.html" %}{% endwith %}</div>
+      {% if exports %}
+      <p class="help muted">Latest workbooks:
+        {% for job, books in exports %}{% for name in books %}<a href="/jobs/{{ job.id }}/files/outputs/{{ name | urlencode }}">{{ name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}{% if not books %}<a href="/jobs/{{ job.id }}">{{ job.title }}</a> ({{ job.status.value }}){% endif %}{% if not loop.last %} · {% endif %}{% endfor %}
+      </p>
+      {% endif %}
+    </li>
+    <li>
+      <h3 class="step-title"><span class="step-no" aria-hidden="true">2</span>Review</h3>
+      <div class="review-how">
+        <p>Open the workbook in Excel. Fill in the columns with blue headings only; the others are the stage's results, and a row whose result is edited is left out. Put your name next to Reviewer on the about sheet.</p>
+        <ul>{% for line in stage.review %}<li>{{ line }}</li>{% endfor %}</ul>
+        <p class="muted">The workbook holds text from cases: keep it on this machine, and delete it once scored.</p>
+      </div>
+    </li>
+    <li>
+      <h3 class="step-title"><span class="step-no" aria-hidden="true">3</span>Upload and score</h3>
+      <div class="commands">{% with command = score, bare = true %}{% include "_command.html" %}{% endwith %}</div>
+    </li>
+  </ol>
+</section>
+
+<section class="section" aria-labelledby="metrics-h">
+  <h2 id="metrics-h">Metrics</h2>
+  {% if latest %}
+  {% set r = latest.report %}
+  {% set skipped = r.counts.skipped or 0 %}
+  {% set stale = r.counts["stale (re-run since the export; scored as exported)"] or 0 %}
+  {% if skipped or stale %}
+  <div class="notice caution" role="status">
+    <strong>{% if skipped %}{{ "{:,}".format(skipped) }} row{{ "" if skipped == 1 else "s" }} left out{% endif %}{% if skipped and stale %}; {% endif %}{% if stale %}{{ "{:,}".format(stale) }} row{{ "" if stale == 1 else "s" }} from cases re-run since the export (scored as exported){% endif %}</strong>
+    {% if skipped %}<p>{% for s in r.skipped[:5] %}{{ s.sheet }} row {{ s.row }}: {{ s.reason }}{% if not loop.last %}; {% endif %}{% endfor %}{% if skipped > 5 %}; and {{ skipped - 5 }} more, in the metrics workbook{% endif %}.</p>{% endif %}
+  </div>
+  {% endif %}
+  <dl class="score-facts">
+    <div><dt>{{ r.headline.label }}</dt><dd>{{ value(r.headline) }}</dd></div>
+    {% for name, n in r.counts.items() if name != "skipped" and not name.startswith("stale") %}<div><dt>{{ name | capitalize }}</dt><dd>{{ "{:,}".format(n) }}</dd></div>{% endfor %}
+    <div><dt>Reviewer</dt><dd>{{ r.about.reviewer or "not given" }}</dd></div>
+    <div><dt>Workbook</dt><dd class="mono">{{ r.about.workbook }}</dd></div>
+  </dl>
+  {{ report_tables(r, stage.key) }}
+  <p class="help muted">The full report, with the reviewers' notes: <a href="/jobs/{{ latest.job.id }}/files/outputs/{{ stage.key }}_metrics.xlsx">{{ stage.key }}_metrics.xlsx</a>. Keep it local.</p>
+  {% else %}
+  <div class="empty"><h3>No score yet</h3><p>Export a workbook, review it, then upload it under step 3. Its metrics appear here.</p></div>
+  {% endif %}
+</section>
+
+{% if history %}
+<section class="section" aria-labelledby="history-h">
+  <h2 id="history-h">Scores so far</h2>
+  <div class="table-wrap">
+    <table class="stack">
+      <caption class="visually-hidden">Every score of {{ stage.title }}, newest first</caption>
+      <thead><tr><th scope="col">Scored</th><th scope="col">Release</th><th scope="col">Version</th><th scope="col">Reviewer</th><th scope="col">{{ (history | selectattr("report") | map(attribute="report") | first or {}).get("headline", {}).get("label", "Headline") }}</th><th scope="col">Files</th></tr></thead>
+      <tbody>
+      {% for s in history %}
+      <tr>
+        <td data-label="Scored"><span><a href="/jobs/{{ s.job.id }}">{{ s.job.created_at | stamp }}</a></span></td>
+        {% if s.report %}
+        <td data-label="Release"><span class="mono">{{ s.report.about.release or "—" }}</span></td>
+        <td data-label="Version"><span class="mono">{{ s.report.about["program version"] or "—" }}</span></td>
+        <td data-label="Reviewer"><span>{{ s.report.about.reviewer or "—" }}</span></td>
+        <td data-label="Headline"><span>{{ value(s.headline) }}</span></td>
+        <td data-label="Files"><span>{% for name in s.files %}<a href="/jobs/{{ s.job.id }}/files/outputs/{{ name | urlencode }}">{{ name.rsplit(".", 1)[-1] | upper }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</span></td>
+        {% else %}
+        <td data-label="Outcome" colspan="5"><span><span class="pill {{ s.job.status.pill }}">{{ s.job.status.value }}</span>{% if s.job.reason %} <span class="muted">{{ s.job.reason }}</span>{% endif %}</span></td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if pages > 1 %}
+  <nav class="pager" aria-label="Pages of scores">
+    <span class="range">Page {{ page_no }} of {{ pages }}</span>
+    {% if page_no > 1 %}<a href="?page={{ page_no - 1 }}#history-h" aria-label="Newer scores" title="Newer"><svg class="icon" aria-hidden="true"><use href="#i-prev"/></svg></a>{% else %}<span role="link" aria-disabled="true" aria-label="Newer scores (this is the first page)"><svg class="icon" aria-hidden="true"><use href="#i-prev"/></svg></span>{% endif %}
+    {% if page_no < pages %}<a href="?page={{ page_no + 1 }}#history-h" aria-label="Older scores" title="Older"><svg class="icon" aria-hidden="true"><use href="#i-next"/></svg></a>{% else %}<span role="link" aria-disabled="true" aria-label="Older scores (this is the last page)"><svg class="icon" aria-hidden="true"><use href="#i-next"/></svg></span>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -258,22 +258,21 @@ def test_what_needs_attention_comes_first_with_its_action(tmp_path, monkeypatch)
 
 def test_area_pages_show_what_each_command_does(tmp_path, monkeypatch):
     _, client = _client(tmp_path, _status(), monkeypatch)
-    page = client.get("/evaluation").text
+    page = client.get("/procedures").text
     assert '<li class="badge cost" title="Spends model calls on the gateway">calls gpt-5</li>' in page
-    assert 'data-field="evaluation.trial-sample"' in page and "Up to 15 gpt-5 calls" in page
-    assert ">changes nothing</li>" in page
+    assert ">changes nothing</li>" in client.get("/evaluation/routing").text
 
 
 def test_the_help_page_covers_the_recurring_tasks_and_the_words(tmp_path, monkeypatch):
     _, client = _client(tmp_path, _status(), monkeypatch)
     page = client.get("/help").text
-    for anchor in ("new-procedures", "run-cases", "trial", "failed", "stages", "words"):
+    for anchor in ("new-procedures", "run-cases", "review", "failed", "stages", "words"):
         assert f'id="{anchor}"' in page, anchor
     for link in (
         "/procedures#procedures.snapshot",
         "/releases#new-release",
         "/system#system.worker",
-        "/evaluation#evaluation.trial",
+        "/evaluation",
     ):
         assert f'href="{link}"' in page, link
     assert '<a class="area" href="/help"' in page and 'href="/help#stages"' in client.get("/").text

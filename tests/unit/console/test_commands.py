@@ -3,12 +3,12 @@ values come back named, and every area's forms render and run."""
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import sys
 import time
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,14 +44,6 @@ def ctx(tmp_path):
     (tmp_path / commands.VERTICALS_DOCUMENT).write_text("verticals")
     (tmp_path / "registry" / "releases").mkdir(parents=True)
     (tmp_path / "registry" / "releases" / "cfr-v2-phase-d.yaml").write_text("")
-    trial = Job(
-        "20261112-100000-aaaa",
-        "evaluation.trial",
-        "C02 trial · 5 cases",
-        ("x",),
-        JobStatus.DONE,
-        "2026-11-12T10:00:00+00:00",
-    )
     snap = Job(
         "20261112-110000-bbbb",
         "procedures.snapshot",
@@ -61,7 +53,7 @@ def ctx(tmp_path):
         "2026-11-12T11:00:00+00:00",
         summary="sha256:new",
     )
-    done = {"evaluation.trial": [trial], "procedures.snapshot": [snap]}
+    done = {"procedures.snapshot": [snap]}
     return Context(
         root=tmp_path,
         env={},
@@ -154,21 +146,7 @@ def test_the_snapshot_starts_as_the_current_releases():
     assert commands._release_snapshot(Context(REPO, {"CFR_RELEASE_ID": "nope"}, ctx.done_jobs, ctx.outputs)) is None
 
 
-def test_routing_commands_take_an_earlier_trials_claims(ctx, tmp_path):
-    trial = ctx.outputs("20261112-100000-aaaa")
-    form = {"claims_job": "20261112-100000-aaaa", "cases": "5", "procedures": "sha256:built"}
-    args = _args("routing.trial", form, ctx, tmp_path)
-    assert args == [
-        "sha256:built",
-        "--verticals", str(tmp_path / commands.VERTICALS_DOCUMENT),
-        "--claims-from", str(trial / "c02_trial"),
-        "--cases", "5", "--concurrency", "4",
-        "--out", str(tmp_path / "outputs" / "router_trial"),
-    ]  # fmt: skip
-    with pytest.raises(FormError, match="Claims: choose a C02 trial or type a folder, not both"):
-        BY_ID["routing.trial"].parse({"procedures": "sha256:built"}, ctx)
-    with pytest.raises(FormError, match="Claims from a C02 trial: choose one of the finished jobs"):
-        BY_ID["routing.trial"].parse({"claims_job": "20261112-000000-zzzz"}, ctx)
+def test_routing_commands(ctx, tmp_path):
     assert _args("routing.publish", {}, ctx, tmp_path) == [
         "publish-verticals", str(tmp_path / commands.VERTICALS_DOCUMENT),
     ]  # fmt: skip
@@ -182,22 +160,55 @@ def test_routing_commands_take_an_earlier_trials_claims(ctx, tmp_path):
         BY_ID["routing.backfill"].parse({"from_release": "cfr-v2-phase-z"}, ctx)
 
 
-def test_evaluation_and_system_commands(ctx, tmp_path):
+def test_evaluation_review_and_system_commands(ctx, tmp_path):
     out = tmp_path / "outputs"
-    assert _args("evaluation.trial", {"case_run_ids": "run-1\nrun-2, run-1", "pass1_only": "on"}, ctx, tmp_path) == [
-        "--case-run-id", "run-1", "--case-run-id", "run-2", "--workers", "8", "--pass1-only",
-        "--total-cases", "10358", "--out", str(out / "c02_trial"),
+    today = date.today().isoformat()
+    release = {"release": "cfr-v2-phase-d"}
+    assert _args("evaluation.routing_export", release, ctx, tmp_path) == [
+        "export", "routing", "--release", "cfr-v2-phase-d", "--out", str(out / f"routing_review_cfr-v2-phase-d_{today}.xlsx"),
     ]  # fmt: skip
-    assert _args("evaluation.trial", {}, ctx, tmp_path)[:2] == ["--sample", "5"]
-    assert _args("evaluation.gold_template", {"case_nos": "GC-1 GC-2"}, ctx, tmp_path) == [
-        "template", "--case-no", "GC-1", "--case-no", "GC-2", str(out / "gold_template.xlsx"),
-    ]  # fmt: skip
-    with pytest.raises(FormError, match="Cases: type case numbers or choose a file, not both"):
-        BY_ID["evaluation.gold_template"].parse({}, ctx)
-    with pytest.raises(FormError, match="Gold workbooks: choose at least one file"):
-        BY_ID["evaluation.score"].parse({"gold": []}, ctx)
-    with pytest.raises(FormError, match="Quote overlap to match: at most 1"):
-        BY_ID["evaluation.score"].parse({"gold": [SimpleNamespace(filename="g.xlsx")], "min_overlap": "2"}, ctx)
+    sample = _args(
+        "evaluation.pass1_export",
+        release | {"which": "sample", "sample": "50", "seed": "7", "admitted_from": "2026-11-01"},
+        ctx,
+        tmp_path,
+    )
+    assert sample[:9] == [
+        "export",
+        "pass1",
+        "--release",
+        "cfr-v2-phase-d",
+        "--admitted-from",
+        "2026-11-01",
+        "--sample",
+        "50",
+        "--seed",
+    ]
+    listed = " ".join(f"GC-{i}" for i in range(12))
+    chosen = _args(
+        "evaluation.selection_export", release | {"which": "chosen", "case_nos": listed, "sample": "50"}, ctx, tmp_path
+    )
+    assert (
+        chosen[4:8] == ["--case-no", "GC-0", "--case-no", "GC-1"] and "--sample" not in chosen
+    )  # only the mode's fields
+    assert "--case-no" not in _args(
+        "evaluation.intake_export", release | {"case_nos": listed}, ctx, tmp_path
+    )  # mode: all
+    with pytest.raises(FormError, match="Case numbers: 2 given; between 10 and 500"):
+        BY_ID["evaluation.pass2_export"].parse(release | {"which": "chosen", "case_nos": "A B"}, ctx)
+    with pytest.raises(FormError, match="Chosen cases: type the case numbers or choose a file, not both"):
+        BY_ID["evaluation.pass2_export"].parse(release | {"which": "chosen"}, ctx)
+    with pytest.raises(FormError, match="How many: at least 10"):
+        BY_ID["evaluation.pass2_export"].parse(release | {"which": "sample", "sample": "5"}, ctx)
+    with pytest.raises(FormError, match="Admitted to: on or after Admitted from"):
+        BY_ID["evaluation.pass2_export"].parse(
+            release | {"admitted_from": "2026-11-02", "admitted_to": "2026-11-01"}, ctx
+        )
+    with pytest.raises(FormError, match="Reviewed workbook: choose a file"):
+        BY_ID["evaluation.routing_score"].parse({}, ctx)
+    book = SimpleNamespace(filename="r.xlsx")
+    assert _args("evaluation.routing_score", {"workbook": book}, ctx, tmp_path)[:2] == ["score", "routing"]
+    assert BY_ID["evaluation.routing_score"].page == "/evaluation/routing"
     assert _args("system.worker", {"max_queued": "25"}, ctx, tmp_path) == [
         "--lanes", "batch,realtime", "--max-queued", "25", "--drain-timeout", "30",
     ]  # fmt: skip
@@ -214,9 +225,11 @@ def test_summaries_read_what_the_command_printed(tmp_path):
     )
     assert BY_ID["procedures.snapshot"].summarize(tmp_path, 0) == "sha256:abc"
     assert BY_ID["system.tests"].summarize(tmp_path, 0) == "581 passed, 59 skipped in 31.20s"
-    assert BY_ID["evaluation.trial"].summarize(tmp_path, 0) is None
-    (tmp_path / "outputs" / "c02_trial" / "case-1.md").write_text("x")
-    assert BY_ID["evaluation.trial"].summarize(tmp_path, 0) == "1 review file"
+    (tmp_path / "log.txt").write_text(
+        "1,204 cases exported, 3,310 rows, to r.xlsx\nCorrect vertical 87.4% (n = 412, 84.0%–90.4%)\n"
+    )
+    assert BY_ID["evaluation.routing_export"].summarize(tmp_path, 0) == "1,204 cases exported, 3,310 rows"
+    assert BY_ID["evaluation.routing_score"].summarize(tmp_path, 0) == "Correct vertical 87.4% (n = 412, 84.0%–90.4%)"
 
 
 def _wait(runner, job_id: str, timeout: float = 30.0) -> Job:
@@ -245,15 +258,15 @@ def test_every_area_renders_its_forms(console):
         assert client.get(path).status_code == 200, path
     system = client.get("/system").text
     assert "Queue" in system and "Start the Worker" in system and "Can't read the state database" in system
-    assert (
-        'id="routing.trial"' in client.get("/routing").text
-        and 'a finished <a href="/evaluation#evaluation.trial">C02 and C03 trial</a> job' in client.get("/routing").text
-    )
+    for tab in ("intake", "pass1", "pass2", "selection", "routing", "planning"):
+        assert client.get(f"/evaluation/{tab}").status_code == 200, tab
+    assert client.get("/evaluation/nope").status_code == 404
+    assert 'id="procedures.sources_export"' in client.get("/procedures").text
 
 
 def test_offline_commands_run_for_real_and_their_files_download(console):
-    """Three commands that need no database or gateway: a gold workbook from typed case numbers,
-    an evidence-source export, and the registry check."""
+    """Commands that need no database or gateway: an evidence-source export and the registry check;
+    and a review export sent back with what to fix."""
     app, client = console
     csrf = app.state.csrf
 
@@ -264,31 +277,20 @@ def test_offline_commands_run_for_real_and_their_files_download(console):
         assert response.status_code == 303, response.text
         return _wait(app.state.runner, response.headers["location"].rsplit("/", 1)[-1])
 
-    gold = run("evaluation.gold_template", {"case_nos": "GC-1\nGC-2"})
-    assert (gold.status, gold.title, gold.summary) == (JobStatus.DONE, "Gold workbook · 2 cases", "gold_template.xlsx")
-    assert client.get(f"/jobs/{gold.id}/files/outputs/gold_template.xlsx").content[:2] == b"PK"
-
-    from_file = run(
-        "evaluation.gold_template", {}, files={"cases_file": ("cases.txt", io.BytesIO(b"GC-9\n"), "text/plain")}
-    )
-    assert from_file.status is JobStatus.DONE
-    assert app.state.runner.files(from_file.id, "inputs") == [("cases.txt", 5)]
-
-    export = run("evaluation.sources_export", {"version": "evidence-sources-1"})
+    export = run("procedures.sources_export", {"version": "evidence-sources-1"})
     assert export.status is JobStatus.DONE
     assert [name for name, _ in app.state.runner.files(export.id, "outputs")] == ["evidence-sources-1.xlsx"]
-    assert run("evaluation.sources_check", {}).status is JobStatus.DONE
+    assert run("procedures.sources_check", {}).status is JobStatus.DONE
 
-    bad = client.post("/commands/evaluation.gold_template", data={"csrf": csrf})
-    assert (
-        bad.status_code == 422
-        and "Cases: type case numbers or choose a file, not both." in bad.text
-        and "open" in bad.text
+    bad = client.post(
+        "/commands/evaluation.routing_export", data={"csrf": csrf, "release": "cfr-v2-phase-e", "which": "chosen"}
     )
+    assert bad.status_code == 422 and "Chosen cases: type the case numbers or choose a file" in bad.text
+    assert 'aria-current="page">Routing</a>' in bad.text  # sent back to its own tab
 
-    # the review files of a trial are deleted once reviewed
-    assert client.post(f"/jobs/{gold.id}/delete", data={"csrf": csrf}, follow_redirects=False).status_code == 303
-    assert client.get(f"/jobs/{gold.id}").status_code == 404
+    # a job's files are deleted with it
+    assert client.post(f"/jobs/{export.id}/delete", data={"csrf": csrf}, follow_redirects=False).status_code == 303
+    assert client.get(f"/jobs/{export.id}").status_code == 404
     assert client.post(f"/jobs/{export.id}/delete").status_code == 403  # no token
 
 
@@ -337,12 +339,6 @@ def test_every_command_says_what_it_does_and_counts_calls_where_it_can(ctx, tmp_
     log.write_text("35 distinct files\ncurrent: 2,016 pages; 1,844 sections; 3,508,141 characters\n")
     build = BY_ID["procedures.build"].estimate(ctx)
     assert build.calls == 5532 and build.render().startswith("About 5,532 gpt-5 calls for the newest snapshot: 1,844")
-    trial = BY_ID["evaluation.trial"].estimate(ctx)
-    assert (trial.field, trial.per, trial.render()) == (
-        "sample",
-        3,
-        "Up to 15 gpt-5 calls: 5 cases, Pass 1, Pass 2 and C03 each.",
-    )
     assert BY_ID["routing.backfill"].estimate(ctx) is None  # no count yet
 
 
@@ -354,17 +350,17 @@ def test_number_fields_are_steppers_and_uploads_are_split_buttons(console):
     assert Field("x", "X", "float").stepper
     assert not Field("t", "T").stepper
     _, client = console
-    page = client.get("/evaluation").text
-    assert "data-stepper" in page and 'step="0.05"' in page and "Between 0 and 1." in page
-    assert 'aria-label="Increase Quote overlap to match"' in page
-    assert "data-upload" in page and "Choose Files</button>" in page and "Remove All Files" in page
+    page = client.get("/evaluation/routing").text
+    assert "data-stepper" in page and 'step="10"' in page and "Between 10 and 500." in page
+    assert 'aria-label="Increase How many"' in page
+    assert "data-upload" in page and "Choose File</button>" in page and "Remove File" in page
     assert "Accepts .xlsx." in page
     assert 'step="any"' in client.get("/system").text  # a float with no step of its own
 
 
 def test_dropdowns_are_single_select_panels(console):
     _, client = console
-    page = client.get("/evaluation").text
+    page = client.get("/evaluation/routing").text
     assert "<select" not in page
     assert '<details class="ms single">' in page and 'role="radiogroup"' in page
     assert 'type="radio"' in page
