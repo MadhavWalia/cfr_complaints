@@ -16,7 +16,8 @@ on these:
   attempts; the call deadline bounds them;
 - timeouts, 5xx, connection errors and 401s (the model is rebuilt for a fresh
   token) retry with jittered exponential backoff;
-- 403 firewall / content-filter blocks (on the prompt or the output), refusals,
+- 403 firewall / content-filter blocks (on the prompt or the output, including langchain-openai's
+  ValueError for an answer the filter withheld), refusals,
   other 4xx and client or config errors fail at once;
 - exhausting retries raises ``RetryableModelError`` subclasses, which the runtime
   turns into a delayed retry of the whole run rather than a failure.
@@ -151,9 +152,31 @@ def _retry_after(exc: BaseException) -> float | None:
     return None
 
 
+_MSG_CONTENT_FILTER = re.compile(r"content[ _]filter|ResponsibleAIPolicyViolation", re.IGNORECASE)
+# What langchain-openai raises, without an HTTP status, for a response the model wrote that Azure's
+# content filter then withheld (``AzureChatOpenAI._create_chat_result``): a block like any other.
+_MSG_OUTPUT_FILTERED = "has not provided the response due to a content filter"
+# The other ValueErrors langchain-openai raises on a response, by fixed words: for the log, which
+# never shows the message itself (it can quote the prompt).
+_VALUE_ERRORS = (
+    ("content filter", _MSG_OUTPUT_FILTERED),
+    ("error in the response", "'code':"),
+    ("unexpected response", "Unexpected response type"),
+    ("no choices", "choices"),
+)
+
+
 def _content_filtered(exc: BaseException) -> bool:
     code = getattr(exc, "code", None)
-    return code == "content_filter" or "content_filter" in str(exc) or "ResponsibleAIPolicyViolation" in str(exc)
+    return code == "content_filter" or bool(_MSG_CONTENT_FILTER.search(str(exc)))
+
+
+def _value_error_kind(exc: BaseException) -> str | None:
+    """Which langchain-openai response error a ValueError is, in fixed words; None when unknown."""
+    if not isinstance(exc, ValueError):
+        return None
+    message = str(exc)
+    return next((kind for kind, marker in _VALUE_ERRORS if marker in message), None)
 
 
 def classify(exc: BaseException) -> Classified:
@@ -174,6 +197,8 @@ def classify(exc: BaseException) -> Classified:
         return Classified(Failure.TRANSIENT, status)
     if status == 400 and _content_filtered(exc):
         return Classified(Failure.BLOCKED, status)
+    if status is None and isinstance(exc, ValueError) and _MSG_OUTPUT_FILTERED in str(exc):
+        return Classified(Failure.BLOCKED)  # the model's answer withheld by the content filter
     if status is not None and 400 <= status < 500:
         return Classified(Failure.REJECTED, status)
     if type(exc).__name__ in _TRANSIENT_TYPES or isinstance(exc, ConnectionError):
@@ -412,4 +437,5 @@ def _usage(message: Any) -> ModelUsage:
 
 def _describe(found: Classified, exc: BaseException) -> str:
     status = f"HTTP {found.status}, " if found.status is not None else ""
-    return f"{status}{type(exc).__name__}"
+    kind = _value_error_kind(exc)
+    return f"{status}{type(exc).__name__}" + (f": {kind}" if kind else "")

@@ -225,6 +225,9 @@ def test_output_schema_changes_the_input_hash_only_when_set():
         (TypeError("bad arg"), Failure.BUG),
         (type("ConfigValidationError", (Exception,), {})("model 9 not defined"), Failure.BUG),
         (RuntimeError("something odd"), Failure.TRANSIENT),
+        # langchain-openai, for an answer Azure's content filter withheld: no status, a ValueError
+        (ValueError("Azure has not provided the response due to a content filter being triggered"), Failure.BLOCKED),
+        (ValueError("{'code': 'server_error', 'message': 'quoted prompt'}"), Failure.TRANSIENT),
     ],
 )
 def test_classify(exc, failure):
@@ -284,6 +287,22 @@ async def test_permanent_failures_are_not_retried(exc, error):
     with pytest.raises(error):
         await _client(script).complete(_req())
     assert script.calls == 1
+
+
+async def test_an_answer_the_content_filter_withheld_is_a_block_not_retried():
+    script = Script(ValueError("Azure has not provided the response due to a content filter being triggered"))
+    with pytest.raises(ModelBlockedError):
+        await _client(script).complete(_req())
+    assert script.calls == 1
+
+
+def test_a_value_error_is_named_by_kind_never_by_its_message():
+    from cfr_v2.llm.gateway import _describe
+
+    quoted = ValueError("{'code': 'server_error', 'message': 'SECRET PROMPT TEXT'}")
+    detail = _describe(classify(quoted), quoted)
+    assert detail == "ValueError: error in the response" and "SECRET" not in detail
+    assert _describe(classify(ValueError("odd")), ValueError("odd")) == "ValueError"
 
 
 async def test_rate_limits_cool_down_without_using_attempts():
